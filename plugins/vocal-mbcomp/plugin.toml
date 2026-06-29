@@ -1,0 +1,8 @@
+[plugin]
+name      = "Vocal MB Comp"
+slug      = "vocal-mbcomp"
+category  = "Dynamics"
+status    = "in-progress"
+version   = "0.1.0"
+formats   = ["VST3", "AU"]
+reference = "Vocal-tuned 3-band compressor"

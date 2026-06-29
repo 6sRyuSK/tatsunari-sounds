@@ -12,7 +12,7 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (6)
+### In progress (7)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ _None yet._
 | Saturator | Saturation | Analog tape / tube soft-clip |
 | Shimmer Reverb | Reverb | FDN shimmer (octave-up feedback) |
 | Single-Band EQ | EQ | RBJ Audio EQ Cookbook — peaking EQ |
+| Vocal MB Comp | Dynamics | Vocal-tuned 3-band compressor |
 
 
 ### Planned (0)
