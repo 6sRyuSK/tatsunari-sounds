@@ -12,10 +12,11 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (2)
+### In progress (3)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
+| Bus Compressor | Dynamics | SSL G-series bus comp |
 | Saturator | Saturation | Analog tape / tube soft-clip |
 | Single-Band EQ | EQ | RBJ Audio EQ Cookbook — peaking EQ |
 

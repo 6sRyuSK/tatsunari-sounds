@@ -50,8 +50,12 @@ jobs:
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
+      # Bounded parallelism: with the Makefile generator `--parallel` (no number)
+      # means `make -j` with no limit, which compiles every plugin's full set of
+      # JUCE modules at once and exhausts runner memory (OOM, exit 143) as the
+      # plugin count grows. Cap to the core count to keep peak memory in check.
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
 
       - name: Unit tests (CTest)
         run: ctest --test-dir build -C Release --output-on-failure
