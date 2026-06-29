@@ -1,6 +1,28 @@
-# Planned plugins not yet started. One [[plugin]] block each. Example:
-#
-# [[plugin]]
-# name      = "Bus Compressor"
-# category  = "Dynamics"
-# reference = "SSL G-series bus comp"
+# Planned plugins not yet started. One [[plugin]] block each.
+# Rendered into the README "Planned" catalog by tools/gen_catalog.py.
+# Fields used: name, category, reference.
+
+# Multi-band dynamic parametric EQ in the spirit of FabFilter Pro-Q 4: many
+# peaking / shelf / HP / LP bands with optional per-band dynamics. Composes from
+# factory_core::Biquad. Verify the static bands with impulse -> FFT vs a
+# z-domain oracle (as the single-band EQ does); verify dynamic bands from their
+# gain-reduction curves.
+[[plugin]]
+name      = "Dynamic Parametric EQ"
+category  = "EQ"
+reference = "FabFilter Pro-Q 4"
+
+# SSL G-series style stereo bus compressor. Non-linear: verify the static
+# compression curve (input vs output dB) and the attack / release time
+# constants from step responses.
+[[plugin]]
+name      = "Bus Compressor"
+category  = "Dynamics"
+reference = "SSL G-series bus comp"
+
+# Waveshaping saturator / soft clipper. Non-linear: verify with swept-sine +
+# deconvolution and THD / harmonic content; oversample to control aliasing.
+[[plugin]]
+name      = "Saturator"
+category  = "Saturation"
+reference = "Analog tape / tube soft-clip"
