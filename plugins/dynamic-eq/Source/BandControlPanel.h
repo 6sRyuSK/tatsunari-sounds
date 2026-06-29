@@ -51,6 +51,11 @@ public:
         qAtt      = std::make_unique<SA> (apvts, id ("q"),    qSlider);
         thrAtt    = std::make_unique<SA> (apvts, id ("thr"),  thrSlider);
         rngAtt    = std::make_unique<SA> (apvts, id ("rng"),  rngSlider);
+
+        // Continuous (skewed) params otherwise show 7 decimals; cap to 2.
+        for (auto* sl : { &qSlider, &thrSlider, &rngSlider })
+            if (sl->getInterval() == 0.0)
+                sl->setNumDecimalPlacesToDisplay (2);
     }
 
     void paint (juce::Graphics& g) override

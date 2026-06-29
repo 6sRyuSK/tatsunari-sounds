@@ -61,6 +61,9 @@ void ShimmerReverbAudioProcessorEditor::addKnob (const char* id, const char* nam
     addAndMakeVisible (*label);
 
     knobAtts.push_back (std::make_unique<SliderAttachment> (processor.apvts, id, *slider));
+    // Continuous (skewed) params otherwise show 7 decimals; cap to 2.
+    if (slider->getInterval() == 0.0)
+        slider->setNumDecimalPlacesToDisplay (2);
     knobs.push_back (std::move (slider));
     knobLabels.push_back (std::move (label));
 }
