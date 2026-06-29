@@ -12,7 +12,7 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (5)
+### In progress (6)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ _None yet._
 | Dynamic Parametric EQ | EQ | FabFilter Pro-Q 4 |
 | Granular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
 | Saturator | Saturation | Analog tape / tube soft-clip |
+| Shimmer Reverb | Reverb | FDN shimmer (octave-up feedback) |
 | Single-Band EQ | EQ | RBJ Audio EQ Cookbook — peaking EQ |
 
 
