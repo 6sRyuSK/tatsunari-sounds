@@ -5,6 +5,11 @@ project(PluginFactory VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Sources are UTF-8; tell MSVC so it doesn't warn (C4819) under non-UTF-8 locales.
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()

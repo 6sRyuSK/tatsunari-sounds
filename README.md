@@ -12,9 +12,11 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (0)
+### In progress (1)
 
-_None yet._
+| Plugin | Category | Reference |
+| --- | --- | --- |
+| Single-Band EQ | EQ | RBJ Audio EQ Cookbook — peaking EQ |
 
 
 ### Planned (0)
