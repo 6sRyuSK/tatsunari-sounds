@@ -49,6 +49,11 @@ VocalMbCompAudioProcessorEditor::VocalMbCompAudioProcessorEditor (VocalMbCompAud
     atts.push_back (attach ("highfreq", highFreq));
     bypassAtt = std::make_unique<ButtonAttachment> (processor.apvts, "bypass", bypassButton);
 
+    // Continuous (skewed) params otherwise show 7 decimals; cap to 2.
+    for (auto* sl : { &trimLow, &trimMid, &trimHigh, &compress, &output, &mix, &lowFreq, &highFreq })
+        if (sl->getInterval() == 0.0)
+            sl->setNumDecimalPlacesToDisplay (2);
+
     setSize (640, 460);
 }
 

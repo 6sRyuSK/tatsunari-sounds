@@ -41,6 +41,11 @@ BusCompressorAudioProcessorEditor::BusCompressorAudioProcessorEditor (BusCompres
     ratioAtt  = std::make_unique<ComboBoxAttachment> (s, "ratio",     ratioBox);
     bypassAtt = std::make_unique<ButtonAttachment>   (s, "bypass",    bypassButton);
 
+    // Continuous (skewed) params otherwise show 7 decimals; cap to 2.
+    for (auto* sl : { &thresholdSlider, &attackSlider, &releaseSlider, &makeupSlider, &mixSlider })
+        if (sl->getInterval() == 0.0)
+            sl->setNumDecimalPlacesToDisplay (2);
+
     setSize (580, 340);
 }
 

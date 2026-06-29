@@ -12,22 +12,27 @@ SingleBandEqAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
+    // Show at most 2 decimal places (the generic editor otherwise shows many for
+    // the continuous, skewed ranges).
+    auto twoDp = juce::AudioParameterFloatAttributes()
+                     .withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2); });
+
     // frequency: 20 Hz .. 20 kHz, logarithmic, default 1 kHz.
     juce::NormalisableRange<float> freqRange { 20.0f, 20000.0f };
     freqRange.setSkewForCentre (632.455f); // geometric mean of the range
     layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "frequency", 1 }, "Frequency", freqRange, kFreqDefault));
+        juce::ParameterID { "frequency", 1 }, "Frequency", freqRange, kFreqDefault, twoDp));
 
     // gain: -24 .. +24 dB, default 0 dB.
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "gain", 1 }, "Gain",
-        juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, kGainDefault));
+        juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, kGainDefault, twoDp));
 
     // q: 0.1 .. 18, default 0.707.
     juce::NormalisableRange<float> qRange { 0.1f, 18.0f };
     qRange.setSkewForCentre (1.0f);
     layout.add (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "q", 1 }, "Q", qRange, kQDefault));
+        juce::ParameterID { "q", 1 }, "Q", qRange, kQDefault, twoDp));
 
     layout.add (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "bypass", 1 }, "Bypass", false));
