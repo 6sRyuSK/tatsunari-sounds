@@ -3,10 +3,15 @@
 
 namespace
 {
-    // Sensible defaults spread across the spectrum.
-    constexpr float kDefaultFreq[6] = { 80.0f, 250.0f, 800.0f, 2000.0f, 5000.0f, 12000.0f };
-    // Band 0 low shelf, band 5 high shelf, the rest bells.
-    int defaultType (int band) { return band == 0 ? 1 : (band == 5 ? 2 : 0); }
+    // Bands start empty (off); the user adds them by double-clicking the curve,
+    // which sets type/freq/gain. These defaults only seed an unused band's
+    // parameters: frequencies log-spread across the spectrum, all bells.
+    float defaultFreq (int band)
+    {
+        const float t = (DynamicEqAudioProcessor::kNumBands > 1)
+                          ? (float) band / (float) (DynamicEqAudioProcessor::kNumBands - 1) : 0.0f;
+        return 20.0f * std::pow (1000.0f, t); // 20 Hz .. 20 kHz
+    }
 }
 
 juce::String DynamicEqAudioProcessor::pid (int band, const char* suffix)
@@ -25,16 +30,20 @@ DynamicEqAudioProcessor::createParameterLayout()
     for (int b = 0; b < kNumBands; ++b)
     {
         layout.add (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { pid (b, "on"), 1 }, "Band " + juce::String (b + 1) + " On", true));
+            juce::ParameterID { pid (b, "on"), 1 }, "Band " + juce::String (b + 1) + " On", false));
+
+        // Present-but-bypassed: the band stays on the graph but is not processed.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { pid (b, "byp"), 1 }, "Band " + juce::String (b + 1) + " Bypass", false));
 
         layout.add (std::make_unique<juce::AudioParameterChoice> (
             juce::ParameterID { pid (b, "type"), 1 }, "Band " + juce::String (b + 1) + " Type",
             juce::StringArray { "Bell", "Low Shelf", "High Shelf", "High Pass", "Low Pass" },
-            defaultType (b)));
+            0));
 
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { pid (b, "freq"), 1 }, "Band " + juce::String (b + 1) + " Freq",
-            freqRange, kDefaultFreq[b], juce::AudioParameterFloatAttributes().withLabel (" Hz")));
+            freqRange, defaultFreq (b), juce::AudioParameterFloatAttributes().withLabel (" Hz")));
 
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { pid (b, "gain"), 1 }, "Band " + juce::String (b + 1) + " Gain",
@@ -47,6 +56,12 @@ DynamicEqAudioProcessor::createParameterLayout()
             juce::ParameterID { pid (b, "q"), 1 }, "Band " + juce::String (b + 1) + " Q",
             qRange, 0.707f));
 
+        // High/Low-pass slope: 12..96 dB/oct (Butterworth cascade). Index k => (k+1) sections.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { pid (b, "slope"), 1 }, "Band " + juce::String (b + 1) + " Slope",
+            juce::StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct",
+                                "60 dB/oct", "72 dB/oct", "84 dB/oct", "96 dB/oct" }, 0));
+
         layout.add (std::make_unique<juce::AudioParameterBool> (
             juce::ParameterID { pid (b, "dyn"), 1 }, "Band " + juce::String (b + 1) + " Dynamics", false));
 
@@ -58,6 +73,23 @@ DynamicEqAudioProcessor::createParameterLayout()
         layout.add (std::make_unique<juce::AudioParameterFloat> (
             juce::ParameterID { pid (b, "rng"), 1 }, "Band " + juce::String (b + 1) + " Range",
             juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, 0.0f,
+            juce::AudioParameterFloatAttributes().withLabel (" dB")));
+
+        juce::NormalisableRange<float> atkRange { 0.05f, 100.0f };
+        atkRange.setSkewForCentre (10.0f);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { pid (b, "atk"), 1 }, "Band " + juce::String (b + 1) + " Attack",
+            atkRange, 10.0f, juce::AudioParameterFloatAttributes().withLabel (" ms")));
+
+        juce::NormalisableRange<float> relRange { 5.0f, 2000.0f };
+        relRange.setSkewForCentre (120.0f);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { pid (b, "rel"), 1 }, "Band " + juce::String (b + 1) + " Release",
+            relRange, 120.0f, juce::AudioParameterFloatAttributes().withLabel (" ms")));
+
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { pid (b, "knee"), 1 }, "Band " + juce::String (b + 1) + " Knee",
+            juce::NormalisableRange<float> { 0.0f, 24.0f, 0.01f }, 6.0f,
             juce::AudioParameterFloatAttributes().withLabel (" dB")));
     }
 
@@ -76,13 +108,18 @@ DynamicEqAudioProcessor::DynamicEqAudioProcessor()
     for (int b = 0; b < kNumBands; ++b)
     {
         params[(size_t) b].on   = apvts.getRawParameterValue (pid (b, "on"));
+        params[(size_t) b].byp  = apvts.getRawParameterValue (pid (b, "byp"));
         params[(size_t) b].type = apvts.getRawParameterValue (pid (b, "type"));
         params[(size_t) b].freq = apvts.getRawParameterValue (pid (b, "freq"));
         params[(size_t) b].gain = apvts.getRawParameterValue (pid (b, "gain"));
-        params[(size_t) b].q    = apvts.getRawParameterValue (pid (b, "q"));
-        params[(size_t) b].dyn  = apvts.getRawParameterValue (pid (b, "dyn"));
-        params[(size_t) b].thr  = apvts.getRawParameterValue (pid (b, "thr"));
-        params[(size_t) b].rng  = apvts.getRawParameterValue (pid (b, "rng"));
+        params[(size_t) b].q     = apvts.getRawParameterValue (pid (b, "q"));
+        params[(size_t) b].slope = apvts.getRawParameterValue (pid (b, "slope"));
+        params[(size_t) b].dyn   = apvts.getRawParameterValue (pid (b, "dyn"));
+        params[(size_t) b].thr   = apvts.getRawParameterValue (pid (b, "thr"));
+        params[(size_t) b].rng   = apvts.getRawParameterValue (pid (b, "rng"));
+        params[(size_t) b].atk   = apvts.getRawParameterValue (pid (b, "atk"));
+        params[(size_t) b].rel   = apvts.getRawParameterValue (pid (b, "rel"));
+        params[(size_t) b].knee  = apvts.getRawParameterValue (pid (b, "knee"));
     }
     bypassParam = apvts.getRawParameterValue ("bypass");
 }
@@ -93,7 +130,10 @@ void DynamicEqAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPer
     for (auto& band : bands)
         band.prepare (sampleRate);
     analyzerRing.fill (0.0f);
+    analyzerRingPost.fill (0.0f);
     ringWrite.store (0);
+    for (int b = 0; b < kNumBands; ++b)
+        liveGainDb[(size_t) b].store (0.0f, std::memory_order_relaxed);
 }
 
 bool DynamicEqAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -114,19 +154,31 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         buffer.clear (ch, 0, buffer.getNumSamples());
 
     if (bypassParam->load() > 0.5f)
+    {
+        // Keep the display honest while bypassed: report the static gains.
+        for (int b = 0; b < kNumBands; ++b)
+            liveGainDb[(size_t) b].store (params[(size_t) b].gain->load(), std::memory_order_relaxed);
         return;
+    }
 
     // Configure bands from parameters (per block).
     for (int b = 0; b < kNumBands; ++b)
     {
         auto& bp = params[(size_t) b];
         auto& band = bands[(size_t) b];
-        band.setEnabled (bp.on->load() > 0.5f);
+        const bool present  = bp.on->load() > 0.5f;
+        const bool bypassed = bp.byp->load() > 0.5f;
+        band.setEnabled (present && ! bypassed);
+        if (! present || bypassed)
+            continue; // not processed: skip coefficient work (processStereo no-ops)
         band.setType (static_cast<factory_core::BandType> ((int) bp.type->load()));
         band.setFrequency (bp.freq->load());
         band.setGainDb (bp.gain->load());
         band.setQ (bp.q->load());
+        band.setSlopeStages ((int) bp.slope->load() + 1); // choice index 0..7 -> 1..8 sections
+        band.setKnee (bp.knee->load());
         band.setDynamics (bp.dyn->load() > 0.5f, bp.thr->load(), bp.rng->load());
+        band.setDynamicsTimes (bp.atk->load(), bp.rel->load());
         band.updateCoefficients();
     }
 
@@ -141,23 +193,31 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
 
-        analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r));
-        ++w;
+        analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
 
         for (auto& band : bands)
             band.processStereo (l, r);
+
+        analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
+        ++w;
 
         L[i] = (float) l;
         if (R != nullptr) R[i] = (float) r;
     }
     ringWrite.store (w, std::memory_order_release);
+
+    // Publish each band's effective (post-dynamics) gain for the editor.
+    for (int b = 0; b < kNumBands; ++b)
+        liveGainDb[(size_t) b].store ((float) bands[(size_t) b].currentGainDb(),
+                                      std::memory_order_relaxed);
 }
 
-void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num) const noexcept
+void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num, bool post) const noexcept
 {
     const int w = ringWrite.load (std::memory_order_acquire);
+    const auto& ring = post ? analyzerRingPost : analyzerRing;
     for (int i = 0; i < num; ++i)
-        dest[i] = analyzerRing[(size_t) ((w - num + i) & kRingMask)];
+        dest[i] = ring[(size_t) ((w - num + i) & kRingMask)];
 }
 
 juce::AudioProcessorEditor* DynamicEqAudioProcessor::createEditor()

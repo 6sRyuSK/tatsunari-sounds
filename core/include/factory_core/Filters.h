@@ -93,4 +93,35 @@ namespace factory_core
         c.a2 = a2 / a0;
         return c;
     }
+
+    // --- Variable-slope Butterworth high/low-pass (cascaded biquads) --------
+    //
+    // A 12*numStages dB/oct high/low-pass is a cascade of `numStages` second-
+    // order sections (overall order 2*numStages). Each section is the RBJ
+    // HP/LP design at the same cutoff but with its own Butterworth Q so the
+    // cascade is maximally flat with the overall -3 dB point at the cutoff.
+    //
+    // Resonance: the peak (last) section's Q is scaled by userQ / (1/sqrt2),
+    // so userQ == 0.7071 gives a flat Butterworth and a larger userQ adds a
+    // resonant peak at the cutoff. For numStages == 1 this reduces exactly to
+    // designFilter(type, f, 0, userQ, Fs) — the plain 12 dB/oct biquad.
+
+    // Butterworth section Q for `stage` (0-based) of an order-2*numStages filter.
+    inline double butterworthSectionQ (int stage, int numStages) noexcept
+    {
+        constexpr double pi = 3.14159265358979323846;
+        return 1.0 / (2.0 * std::cos ((2.0 * stage + 1.0) * pi / (4.0 * numStages)));
+    }
+
+    // Coefficients for one section of the HP/LP cascade. `type` must be
+    // HighPass or LowPass; `gain` is unused by those designs.
+    inline BiquadCoeffs designHpLpStage (BandType type, double freqHz, double userQ,
+                                         int stage, int numStages, double sampleRate) noexcept
+    {
+        constexpr double butterQ = 0.70710678118654752440; // 1/sqrt(2)
+        double q = butterworthSectionQ (stage, numStages);
+        if (stage == numStages - 1)
+            q *= userQ / butterQ; // resonance on the peak section
+        return designFilter (type, freqHz, 0.0, q, sampleRate);
+    }
 } // namespace factory_core

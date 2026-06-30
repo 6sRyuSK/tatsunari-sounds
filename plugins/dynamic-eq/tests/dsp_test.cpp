@@ -89,6 +89,20 @@ namespace
         return h;
     }
 
+    std::vector<double> cascadeImpulse (const std::vector<factory_core::BiquadCoeffs>& stages, int N)
+    {
+        std::vector<factory_core::Biquad> chain (stages.size());
+        for (size_t i = 0; i < stages.size(); ++i) chain[i].setCoeffs (stages[i]);
+        std::vector<double> h ((size_t) N);
+        for (int n = 0; n < N; ++n)
+        {
+            double x = (n == 0) ? 1.0 : 0.0;
+            for (auto& b : chain) x = b.processSample (x);
+            h[(size_t) n] = x;
+        }
+        return h;
+    }
+
     cd dftAt (const std::vector<double>& h, double w)
     {
         const cd step = std::exp (cd (0.0, -w));
@@ -278,6 +292,117 @@ namespace
         if (loud >= quiet)                 fail ("dynamics did not reduce gain under load");
         std::printf ("  quiet=%.2f dB  loud=%.2f dB\n", quiet, loud);
     }
+
+    // Soft-knee invariants on the pure offset function.
+    void kneeTest()
+    {
+        std::printf ("Soft-knee offset\n");
+        using factory_core::DynamicEqBand;
+        const double thr = -30.0, range = -12.0, knee = 8.0;
+
+        // knee == 0 reduces to the hard-knee ramp (matches the 3-arg form).
+        for (double d = -20.0; d <= 40.0; d += 1.0)
+        {
+            const double a = DynamicEqBand::dynamicOffsetDb (thr + d, thr, range);
+            const double b = DynamicEqBand::dynamicOffsetDb (thr + d, thr, range, 0.0);
+            if (std::abs (a - b) > 1e-12) fail ("knee=0 != hard knee");
+        }
+        // Below the knee region: exactly zero.
+        if (std::abs (DynamicEqBand::dynamicOffsetDb (thr - knee, thr, range, knee)) > 1e-12)
+            fail ("knee: below region != 0");
+        // At threshold: soft knee gives slope*(knee/2)^2/(2*knee) = slope*knee/8.
+        const double atThr = DynamicEqBand::dynamicOffsetDb (thr, thr, range, knee);
+        const double expectAtThr = (range / 24.0) * (knee / 8.0);
+        if (std::abs (atThr - expectAtThr) > 1e-9) fail ("knee: value at threshold wrong");
+        // Continuity at the upper knee corner (d = +knee/2).
+        const double eps = 1e-4;
+        const double lo = DynamicEqBand::dynamicOffsetDb (thr + knee * 0.5 - eps, thr, range, knee);
+        const double hi = DynamicEqBand::dynamicOffsetDb (thr + knee * 0.5 + eps, thr, range, knee);
+        if (std::abs (lo - hi) > 1e-3) fail ("knee: discontinuous at corner");
+        // Monotonic toward range, never exceeding it.
+        double prev = 0.0;
+        for (int i = -10; i <= 60; ++i)
+        {
+            const double off = DynamicEqBand::dynamicOffsetDb (thr + i, thr, range, knee);
+            if (off < range - 1e-9) fail ("knee: exceeded range");
+            if (off > prev + 1e-12) fail ("knee: not monotonic (range<0)");
+            prev = off;
+        }
+        std::printf ("  ok\n");
+    }
+
+    // Variable-slope Butterworth HP/LP cascade: -3 dB at cutoff for any order,
+    // unity passband, ~12*n dB/oct, monotonic (no ripple), steeper with order,
+    // and resonance when Q exceeds Butterworth. Invariants are formula-
+    // independent (they don't reference the section-Q formula under test).
+    void slopeCascadeTest (double Fs)
+    {
+        std::printf ("HP/LP slope cascade @ Fs=%.0f\n", Fs);
+        const int N = 1 << 16;
+        const double butterQ = 0.70710678118654752440;
+        struct Case { BandType type; double f0; };
+        // Keep the one-octave stop-band probe well below Nyquist so the digital
+        // response matches the analog 12*n dB/oct asymptote (bilinear warping
+        // near Nyquist otherwise inflates the measured slope — a false failure).
+        const Case cases[] = { { BandType::HighPass, 300.0 }, { BandType::LowPass, 500.0 } };
+
+        for (const auto& cs : cases)
+        {
+            double prevAtten = -1e9;
+            for (int n = 1; n <= factory_core::DynamicEqBand::kMaxStages; ++n)
+            {
+                std::vector<factory_core::BiquadCoeffs> stages;
+                for (int k = 0; k < n; ++k)
+                    stages.push_back (factory_core::designHpLpStage (cs.type, cs.f0, butterQ, k, n, Fs));
+                const auto ir = cascadeImpulse (stages, N);
+                auto magAt = [&] (double f) { return magDb (dftAt (ir, 2.0 * kPi * f / Fs)); };
+
+                // (1) -3.01 dB at the cutoff, independent of order.
+                const double atCut = magAt (cs.f0);
+                if (std::abs (atCut + 3.0103) > 0.30)
+                    fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n)
+                          + ": cutoff " + std::to_string (atCut) + " dB != -3.01");
+
+                // (2) deep passband ~ unity.
+                const double passF = (cs.type == BandType::HighPass) ? 0.40 * Fs : 25.0;
+                if (magAt (passF) < -0.5)
+                    fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n) + ": passband not unity");
+
+                // (3) one octave into the stop band ~ 12*n dB down.
+                const double stopF = (cs.type == BandType::HighPass) ? cs.f0 * 0.5 : cs.f0 * 2.0;
+                const double atten = -magAt (stopF);
+                if (n <= 5 && std::abs (atten - 12.0 * n) > 1.5)
+                    fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n)
+                          + ": octave atten " + std::to_string (atten) + " != " + std::to_string (12 * n));
+                if (atten < prevAtten - 0.5)
+                    fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n) + ": not steeper than n-1");
+                prevAtten = atten;
+
+                // (4) maximally flat: magnitude monotonic (skip the numerical floor).
+                const int M = 200;
+                double prev = (cs.type == BandType::HighPass) ? -1e9 : 1e9;
+                for (int i = 0; i < M; ++i)
+                {
+                    const double f = 20.0 * std::pow ((0.49 * Fs) / 20.0, (double) i / (M - 1));
+                    const double m = magAt (f);
+                    if (m < -150.0) continue; // below the DFT roundoff floor
+                    if (cs.type == BandType::HighPass) { if (m < prev - 1.0e-2) { fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n) + ": ripple"); break; } }
+                    else                               { if (m > prev + 1.0e-2) { fail (std::string (typeName (cs.type)) + " n=" + std::to_string (n) + ": ripple"); break; } }
+                    prev = m;
+                }
+            }
+        }
+
+        // Resonance: Q above Butterworth lifts the cutoff above 0 dB.
+        std::vector<factory_core::BiquadCoeffs> res;
+        for (int k = 0; k < 2; ++k)
+            res.push_back (factory_core::designHpLpStage (BandType::HighPass, 300.0, 4.0, k, 2, Fs));
+        const double atCutRes = magDb (dftAt (cascadeImpulse (res, N), 2.0 * kPi * 300.0 / Fs));
+        if (atCutRes <= 0.0)
+            fail ("HP resonance Q=4 did not peak above 0 dB (" + std::to_string (atCutRes) + ")");
+
+        std::printf ("  ok\n");
+    }
 }
 
 int main (int argc, char** argv)
@@ -287,10 +412,12 @@ int main (int argc, char** argv)
     else          rates = { 44100.0, 48000.0, 96000.0 };
 
     dynamicOffsetTest();
+    kneeTest();
     for (double Fs : rates)
     {
         perTypeTest (Fs);
         cascadeTest (Fs);
+        slopeCascadeTest (Fs);
         dynamicBandTest (Fs);
     }
 
