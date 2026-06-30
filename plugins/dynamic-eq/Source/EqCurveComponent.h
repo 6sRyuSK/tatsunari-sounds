@@ -29,12 +29,34 @@ public:
     EqCurveComponent (DynamicEqAudioProcessor& p, juce::AudioProcessorValueTreeState& s)
         : processor (p), apvts (s)
     {
-        smoothDb.fill (-120.0f);
-        peakDb.fill (-120.0f);
+        smoothDbPre.fill (-120.0f);  peakDbPre.fill (-120.0f);
+        smoothDbPost.fill (-120.0f); peakDbPost.fill (-120.0f);
+
+        auto initToggle = [this] (juce::ToggleButton& b, juce::Colour c, bool on)
+        {
+            b.setClickingTogglesState (true);
+            b.setToggleState (on, juce::dontSendNotification);
+            b.setColour (juce::ToggleButton::tickColourId, c);
+            b.onClick = [this] { showPre = preButton.getToggleState();
+                                 showPost = postButton.getToggleState(); repaint(); };
+            addAndMakeVisible (b);
+        };
+        initToggle (preButton,  FactoryLookAndFeel::accent(), true);
+        initToggle (postButton, kPostColour,                  false);
+
         startTimerHz (30);
     }
 
     int getSelectedBand() const noexcept { return selectedBand; }
+
+    void resized() override
+    {
+        // Pre / Post analyzer toggles in the top-right of the plot.
+        auto row = getLocalBounds().reduced (16, 12).removeFromTop (18);
+        postButton.setBounds (row.removeFromRight (74));
+        row.removeFromRight (6);
+        preButton.setBounds (row.removeFromRight (66));
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -149,6 +171,13 @@ public:
     }
 
 private:
+    // Larger FFT so low-frequency bins stay fine even at high sample rates
+    // (at 192 kHz a 2048-point FFT only resolves ~94 Hz/bin; 8192 gives ~23 Hz).
+    static constexpr int kFftOrder = 13;
+    static constexpr int kFftSize = 1 << kFftOrder; // 8192
+    static constexpr float kMaxGain = 24.0f;
+    inline static const juce::Colour kPostColour { juce::Colour (0xff45b8acu) }; // cool teal vs coral pre
+
     void timerCallback() override { repaint(); }
 
     // ---- mappings ----
@@ -239,10 +268,20 @@ private:
     }
 
     // ---- spectrum analyzer (smoothed, gradient fill, peak-hold, tilted) ----
+    // Pre-EQ (input) and post-EQ (output) can be shown independently or both at
+    // once, each with its own smoothing/peak state and colour.
     void drawAnalyzer (juce::Graphics& g)
     {
+        if (showPre)  drawSpectrum (g, false, FactoryLookAndFeel::accent(), smoothDbPre,  peakDbPre);
+        if (showPost) drawSpectrum (g, true,  kPostColour,                  smoothDbPost, peakDbPost);
+    }
+
+    void drawSpectrum (juce::Graphics& g, bool post, juce::Colour colour,
+                       std::array<float, kFftSize / 2>& smoothDb,
+                       std::array<float, kFftSize / 2>& peakDb)
+    {
         std::array<float, kFftSize * 2> fftData {};
-        processor.copyAnalyzerSamples (fftData.data(), kFftSize);
+        processor.copyAnalyzerSamples (fftData.data(), kFftSize, post);
         for (int i = 0; i < kFftSize; ++i)
             fftData[(size_t) i] *= window[(size_t) i];
         fft.performFrequencyOnlyForwardTransform (fftData.data());
@@ -287,14 +326,14 @@ private:
         {
             fill.lineTo (plot.getRight(), plot.getBottom());
             fill.closeSubPath();
-            juce::ColourGradient grad (FactoryLookAndFeel::accent().withAlpha (0.30f), 0.0f, plot.getY(),
-                                       FactoryLookAndFeel::accent().withAlpha (0.02f), 0.0f, plot.getBottom(), false);
+            juce::ColourGradient grad (colour.withAlpha (0.30f), 0.0f, plot.getY(),
+                                       colour.withAlpha (0.02f), 0.0f, plot.getBottom(), false);
             g.setGradientFill (grad);
             g.fillPath (fill);
         }
         if (startedPeak)
         {
-            g.setColour (FactoryLookAndFeel::textDim().withAlpha (0.5f));
+            g.setColour (colour.withAlpha (0.6f));
             g.strokePath (peak, juce::PathStrokeType (1.0f));
         }
     }
@@ -519,10 +558,6 @@ private:
     // Larger FFT so low-frequency bins stay fine even at high sample rates
     // (at 192 kHz a 2048-point FFT only resolves ~94 Hz/bin, blanking the
     // sub-100 Hz region; 8192 gives ~23 Hz/bin there).
-    static constexpr int kFftOrder = 13;
-    static constexpr int kFftSize = 1 << kFftOrder; // 8192
-    static constexpr float kMaxGain = 24.0f;
-
     DynamicEqAudioProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
     juce::Rectangle<float> plot;
@@ -530,9 +565,14 @@ private:
     int dragging = -1;
     int hoveredBand = -1;
 
+    juce::ToggleButton preButton { "Pre" }, postButton { "Post" };
+    bool showPre = true, showPost = false;
+
     juce::dsp::FFT fft { kFftOrder };
-    std::array<float, kFftSize / 2> smoothDb {};
-    std::array<float, kFftSize / 2> peakDb {};
+    std::array<float, kFftSize / 2> smoothDbPre {};
+    std::array<float, kFftSize / 2> peakDbPre {};
+    std::array<float, kFftSize / 2> smoothDbPost {};
+    std::array<float, kFftSize / 2> peakDbPost {};
     std::array<float, kFftSize> window = [] {
         std::array<float, kFftSize> w {};
         juce::dsp::WindowingFunction<float>::fillWindowingTables (

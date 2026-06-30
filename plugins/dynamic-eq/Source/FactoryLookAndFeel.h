@@ -121,7 +121,8 @@ public:
         auto box = juce::Rectangle<float> (h * 1.7f, h).withY (r.getCentreY() - h * 0.5f).withX (r.getX());
         const bool on = b.getToggleState();
 
-        g.setColour (on ? accent() : track());
+        const auto onColour = b.findColour (juce::ToggleButton::tickColourId);
+        g.setColour (on ? onColour : track());
         g.fillRoundedRectangle (box, h * 0.5f);
         const float knobD = h - 4.0f;
         const float kx = on ? box.getRight() - knobD - 2.0f : box.getX() + 2.0f;

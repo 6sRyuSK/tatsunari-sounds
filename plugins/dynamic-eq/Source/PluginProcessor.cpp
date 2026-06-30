@@ -130,6 +130,7 @@ void DynamicEqAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPer
     for (auto& band : bands)
         band.prepare (sampleRate);
     analyzerRing.fill (0.0f);
+    analyzerRingPost.fill (0.0f);
     ringWrite.store (0);
     for (int b = 0; b < kNumBands; ++b)
         liveGainDb[(size_t) b].store (0.0f, std::memory_order_relaxed);
@@ -192,11 +193,13 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
 
-        analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r));
-        ++w;
+        analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
 
         for (auto& band : bands)
             band.processStereo (l, r);
+
+        analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
+        ++w;
 
         L[i] = (float) l;
         if (R != nullptr) R[i] = (float) r;
@@ -209,11 +212,12 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
                                       std::memory_order_relaxed);
 }
 
-void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num) const noexcept
+void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num, bool post) const noexcept
 {
     const int w = ringWrite.load (std::memory_order_acquire);
+    const auto& ring = post ? analyzerRingPost : analyzerRing;
     for (int i = 0; i < num; ++i)
-        dest[i] = analyzerRing[(size_t) ((w - num + i) & kRingMask)];
+        dest[i] = ring[(size_t) ((w - num + i) & kRingMask)];
 }
 
 juce::AudioProcessorEditor* DynamicEqAudioProcessor::createEditor()

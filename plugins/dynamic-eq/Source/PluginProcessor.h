@@ -52,8 +52,9 @@ public:
     // Parameter id helpers (shared with the editor).
     static juce::String pid (int band, const char* suffix);
 
-    // Copy the latest `num` analyzer samples (mono) into dest. GUI thread.
-    void copyAnalyzerSamples (float* dest, int num) const noexcept;
+    // Copy the latest `num` analyzer samples (mono) into dest. `post` selects
+    // the post-EQ ring instead of the pre-EQ input. GUI thread.
+    void copyAnalyzerSamples (float* dest, int num, bool post = false) const noexcept;
 
     // Per-band effective gain (dB) including the live dynamic offset, published
     // each block by the audio thread. Lets the editor animate the band as it
@@ -92,7 +93,8 @@ private:
     // Analyzer ring buffer (single producer: audio thread).
     static constexpr int kRingSize = 1 << 14; // 16384 (>= analyzer FFT, with margin)
     static constexpr int kRingMask = kRingSize - 1;
-    std::array<float, kRingSize> analyzerRing {};
+    std::array<float, kRingSize> analyzerRing {};     // pre-EQ (input)
+    std::array<float, kRingSize> analyzerRingPost {}; // post-EQ (output)
     std::atomic<int> ringWrite { 0 };
 
     // Live per-band effective gain (dB) for the editor's animated display.
