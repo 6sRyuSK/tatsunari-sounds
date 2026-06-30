@@ -55,6 +55,14 @@ public:
     // Copy the latest `num` analyzer samples (mono) into dest. GUI thread.
     void copyAnalyzerSamples (float* dest, int num) const noexcept;
 
+    // Per-band effective gain (dB) including the live dynamic offset, published
+    // each block by the audio thread. Lets the editor animate the band as it
+    // moves. Lock-free; GUI thread reads.
+    float getLiveGainDb (int band) const noexcept
+    {
+        return liveGainDb[(size_t) band].load (std::memory_order_relaxed);
+    }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -81,6 +89,9 @@ private:
     static constexpr int kRingMask = kRingSize - 1;
     std::array<float, kRingSize> analyzerRing {};
     std::atomic<int> ringWrite { 0 };
+
+    // Live per-band effective gain (dB) for the editor's animated display.
+    std::array<std::atomic<float>, kNumBands> liveGainDb {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DynamicEqAudioProcessor)
 };

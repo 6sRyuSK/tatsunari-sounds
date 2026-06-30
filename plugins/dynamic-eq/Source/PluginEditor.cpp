@@ -6,8 +6,8 @@ DynamicEqAudioProcessorEditor::DynamicEqAudioProcessorEditor (DynamicEqAudioProc
 {
     setLookAndFeel (&lnf);
 
-    titleLabel.setText ("DYNAMIC EQ", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
+    titleLabel.setText ("Dynamic EQ", juce::dontSendNotification);
+    titleLabel.setFont (juce::Font (juce::FontOptions (22.0f, juce::Font::bold)));
     titleLabel.setColour (juce::Label::textColourId, FactoryLookAndFeel::accent());
     addAndMakeVisible (titleLabel);
 
@@ -23,6 +23,10 @@ DynamicEqAudioProcessorEditor::DynamicEqAudioProcessorEditor (DynamicEqAudioProc
     bypassAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         processor.apvts, "bypass", bypassButton);
 
+    setResizable (true, true);
+    setResizeLimits (620, 420, 1280, 860);
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio (740.0 / 480.0);
     setSize (740, 480);
 }
 
@@ -33,19 +37,33 @@ DynamicEqAudioProcessorEditor::~DynamicEqAudioProcessorEditor()
 
 void DynamicEqAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    // Warm white background with a soft vertical gradient.
+    juce::ColourGradient bg (FactoryLookAndFeel::background(), 0.0f, 0.0f,
+                             FactoryLookAndFeel::backgroundLo(), 0.0f, (float) getHeight(), false);
+    g.setGradientFill (bg);
+    g.fillAll();
+
+    // Soft drop shadows behind the two cards.
+    auto dropShadow = [&g] (juce::Rectangle<int> b)
+    {
+        juce::DropShadow ds (FactoryLookAndFeel::shadow(), 16, { 0, 5 });
+        juce::Path path; path.addRoundedRectangle (b.toFloat(), 10.0f);
+        ds.drawForPath (g, path);
+    };
+    dropShadow (curve.getBounds());
+    dropShadow (panel.getBounds());
 }
 
 void DynamicEqAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds().reduced (16);
 
-    auto top = r.removeFromTop (26);
-    bypassButton.setBounds (top.removeFromRight (96));
+    auto top = r.removeFromTop (28);
+    bypassButton.setBounds (top.removeFromRight (110));
     titleLabel.setBounds (top);
 
     r.removeFromTop (10);
-    panel.setBounds (r.removeFromBottom (130));
+    panel.setBounds (r.removeFromBottom (132));
     r.removeFromBottom (12);
     curve.setBounds (r);
 }

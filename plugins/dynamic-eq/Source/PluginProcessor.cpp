@@ -94,6 +94,8 @@ void DynamicEqAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPer
         band.prepare (sampleRate);
     analyzerRing.fill (0.0f);
     ringWrite.store (0);
+    for (int b = 0; b < kNumBands; ++b)
+        liveGainDb[(size_t) b].store (0.0f, std::memory_order_relaxed);
 }
 
 bool DynamicEqAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -114,7 +116,12 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         buffer.clear (ch, 0, buffer.getNumSamples());
 
     if (bypassParam->load() > 0.5f)
+    {
+        // Keep the display honest while bypassed: report the static gains.
+        for (int b = 0; b < kNumBands; ++b)
+            liveGainDb[(size_t) b].store (params[(size_t) b].gain->load(), std::memory_order_relaxed);
         return;
+    }
 
     // Configure bands from parameters (per block).
     for (int b = 0; b < kNumBands; ++b)
@@ -151,6 +158,11 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         if (R != nullptr) R[i] = (float) r;
     }
     ringWrite.store (w, std::memory_order_release);
+
+    // Publish each band's effective (post-dynamics) gain for the editor.
+    for (int b = 0; b < kNumBands; ++b)
+        liveGainDb[(size_t) b].store ((float) bands[(size_t) b].currentGainDb(),
+                                      std::memory_order_relaxed);
 }
 
 void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num) const noexcept

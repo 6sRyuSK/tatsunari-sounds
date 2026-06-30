@@ -39,6 +39,7 @@ public:
     {
         band = b;
         title.setText ("BAND " + juce::String (b + 1), juce::dontSendNotification);
+        title.setColour (juce::Label::textColourId, FactoryLookAndFeel::bandColour (b));
 
         using SA = juce::AudioProcessorValueTreeState::SliderAttachment;
         using BA = juce::AudioProcessorValueTreeState::ButtonAttachment;
