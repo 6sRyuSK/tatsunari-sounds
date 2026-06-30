@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 BusCompressorAudioProcessorEditor::BusCompressorAudioProcessorEditor (BusCompressorAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), meter (p)
@@ -57,20 +58,15 @@ BusCompressorAudioProcessorEditor::~BusCompressorAudioProcessorEditor()
 void BusCompressorAudioProcessorEditor::configureKnob (juce::Slider& slider, juce::Label& label,
                                                        const juce::String& name, const juce::String& suffix)
 {
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 20);
-    slider.setTextValueSuffix (suffix);
+    factory_ui::styleKnob (slider, label, name, suffix);
     addAndMakeVisible (slider);
-
-    label.setText (name, juce::dontSendNotification);
-    label.setJustificationType (juce::Justification::centred);
-    label.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (label);
 }
 
 void BusCompressorAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    factory_ui::paintBackground (g, getLocalBounds());
+    factory_ui::dropShadowFor (g, meter.getBounds());
 }
 
 void BusCompressorAudioProcessorEditor::resized()

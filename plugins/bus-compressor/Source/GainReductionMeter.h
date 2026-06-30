@@ -3,7 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "PluginProcessor.h"
-#include "FactoryLookAndFeel.h"
+#include "factory_ui/FactoryLookAndFeel.h"
 
 //
 // Vertical gain-reduction meter. Polls the processor's published GR (<= 0 dB)

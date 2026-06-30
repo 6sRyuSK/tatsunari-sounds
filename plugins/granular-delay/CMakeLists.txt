@@ -36,6 +36,7 @@ target_compile_definitions(GranularDelay PUBLIC
 target_link_libraries(GranularDelay
   PRIVATE
     factory_core
+    factory_ui
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags

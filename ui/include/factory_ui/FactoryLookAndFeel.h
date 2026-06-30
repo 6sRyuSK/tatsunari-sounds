@@ -5,11 +5,14 @@
 #include <array>
 
 //
-// Bright, white-based "kawaii" LookAndFeel for the dynamic parametric EQ.
-// Soft pastel palette leaning to coral / orange / pink, gentle shadows and
-// rounded shapes. Each EQ band gets its own pastel hue (bandColour). The
-// centrepiece curve display is built to read like a modern EQ (Pro-Q 4 /
-// Kirchhoff / ZL). Header-only.
+// factory_ui — the shared "kawaii" design system for every plugin in the
+// factory. Bright, white-based palette with a single coral accent, gentle
+// shadows and rounded shapes: soft pastel knobs and pill toggles. One copy,
+// used by every editor (originally extracted from the Dynamic EQ). Header-only.
+//
+// The class name is intentionally global (FactoryLookAndFeel) so the many
+// `FactoryLookAndFeel::accent()` / `panel()` call sites across the plugins keep
+// working unchanged after they switch to this shared header.
 //
 class FactoryLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -26,7 +29,7 @@ public:
     static juce::Colour textDim()    { return juce::Colour (0xffb9a39b); } // muted
     static juce::Colour shadow()     { return juce::Colour (0x33d6a89a); } // warm soft shadow
 
-    // One pastel hue per band — warm-biased kawaii spread.
+    // One pastel hue per band — warm-biased kawaii spread (multi-band plugins).
     static juce::Colour bandColour (int band)
     {
         static const std::array<juce::Colour, 6> pal {
@@ -112,7 +115,7 @@ public:
         g.fillEllipse (juce::Rectangle<float> (dotR * 2.0f, dotR * 2.0f).withCentre (dot));
     }
 
-    // Cute rounded toggle: a pill that fills with accent when on.
+    // Cute rounded toggle: a pill that fills with its tickColour when on.
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& b,
                            bool /*highlighted*/, bool /*down*/) override
     {

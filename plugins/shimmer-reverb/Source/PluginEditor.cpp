@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 ShimmerReverbAudioProcessorEditor::ShimmerReverbAudioProcessorEditor (ShimmerReverbAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), visualizer (p, p.apvts)
@@ -57,7 +58,7 @@ void ShimmerReverbAudioProcessorEditor::addKnob (const char* id, const char* nam
     auto label = std::make_unique<juce::Label>();
     label->setText (name, juce::dontSendNotification);
     label->setJustificationType (juce::Justification::centred);
-    label->setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
+    label->setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
     addAndMakeVisible (*label);
 
     knobAtts.push_back (std::make_unique<SliderAttachment> (processor.apvts, id, *slider));
@@ -75,13 +76,14 @@ void ShimmerReverbAudioProcessorEditor::setupPitchBox (juce::ComboBox& box, juce
     addAndMakeVisible (box);
     label.setText (name, juce::dontSendNotification);
     label.setJustificationType (juce::Justification::centred);
-    label.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
+    label.setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
     addAndMakeVisible (label);
 }
 
 void ShimmerReverbAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    factory_ui::paintBackground (g, getLocalBounds());
+    factory_ui::dropShadowFor (g, visualizer.getBounds());
 }
 
 void ShimmerReverbAudioProcessorEditor::resized()

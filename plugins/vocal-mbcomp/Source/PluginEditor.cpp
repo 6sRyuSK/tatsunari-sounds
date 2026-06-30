@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 VocalMbCompAudioProcessorEditor::VocalMbCompAudioProcessorEditor (VocalMbCompAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p),
@@ -65,14 +66,8 @@ VocalMbCompAudioProcessorEditor::~VocalMbCompAudioProcessorEditor()
 void VocalMbCompAudioProcessorEditor::configureKnob (juce::Slider& slider, juce::Label& label,
                                                      const juce::String& name, const juce::String& suffix)
 {
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 18);
-    slider.setTextValueSuffix (suffix);
+    factory_ui::styleKnob (slider, label, name, suffix);
     addAndMakeVisible (slider);
-
-    label.setText (name, juce::dontSendNotification);
-    label.setJustificationType (juce::Justification::centred);
-    label.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (label);
 }
 
@@ -84,7 +79,9 @@ VocalMbCompAudioProcessorEditor::attach (const juce::String& id, juce::Slider& s
 
 void VocalMbCompAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    factory_ui::paintBackground (g, getLocalBounds());
+    for (auto* m : { &meterLow, &meterMid, &meterHigh })
+        factory_ui::dropShadowFor (g, m->getBounds());
 }
 
 void VocalMbCompAudioProcessorEditor::resized()
