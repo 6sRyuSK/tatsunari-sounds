@@ -36,6 +36,15 @@ DynamicEqAudioProcessor::createParameterLayout()
         layout.add (std::make_unique<juce::AudioParameterBool> (
             juce::ParameterID { pid (b, "byp"), 1 }, "Band " + juce::String (b + 1) + " Bypass", false));
 
+        // Solo / listen: audition only this band's range (exclusive, enforced in UI).
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { pid (b, "lsn"), 1 }, "Band " + juce::String (b + 1) + " Listen", false));
+
+        // Channel target.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { pid (b, "chan"), 1 }, "Band " + juce::String (b + 1) + " Channel",
+            juce::StringArray { "Stereo", "Left", "Right", "Mid", "Side" }, 0));
+
         layout.add (std::make_unique<juce::AudioParameterChoice> (
             juce::ParameterID { pid (b, "type"), 1 }, "Band " + juce::String (b + 1) + " Type",
             juce::StringArray { "Bell", "Low Shelf", "High Shelf", "High Pass", "Low Pass" },
@@ -109,6 +118,8 @@ DynamicEqAudioProcessor::DynamicEqAudioProcessor()
     {
         params[(size_t) b].on   = apvts.getRawParameterValue (pid (b, "on"));
         params[(size_t) b].byp  = apvts.getRawParameterValue (pid (b, "byp"));
+        params[(size_t) b].lsn  = apvts.getRawParameterValue (pid (b, "lsn"));
+        params[(size_t) b].chan = apvts.getRawParameterValue (pid (b, "chan"));
         params[(size_t) b].type = apvts.getRawParameterValue (pid (b, "type"));
         params[(size_t) b].freq = apvts.getRawParameterValue (pid (b, "freq"));
         params[(size_t) b].gain = apvts.getRawParameterValue (pid (b, "gain"));
@@ -169,9 +180,11 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         const bool present  = bp.on->load() > 0.5f;
         const bool bypassed = bp.byp->load() > 0.5f;
         band.setEnabled (present && ! bypassed);
-        if (! present || bypassed)
-            continue; // not processed: skip coefficient work (processStereo no-ops)
+        if (! present)
+            continue; // free slot: skip coefficient work entirely
+        // Present (even if bypassed) bands are configured so Listen/solo works.
         band.setType (static_cast<factory_core::BandType> ((int) bp.type->load()));
+        band.setChannelMode (static_cast<factory_core::ChannelMode> ((int) bp.chan->load()));
         band.setFrequency (bp.freq->load());
         band.setGainDb (bp.gain->load());
         band.setQ (bp.q->load());
@@ -187,6 +200,12 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     auto* L = buffer.getWritePointer (0);
     auto* R = numCh > 1 ? buffer.getWritePointer (1) : nullptr;
 
+    // Exclusive Listen/solo: audition the lowest present band that has it on.
+    int soloBand = -1;
+    for (int b = 0; b < kNumBands; ++b)
+        if (params[(size_t) b].on->load() > 0.5f && params[(size_t) b].lsn->load() > 0.5f)
+        { soloBand = b; break; }
+
     int w = ringWrite.load (std::memory_order_relaxed);
     for (int i = 0; i < numSamples; ++i)
     {
@@ -195,8 +214,11 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
         analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
 
-        for (auto& band : bands)
-            band.processStereo (l, r);
+        if (soloBand >= 0)
+            bands[(size_t) soloBand].processListen (l, r); // band-pass of the dry input
+        else
+            for (auto& band : bands)
+                band.processStereo (l, r);
 
         analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
         ++w;

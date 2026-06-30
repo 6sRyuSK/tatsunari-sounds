@@ -228,6 +228,10 @@ private:
     {
         return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "byp"))->load() > 0.5f;
     }
+    bool bandListening (int band) const
+    {
+        return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "lsn"))->load() > 0.5f;
+    }
     // Effective display gain: active dynamic bands follow the live (post-dynamics)
     // gain so the curve/node breathe; static or bypassed bands use the param.
     float bandGainDb (int band) const
@@ -500,6 +504,12 @@ private:
             {
                 g.setColour (juce::Colours::white.withAlpha (0.85f));
                 g.drawEllipse (juce::Rectangle<float> (rad * 2.0f + 7.0f, rad * 2.0f + 7.0f).withCentre (p), 1.2f);
+            }
+            // Soloed (Listen) band: a teal ring so it stands out on the graph.
+            if (bandListening (b))
+            {
+                g.setColour (juce::Colour (0xff45b8acu));
+                g.drawEllipse (juce::Rectangle<float> (rad * 2.0f + 10.0f, rad * 2.0f + 10.0f).withCentre (p), 2.0f);
             }
 
             g.setColour (juce::Colours::white);
