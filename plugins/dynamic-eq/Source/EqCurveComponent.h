@@ -119,6 +119,7 @@ public:
         const float frac = (x - plot.getX()) / juce::jmax (1.0f, plot.getWidth());
         const int type = typeForFraction (frac);
 
+        setParam (slot, "byp", 0.0f); // a re-used slot may have been left bypassed
         setParam (slot, "type", (float) type);
         setParam (slot, "freq", xToFreq (x));
         setParam (slot, "q", 0.707f);
@@ -194,11 +195,15 @@ private:
     {
         return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "dyn"))->load() > 0.5f;
     }
-    // Effective display gain: dynamic bands follow the live (post-dynamics) gain
-    // so the curve and node breathe with the signal; static bands use the param.
+    bool bandBypassed (int band) const
+    {
+        return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "byp"))->load() > 0.5f;
+    }
+    // Effective display gain: active dynamic bands follow the live (post-dynamics)
+    // gain so the curve/node breathe; static or bypassed bands use the param.
     float bandGainDb (int band) const
     {
-        if (bandDynamic (band)) return processor.getLiveGainDb (band);
+        if (bandDynamic (band) && ! bandBypassed (band)) return processor.getLiveGainDb (band);
         return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "gain"))->load();
     }
 
@@ -312,9 +317,11 @@ private:
                    DynamicEqAudioProcessor::kNumBands> coeffs;
         std::array<int, DynamicEqAudioProcessor::kNumBands> stages {};
         std::array<bool, DynamicEqAudioProcessor::kNumBands> on {};
+        std::array<bool, DynamicEqAudioProcessor::kNumBands> byp {};
         for (int b = 0; b < DynamicEqAudioProcessor::kNumBands; ++b)
         {
             on[(size_t) b] = bandOn (b);
+            byp[(size_t) b] = bandBypassed (b);
             if (! on[(size_t) b]) continue;
             const auto type = static_cast<factory_core::BandType> (bandTypeInt (b));
             const double f = apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (b, "freq"))->load();
@@ -354,7 +361,7 @@ private:
                 std::complex<double> hb (1.0, 0.0);
                 for (int s = 0; s < stages[(size_t) b]; ++s)
                     hb *= evalH (coeffs[(size_t) b][(size_t) s], z1, z2);
-                h *= hb;
+                if (! byp[(size_t) b]) h *= hb; // bypassed bands are not in the combined response
 
                 const float dbB = (float) juce::Decibels::gainToDecibels (std::abs (hb), -120.0);
                 const float yB = gainToY (juce::jlimit (-kMaxGain, kMaxGain, dbB));
@@ -373,11 +380,24 @@ private:
         for (int b = 0; b < DynamicEqAudioProcessor::kNumBands; ++b)
         {
             if (! started[(size_t) b]) continue;
+            const bool active = (b == selectedBand || b == hoveredBand);
+
+            if (byp[(size_t) b])
+            {
+                // Bypassed: no fill, a grey dashed outline so the band reads as
+                // present-but-inactive.
+                juce::Path dashed;
+                const float dl[] = { 4.0f, 3.0f };
+                juce::PathStrokeType (active ? 1.4f : 1.0f).createDashedStroke (dashed, bandFill[(size_t) b], dl, 2);
+                g.setColour (FactoryLookAndFeel::textDim().withAlpha (active ? 0.85f : 0.55f));
+                g.fillPath (dashed);
+                continue;
+            }
+
             auto fp = bandFill[(size_t) b];
             fp.lineTo (plot.getRight(), y0);
             fp.closeSubPath();
             const auto col = FactoryLookAndFeel::bandColour (b);
-            const bool active = (b == selectedBand || b == hoveredBand);
             g.setColour (col.withAlpha (active ? 0.26f : 0.14f));
             g.fillPath (fp);
             g.setColour (col.withAlpha (active ? 0.9f : 0.55f));
@@ -408,10 +428,11 @@ private:
             const bool sel = (b == selectedBand);
             const bool hov = (b == hoveredBand);
             const float rad = sel ? 9.0f : (hov ? 8.0f : 7.0f);
-            const auto col = on ? FactoryLookAndFeel::bandColour (b) : FactoryLookAndFeel::textDim();
+            const bool byp = bandBypassed (b);
+            const auto col = byp ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (b);
 
-            // Glow halo.
-            if (on && (sel || hov))
+            // Glow halo (active, non-bypassed).
+            if (! byp && (sel || hov))
             {
                 g.setColour (col.withAlpha (0.30f));
                 g.fillEllipse (juce::Rectangle<float> (rad * 4.0f, rad * 4.0f).withCentre (p));
@@ -419,15 +440,24 @@ private:
             // White rim for a soft sticker look.
             g.setColour (juce::Colours::white);
             g.fillEllipse (juce::Rectangle<float> (rad * 2.0f + 4.0f, rad * 2.0f + 4.0f).withCentre (p));
-            g.setColour (col.withAlpha (on ? 1.0f : 0.6f));
+            g.setColour (col.withAlpha (byp ? 0.55f : 1.0f));
             g.fillEllipse (juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre (p));
             if (sel)
             {
                 g.setColour (juce::Colours::white.withAlpha (0.9f));
                 g.drawEllipse (juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre (p), 2.0f);
             }
-            // Dynamic bands get a tiny ring badge.
-            if (bandDynamic (b))
+            // Bypassed bands get a grey dashed ring; dynamic bands a thin badge.
+            if (byp)
+            {
+                juce::Path ring, dring;
+                ring.addEllipse (juce::Rectangle<float> (rad * 2.0f + 6.0f, rad * 2.0f + 6.0f).withCentre (p));
+                const float dl[] = { 3.0f, 2.5f };
+                juce::PathStrokeType (1.3f).createDashedStroke (dring, ring, dl, 2);
+                g.setColour (FactoryLookAndFeel::textDim());
+                g.fillPath (dring);
+            }
+            else if (bandDynamic (b))
             {
                 g.setColour (juce::Colours::white.withAlpha (0.85f));
                 g.drawEllipse (juce::Rectangle<float> (rad * 2.0f + 7.0f, rad * 2.0f + 7.0f).withCentre (p), 1.2f);

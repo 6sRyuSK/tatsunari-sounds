@@ -69,6 +69,7 @@ private:
     struct BandParams
     {
         std::atomic<float>* on = nullptr;
+        std::atomic<float>* byp = nullptr;
         std::atomic<float>* type = nullptr;
         std::atomic<float>* freq = nullptr;
         std::atomic<float>* gain = nullptr;

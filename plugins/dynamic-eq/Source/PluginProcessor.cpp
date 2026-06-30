@@ -32,6 +32,10 @@ DynamicEqAudioProcessor::createParameterLayout()
         layout.add (std::make_unique<juce::AudioParameterBool> (
             juce::ParameterID { pid (b, "on"), 1 }, "Band " + juce::String (b + 1) + " On", false));
 
+        // Present-but-bypassed: the band stays on the graph but is not processed.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { pid (b, "byp"), 1 }, "Band " + juce::String (b + 1) + " Bypass", false));
+
         layout.add (std::make_unique<juce::AudioParameterChoice> (
             juce::ParameterID { pid (b, "type"), 1 }, "Band " + juce::String (b + 1) + " Type",
             juce::StringArray { "Bell", "Low Shelf", "High Shelf", "High Pass", "Low Pass" },
@@ -104,6 +108,7 @@ DynamicEqAudioProcessor::DynamicEqAudioProcessor()
     for (int b = 0; b < kNumBands; ++b)
     {
         params[(size_t) b].on   = apvts.getRawParameterValue (pid (b, "on"));
+        params[(size_t) b].byp  = apvts.getRawParameterValue (pid (b, "byp"));
         params[(size_t) b].type = apvts.getRawParameterValue (pid (b, "type"));
         params[(size_t) b].freq = apvts.getRawParameterValue (pid (b, "freq"));
         params[(size_t) b].gain = apvts.getRawParameterValue (pid (b, "gain"));
@@ -160,10 +165,11 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     {
         auto& bp = params[(size_t) b];
         auto& band = bands[(size_t) b];
-        const bool bandOn = bp.on->load() > 0.5f;
-        band.setEnabled (bandOn);
-        if (! bandOn)
-            continue; // inactive band: skip coefficient work (processStereo no-ops)
+        const bool present  = bp.on->load() > 0.5f;
+        const bool bypassed = bp.byp->load() > 0.5f;
+        band.setEnabled (present && ! bypassed);
+        if (! present || bypassed)
+            continue; // not processed: skip coefficient work (processStereo no-ops)
         band.setType (static_cast<factory_core::BandType> ((int) bp.type->load()));
         band.setFrequency (bp.freq->load());
         band.setGainDb (bp.gain->load());

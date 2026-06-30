@@ -23,8 +23,8 @@ public:
         title.setColour (juce::Label::textColourId, FactoryLookAndFeel::accent());
         addAndMakeVisible (title);
 
-        enableButton.setButtonText ("On");
-        addAndMakeVisible (enableButton);
+        bypassButton.setButtonText ("Bypass");
+        addAndMakeVisible (bypassButton);
 
         dynButton.setButtonText ("Dynamics");
         addAndMakeVisible (dynButton);
@@ -62,7 +62,7 @@ public:
         // band's value, would notify the still-alive old attachment, which
         // writes that value back into the previously-selected band's parameter
         // (i.e. selecting another node would overwrite the band you just left).
-        enableAtt.reset(); typeAtt.reset(); slopeAtt.reset(); dynAtt.reset();
+        bypassAtt.reset(); typeAtt.reset(); slopeAtt.reset(); dynAtt.reset();
         freqAtt.reset(); gainAtt.reset(); qAtt.reset();
         thrAtt.reset(); rngAtt.reset(); atkAtt.reset(); relAtt.reset(); kneeAtt.reset();
 
@@ -71,7 +71,7 @@ public:
         using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
         auto id = [b] (const char* s) { return DynamicEqAudioProcessor::pid (b, s); };
 
-        enableAtt = std::make_unique<BA> (apvts, id ("on"),    enableButton);
+        bypassAtt = std::make_unique<BA> (apvts, id ("byp"),   bypassButton);
         typeAtt   = std::make_unique<CA> (apvts, id ("type"),  typeBox);
         slopeAtt  = std::make_unique<CA> (apvts, id ("slope"), slopeBox);
         dynAtt    = std::make_unique<BA> (apvts, id ("dyn"),   dynButton);
@@ -118,7 +118,7 @@ public:
 
         // ---- left: EQ ----
         auto lrow1 = left.removeFromTop (24);
-        enableButton.setBounds (lrow1.removeFromRight (54));
+        bypassButton.setBounds (lrow1.removeFromRight (88));
         title.setBounds (lrow1);
         left.removeFromTop (6);
         auto lrow2 = left.removeFromTop (24);
@@ -186,12 +186,12 @@ private:
     int dividerX = -1;
 
     juce::Label title;
-    juce::ToggleButton enableButton, dynButton;
+    juce::ToggleButton bypassButton, dynButton;
     juce::ComboBox typeBox, slopeBox;
     juce::Slider freqSlider, gainSlider, qSlider, thrSlider, rngSlider, atkSlider, relSlider, kneeSlider;
     juce::Label  freqLabel, gainLabel, qLabel, thrLabel, rngLabel, atkLabel, relLabel, kneeLabel;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>   enableAtt, dynAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>   bypassAtt, dynAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> typeAtt, slopeAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   freqAtt, gainAtt, qAtt,
                                                                             thrAtt, rngAtt, atkAtt, relAtt, kneeAtt;
