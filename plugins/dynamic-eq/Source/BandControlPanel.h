@@ -26,6 +26,19 @@ public:
         bypassButton.setButtonText ("Bypass");
         addAndMakeVisible (bypassButton);
 
+        // Listen / solo: exclusive across bands (turning one on clears the rest).
+        listenButton.setButtonText ("Listen");
+        listenButton.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xff45b8acu)); // teal
+        listenButton.onClick = [this]
+        {
+            if (! listenButton.getToggleState()) return;
+            for (int b = 0; b < DynamicEqAudioProcessor::kNumBands; ++b)
+                if (b != band)
+                    if (auto* p = apvts.getParameter (DynamicEqAudioProcessor::pid (b, "lsn")))
+                        p->setValueNotifyingHost (0.0f);
+        };
+        addAndMakeVisible (listenButton);
+
         dynButton.setButtonText ("Dynamics");
         addAndMakeVisible (dynButton);
 
@@ -38,6 +51,10 @@ public:
                                 "60 dB/oct", "72 dB/oct", "84 dB/oct", "96 dB/oct" }, 1);
         slopeBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
         addAndMakeVisible (slopeBox);
+
+        chanBox.addItemList ({ "Stereo", "Left", "Right", "Mid", "Side" }, 1);
+        chanBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
+        addAndMakeVisible (chanBox);
 
         configureKnob (freqSlider, freqLabel, "Freq",   " Hz");
         configureKnob (gainSlider, gainLabel, "Gain",   " dB");
@@ -62,7 +79,8 @@ public:
         // band's value, would notify the still-alive old attachment, which
         // writes that value back into the previously-selected band's parameter
         // (i.e. selecting another node would overwrite the band you just left).
-        bypassAtt.reset(); typeAtt.reset(); slopeAtt.reset(); dynAtt.reset();
+        bypassAtt.reset(); listenAtt.reset(); chanAtt.reset();
+        typeAtt.reset(); slopeAtt.reset(); dynAtt.reset();
         freqAtt.reset(); gainAtt.reset(); qAtt.reset();
         thrAtt.reset(); rngAtt.reset(); atkAtt.reset(); relAtt.reset(); kneeAtt.reset();
 
@@ -72,6 +90,8 @@ public:
         auto id = [b] (const char* s) { return DynamicEqAudioProcessor::pid (b, s); };
 
         bypassAtt = std::make_unique<BA> (apvts, id ("byp"),   bypassButton);
+        listenAtt = std::make_unique<BA> (apvts, id ("lsn"),   listenButton);
+        chanAtt   = std::make_unique<CA> (apvts, id ("chan"),  chanBox);
         typeAtt   = std::make_unique<CA> (apvts, id ("type"),  typeBox);
         slopeAtt  = std::make_unique<CA> (apvts, id ("slope"), slopeBox);
         dynAtt    = std::make_unique<BA> (apvts, id ("dyn"),   dynButton);
@@ -118,13 +138,18 @@ public:
 
         // ---- left: EQ ----
         auto lrow1 = left.removeFromTop (24);
-        bypassButton.setBounds (lrow1.removeFromRight (88));
+        bypassButton.setBounds (lrow1.removeFromRight (84));
+        lrow1.removeFromRight (4);
+        listenButton.setBounds (lrow1.removeFromRight (76));
         title.setBounds (lrow1);
         left.removeFromTop (6);
         auto lrow2 = left.removeFromTop (24);
-        typeBox.setBounds (lrow2.removeFromLeft (lrow2.getWidth() / 2 - 4));
-        lrow2.removeFromLeft (8);
-        slopeBox.setBounds (lrow2);
+        const int cw = (lrow2.getWidth() - 12) / 3; // type | slope | chan
+        typeBox.setBounds (lrow2.removeFromLeft (cw));
+        lrow2.removeFromLeft (6);
+        slopeBox.setBounds (lrow2.removeFromLeft (cw));
+        lrow2.removeFromLeft (6);
+        chanBox.setBounds (lrow2);
         left.removeFromTop (8);
         layoutKnobRow (left, { { &freqSlider, &freqLabel }, { &gainSlider, &gainLabel }, { &qSlider, &qLabel } });
 
@@ -186,13 +211,13 @@ private:
     int dividerX = -1;
 
     juce::Label title;
-    juce::ToggleButton bypassButton, dynButton;
-    juce::ComboBox typeBox, slopeBox;
+    juce::ToggleButton bypassButton, listenButton, dynButton;
+    juce::ComboBox typeBox, slopeBox, chanBox;
     juce::Slider freqSlider, gainSlider, qSlider, thrSlider, rngSlider, atkSlider, relSlider, kneeSlider;
     juce::Label  freqLabel, gainLabel, qLabel, thrLabel, rngLabel, atkLabel, relLabel, kneeLabel;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>   bypassAtt, dynAtt;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> typeAtt, slopeAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>   bypassAtt, listenAtt, dynAtt;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> typeAtt, slopeAtt, chanAtt;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   freqAtt, gainAtt, qAtt,
                                                                             thrAtt, rngAtt, atkAtt, relAtt, kneeAtt;
 

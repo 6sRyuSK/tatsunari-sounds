@@ -71,6 +71,8 @@ private:
     {
         std::atomic<float>* on = nullptr;
         std::atomic<float>* byp = nullptr;
+        std::atomic<float>* lsn = nullptr;
+        std::atomic<float>* chan = nullptr;
         std::atomic<float>* type = nullptr;
         std::atomic<float>* freq = nullptr;
         std::atomic<float>* gain = nullptr;

@@ -3,7 +3,10 @@
 // factory_core/DynamicEqBand.h — one band of the parametric EQ: a biquad filter
 // (any BandType) whose gain can optionally be modulated by the signal level in
 // the band (per-band dynamic EQ). Detection is a band-pass at the band centre
-// plus a peak envelope follower, stereo-linked. Header-only, headless-testable.
+// plus a peak envelope follower. Header-only, headless-testable.
+//
+// Channel target: a band can act on the full Stereo signal (both channels), a
+// single side (Left / Right), or the Mid / Side of an M/S decomposition.
 //
 // High/Low-pass bands support a selectable slope (12..96 dB/oct) implemented as
 // a cascade of up to kMaxStages Butterworth sections. Gain-bearing bands
@@ -22,6 +25,10 @@
 
 namespace factory_core
 {
+    // Which channel(s) a band processes. Stereo filters L and R; Left/Right
+    // filter only that side; Mid/Side filter the corresponding M/S component.
+    enum class ChannelMode { Stereo = 0, Left, Right, Mid, Side };
+
     class DynamicEqBand
     {
     public:
@@ -33,6 +40,7 @@ namespace factory_core
         void setFrequency  (double f)      noexcept { freqHz = f; }
         void setGainDb     (double g)      noexcept { staticGainDb = g; }
         void setQ          (double q)      noexcept { Q = q; }
+        void setChannelMode (ChannelMode m) noexcept { channelMode = m; }
         // Slope for HP/LP only: 12 * numStages dB/oct, numStages in [1, kMaxStages].
         void setSlopeStages (int n)        noexcept { slopeStages = std::clamp (n, 1, kMaxStages); }
         void setKnee       (double kDb)    noexcept { kneeDb = std::max (0.0, kDb); }
@@ -56,7 +64,8 @@ namespace factory_core
         {
             for (auto& f : filterL) f.reset();
             for (auto& f : filterR) f.reset();
-            detL.reset(); detR.reset();
+            detL.reset();    detR.reset();
+            listenL.reset(); listenR.reset();
             env = 0.0;
             decimCounter = 0;
             effectiveGainDb = staticGainDb;
@@ -99,6 +108,11 @@ namespace factory_core
             detL.setCoeffs (detectorCoeffs);
             detR.setCoeffs (detectorCoeffs);
 
+            // Listen / solo band-pass: at the band's freq and (Q-reflecting) Q.
+            const auto bp = designBandpass (freqHz, std::max (0.25, Q), fs);
+            listenL.setCoeffs (bp);
+            listenR.setCoeffs (bp);
+
             attackCoeff  = coeffForMs (attackMs);
             releaseCoeff = coeffForMs (releaseMs);
         }
@@ -135,11 +149,33 @@ namespace factory_core
             if (! enabled)
                 return;
 
+            // Route the channel mode onto the two filter chains:
+            //   a -> filterL chain (used by Left / Mid / Stereo-left)
+            //   b -> filterR chain (used by Right / Side / Stereo-right)
+            // A null pointer means that chain is idle for this mode.
+            double mid = 0.0, side = 0.0;
+            double* a = nullptr;
+            double* b = nullptr;
+            switch (channelMode)
+            {
+                case ChannelMode::Stereo: a = &l; b = &r; break;
+                case ChannelMode::Left:   a = &l;         break;
+                case ChannelMode::Right:            b = &r; break;
+                case ChannelMode::Mid:  mid = 0.5 * (l + r); side = 0.5 * (l - r); a = &mid; break;
+                case ChannelMode::Side: mid = 0.5 * (l + r); side = 0.5 * (l - r); b = &side; break;
+            }
+
             if (dynamicsOn && isGainBearing (type))
             {
-                const double dl = detL.processSample (l);
-                const double dr = detR.processSample (r);
-                const double d  = std::max (std::abs (dl), std::abs (dr));
+                double d;
+                if (a != nullptr && b != nullptr)
+                {
+                    const double dl = detL.processSample (*a);
+                    const double dr = detR.processSample (*b);
+                    d = std::max (std::abs (dl), std::abs (dr));
+                }
+                else if (a != nullptr) d = std::abs (detL.processSample (*a));
+                else                   d = std::abs (detR.processSample (*b));
 
                 const double c = (d > env) ? attackCoeff : releaseCoeff;
                 env = c * env + (1.0 - c) * d;
@@ -154,16 +190,56 @@ namespace factory_core
                     filterR[0].setCoeffs (cc);
                 }
 
-                l = filterL[0].processSample (l);
-                r = filterR[0].processSample (r);
-                return;
+                if (a != nullptr) *a = filterL[0].processSample (*a);
+                if (b != nullptr) *b = filterR[0].processSample (*b);
+            }
+            else
+            {
+                // Static path: gain-bearing static section, or the HP/LP cascade.
+                for (int k = 0; k < numStages; ++k)
+                {
+                    if (a != nullptr) *a = filterL[(size_t) k].processSample (*a);
+                    if (b != nullptr) *b = filterR[(size_t) k].processSample (*b);
+                }
             }
 
-            // Static path: gain-bearing static section, or the HP/LP cascade.
-            for (int k = 0; k < numStages; ++k)
+            if (channelMode == ChannelMode::Mid || channelMode == ChannelMode::Side)
             {
-                l = filterL[(size_t) k].processSample (l);
-                r = filterR[(size_t) k].processSample (r);
+                l = mid + side;
+                r = mid - side;
+            }
+        }
+
+        // Solo audition: replace (l, r) with a band-pass of the *targeted*
+        // channel of the (dry) input, so you hear only what this band acts on.
+        // The non-targeted channel is zeroed, so Left/Right/Side stay panned and
+        // a Side solo on a mono source is (correctly) silent.
+        void processListen (double& l, double& r) noexcept
+        {
+            switch (channelMode)
+            {
+                case ChannelMode::Stereo:
+                    l = listenL.processSample (l);
+                    r = listenR.processSample (r);
+                    break;
+                case ChannelMode::Left:
+                    l = listenL.processSample (l); r = 0.0;
+                    break;
+                case ChannelMode::Right:
+                    r = listenR.processSample (r); l = 0.0;
+                    break;
+                case ChannelMode::Mid:
+                {
+                    const double m = listenL.processSample (0.5 * (l + r));
+                    l = m; r = m;
+                    break;
+                }
+                case ChannelMode::Side:
+                {
+                    const double s = listenR.processSample (0.5 * (l - r));
+                    l = s; r = -s;
+                    break;
+                }
             }
         }
 
@@ -197,8 +273,9 @@ namespace factory_core
         static constexpr int kDecimation = 32; // control-rate coeff updates
 
         // config
-        bool     enabled     { true };
-        BandType type        { BandType::Bell };
+        bool        enabled     { true };
+        BandType    type        { BandType::Bell };
+        ChannelMode channelMode { ChannelMode::Stereo };
         double   freqHz      { 1000.0 };
         double   staticGainDb{ 0.0 };
         double   Q           { 0.707 };
@@ -217,6 +294,7 @@ namespace factory_core
         std::array<Biquad, kMaxStages> filterL, filterR;
         int    numStages { 1 };
         Biquad detL, detR;
+        Biquad listenL, listenR; // solo band-pass
         double env { 0.0 };
         double attackCoeff { 0.0 }, releaseCoeff { 0.0 };
         int    decimCounter { 0 };

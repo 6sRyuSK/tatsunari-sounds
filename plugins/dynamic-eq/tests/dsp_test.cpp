@@ -72,6 +72,15 @@ namespace
         }
     }
 
+    // Independent RBJ band-pass (constant 0 dB peak gain) — the listen/solo design.
+    OC oracleBandpass (double f0, double Q, double Fs)
+    {
+        const double w0 = 2.0 * kPi * f0 / Fs;
+        const double c = std::cos (w0), s = std::sin (w0);
+        const double al = s / (2.0 * Q);
+        return { al, 0.0, -al, 1.0 + al, -2.0 * c, 1.0 - al };
+    }
+
     cd oracleH (const OC& o, double w)
     {
         const cd z1 = std::exp (cd (0.0, -w));
@@ -403,6 +412,115 @@ namespace
 
         std::printf ("  ok\n");
     }
+
+    // Per-band channel target (Stereo/L/R/M/S). A Bell band is exercised through
+    // processStereo with an impulse pair; the affected channel must match the
+    // independent z-domain oracle, the untouched channel must pass through, and a
+    // Side band must not touch a mono (L==R) signal.
+    void channelModeTest (double Fs)
+    {
+        std::printf ("Channel modes (L/R/M/S) @ Fs=%.0f\n", Fs);
+        using factory_core::ChannelMode;
+        const int N = 1 << 16;
+        const double f0 = 1000.0, gainDb = 6.0, Q = 2.0;
+        const OC oc = oracleDesign (BandType::Bell, f0, gainDb, Q, Fs);
+
+        auto run = [&] (ChannelMode m, double l0, double r0,
+                        std::vector<double>& oL, std::vector<double>& oR)
+        {
+            factory_core::DynamicEqBand band;
+            band.setType (BandType::Bell);
+            band.setFrequency (f0); band.setGainDb (gainDb); band.setQ (Q);
+            band.setChannelMode (m);
+            band.prepare (Fs);
+            oL.assign ((size_t) N, 0.0); oR.assign ((size_t) N, 0.0);
+            for (int n = 0; n < N; ++n)
+            {
+                double l = (n == 0) ? l0 : 0.0, r = (n == 0) ? r0 : 0.0;
+                band.processStereo (l, r);
+                oL[(size_t) n] = l; oR[(size_t) n] = r;
+            }
+        };
+        auto matchesOracle = [&] (const std::vector<double>& ir, double sign, const char* tag)
+        {
+            double maxAbs = 0.0;
+            for (int k = 0; k < 48; ++k)
+            {
+                const double f = 20.0 * std::pow ((0.49 * Fs) / 20.0, (double) k / 47.0);
+                const double w = 2.0 * kPi * f / Fs;
+                maxAbs = std::max (maxAbs, std::abs (dftAt (ir, w) - sign * oracleH (oc, w)));
+            }
+            if (maxAbs > 1.0e-4) fail (std::string (tag) + " vs oracle " + std::to_string (maxAbs));
+        };
+        auto isPassThrough = [&] (const std::vector<double>& ir, const char* tag)
+        {
+            double e = std::abs (ir[0] - 1.0);
+            for (int n = 1; n < N; ++n) e = std::max (e, std::abs (ir[(size_t) n]));
+            if (e > 1.0e-9) fail (std::string (tag) + " not pass-through " + std::to_string (e));
+        };
+
+        std::vector<double> L, R;
+        run (ChannelMode::Mid,  1.0,  1.0, L, R); matchesOracle (L, 1.0, "Mid mono L");  matchesOracle (R, 1.0, "Mid mono R");
+        run (ChannelMode::Side, 1.0,  1.0, L, R); isPassThrough (L, "Side mono L");      isPassThrough (R, "Side mono R");
+        run (ChannelMode::Side, 1.0, -1.0, L, R); matchesOracle (L, 1.0, "Side anti L"); matchesOracle (R, -1.0, "Side anti R");
+        run (ChannelMode::Left, 1.0,  1.0, L, R); matchesOracle (L, 1.0, "Left L");      isPassThrough (R, "Left R");
+        run (ChannelMode::Right,1.0,  1.0, L, R); isPassThrough (L, "Right L");          matchesOracle (R, 1.0, "Right R");
+        std::printf ("  ok\n");
+    }
+
+    // Listen / solo: processListen band-passes the dry input at the band's freq+Q,
+    // isolating the targeted channel (Side-on-mono is silent).
+    void listenTest (double Fs)
+    {
+        std::printf ("Listen / solo band-pass @ Fs=%.0f\n", Fs);
+        using factory_core::ChannelMode;
+        const int N = 1 << 16;
+        const double f0 = 1000.0, Q = 2.0;
+        const OC bp = oracleBandpass (f0, std::max (0.25, Q), Fs);
+
+        auto run = [&] (ChannelMode m, double l0, double r0,
+                        std::vector<double>& oL, std::vector<double>& oR)
+        {
+            factory_core::DynamicEqBand band;
+            band.setType (BandType::Bell);
+            band.setFrequency (f0); band.setGainDb (6.0); band.setQ (Q);
+            band.setChannelMode (m);
+            band.prepare (Fs);
+            oL.assign ((size_t) N, 0.0); oR.assign ((size_t) N, 0.0);
+            for (int n = 0; n < N; ++n)
+            {
+                double l = (n == 0) ? l0 : 0.0, r = (n == 0) ? r0 : 0.0;
+                band.processListen (l, r);
+                oL[(size_t) n] = l; oR[(size_t) n] = r;
+            }
+        };
+        auto matchesBp = [&] (const std::vector<double>& ir, double sign, const char* tag)
+        {
+            double maxAbs = 0.0;
+            for (int k = 0; k < 48; ++k)
+            {
+                const double f = 20.0 * std::pow ((0.49 * Fs) / 20.0, (double) k / 47.0);
+                const double w = 2.0 * kPi * f / Fs;
+                maxAbs = std::max (maxAbs, std::abs (dftAt (ir, w) - sign * oracleH (bp, w)));
+            }
+            if (maxAbs > 1.0e-4) fail (std::string (tag) + " vs bandpass " + std::to_string (maxAbs));
+        };
+        auto isSilent = [&] (const std::vector<double>& ir, const char* tag)
+        {
+            double e = 0.0; for (double v : ir) e = std::max (e, std::abs (v));
+            if (e > 1.0e-9) fail (std::string (tag) + " not silent " + std::to_string (e));
+        };
+
+        // Band-pass peaks at exactly 0 dB at f0 (formula-independent).
+        if (std::abs (magDb (oracleH (bp, 2.0 * kPi * f0 / Fs))) > 1.0e-6) fail ("bandpass peak != 0 dB");
+
+        std::vector<double> L, R;
+        run (ChannelMode::Stereo, 1.0, 1.0, L, R); matchesBp (L, 1.0, "Listen stereo L"); matchesBp (R, 1.0, "Listen stereo R");
+        run (ChannelMode::Mid,    1.0, 1.0, L, R); matchesBp (L, 1.0, "Listen mid L");    matchesBp (R, 1.0, "Listen mid R");
+        run (ChannelMode::Side,   1.0, 1.0, L, R); isSilent (L, "Listen side mono L");    isSilent (R, "Listen side mono R");
+        run (ChannelMode::Left,   1.0, 1.0, L, R); matchesBp (L, 1.0, "Listen left L");   isSilent (R, "Listen left R");
+        std::printf ("  ok\n");
+    }
 }
 
 int main (int argc, char** argv)
@@ -418,6 +536,8 @@ int main (int argc, char** argv)
         perTypeTest (Fs);
         cascadeTest (Fs);
         slopeCascadeTest (Fs);
+        channelModeTest (Fs);
+        listenTest (Fs);
         dynamicBandTest (Fs);
     }
 
