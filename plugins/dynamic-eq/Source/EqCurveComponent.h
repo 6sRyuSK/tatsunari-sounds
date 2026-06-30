@@ -4,7 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "PluginProcessor.h"
-#include "FactoryLookAndFeel.h"
+#include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_core/Biquad.h"
 #include "factory_core/Filters.h"
 

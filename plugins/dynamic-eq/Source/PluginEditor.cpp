@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 DynamicEqAudioProcessorEditor::DynamicEqAudioProcessorEditor (DynamicEqAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p),
@@ -37,21 +38,9 @@ DynamicEqAudioProcessorEditor::~DynamicEqAudioProcessorEditor()
 
 void DynamicEqAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    // Warm white background with a soft vertical gradient.
-    juce::ColourGradient bg (FactoryLookAndFeel::background(), 0.0f, 0.0f,
-                             FactoryLookAndFeel::backgroundLo(), 0.0f, (float) getHeight(), false);
-    g.setGradientFill (bg);
-    g.fillAll();
-
-    // Soft drop shadows behind the two cards.
-    auto dropShadow = [&g] (juce::Rectangle<int> b)
-    {
-        juce::DropShadow ds (FactoryLookAndFeel::shadow(), 16, { 0, 5 });
-        juce::Path path; path.addRoundedRectangle (b.toFloat(), 10.0f);
-        ds.drawForPath (g, path);
-    };
-    dropShadow (curve.getBounds());
-    dropShadow (panel.getBounds());
+    factory_ui::paintBackground (g, getLocalBounds());
+    factory_ui::dropShadowFor (g, curve.getBounds());
+    factory_ui::dropShadowFor (g, panel.getBounds());
 }
 
 void DynamicEqAudioProcessorEditor::resized()

@@ -36,6 +36,7 @@ target_compile_definitions(DynamicEq PUBLIC
 target_link_libraries(DynamicEq
   PRIVATE
     factory_core
+    factory_ui
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC

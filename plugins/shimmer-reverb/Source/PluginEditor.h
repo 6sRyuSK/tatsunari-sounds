@@ -3,7 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "PluginProcessor.h"
-#include "FactoryLookAndFeel.h"
+#include "factory_ui/FactoryLookAndFeel.h"
 #include "ReverbVisualizer.h"
 
 #include <memory>

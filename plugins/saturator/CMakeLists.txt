@@ -37,6 +37,7 @@ target_compile_definitions(Saturator PUBLIC
 target_link_libraries(Saturator
   PRIVATE
     factory_core
+    factory_ui
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC

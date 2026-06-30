@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 SaturatorAudioProcessorEditor::SaturatorAudioProcessorEditor (SaturatorAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), curve (p)
@@ -36,20 +37,15 @@ SaturatorAudioProcessorEditor::~SaturatorAudioProcessorEditor()
 void SaturatorAudioProcessorEditor::configureKnob (juce::Slider& slider, juce::Label& label,
                                                    const juce::String& name, const juce::String& suffix)
 {
-    slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 20);
-    slider.setTextValueSuffix (suffix);
+    factory_ui::styleKnob (slider, label, name, suffix);
     addAndMakeVisible (slider);
-
-    label.setText (name, juce::dontSendNotification);
-    label.setJustificationType (juce::Justification::centred);
-    label.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (label);
 }
 
 void SaturatorAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    factory_ui::paintBackground (g, getLocalBounds());
+    factory_ui::dropShadowFor (g, curve.getBounds());
 }
 
 void SaturatorAudioProcessorEditor::resized()

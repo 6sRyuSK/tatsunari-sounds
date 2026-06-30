@@ -3,7 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "PluginProcessor.h"
-#include "FactoryLookAndFeel.h"
+#include "factory_ui/FactoryLookAndFeel.h"
 
 //
 // Live display of the saturator's transfer curve y = f(x). Polls the processor

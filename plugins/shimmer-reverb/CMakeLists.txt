@@ -36,6 +36,7 @@ target_compile_definitions(ShimmerReverb PUBLIC
 target_link_libraries(ShimmerReverb
   PRIVATE
     factory_core
+    factory_ui
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags

@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "factory_ui/FactoryChrome.h"
 
 GranularDelayAudioProcessorEditor::GranularDelayAudioProcessorEditor (GranularDelayAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), cloud (p, p.apvts)
@@ -58,7 +59,7 @@ void GranularDelayAudioProcessorEditor::addKnob (const char* id, const char* nam
     auto label = std::make_unique<juce::Label>();
     label->setText (name, juce::dontSendNotification);
     label->setJustificationType (juce::Justification::centred);
-    label->setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
+    label->setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
     addAndMakeVisible (*label);
 
     knobAtts.push_back (std::make_unique<SliderAttachment> (processor.apvts, id, *slider));
@@ -71,7 +72,8 @@ void GranularDelayAudioProcessorEditor::addKnob (const char* id, const char* nam
 
 void GranularDelayAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (FactoryLookAndFeel::background());
+    factory_ui::paintBackground (g, getLocalBounds());
+    factory_ui::dropShadowFor (g, cloud.getBounds());
 }
 
 void GranularDelayAudioProcessorEditor::resized()

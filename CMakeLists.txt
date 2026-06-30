@@ -30,6 +30,11 @@ add_library(factory_core INTERFACE)
 target_include_directories(factory_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/core/include)
 target_compile_features(factory_core INTERFACE cxx_std_20)
 
+# --- Shared UI design system (header-only; the factory's look & feel) ---
+add_library(factory_ui INTERFACE)
+target_include_directories(factory_ui INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ui/include)
+target_compile_features(factory_ui INTERFACE cxx_std_20)
+
 enable_testing()
 
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---

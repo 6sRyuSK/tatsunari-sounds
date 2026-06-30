@@ -3,7 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "PluginProcessor.h"
-#include "FactoryLookAndFeel.h"
+#include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/FactoryChrome.h"
 
 #include <initializer_list>
 #include <utility>
@@ -192,17 +193,8 @@ private:
 
     void configureKnob (juce::Slider& slider, juce::Label& label, const juce::String& name, const juce::String& suffix)
     {
-        // Set text colours on the component directly so they don't depend on
-        // which LookAndFeel was active when the text box was first created.
-        slider.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
-        slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 18);
-        slider.setTextValueSuffix (suffix);
+        factory_ui::styleKnob (slider, label, name, suffix);
         addAndMakeVisible (slider);
-        label.setText (name, juce::dontSendNotification);
-        label.setJustificationType (juce::Justification::centred);
-        label.setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
         addAndMakeVisible (label);
     }
 
