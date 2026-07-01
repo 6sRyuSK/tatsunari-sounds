@@ -77,6 +77,19 @@ namespace factory_core
             }
             return 0.0;
         }
+
+        // Rounded (Butterworth-magnitude) cut: ~unity in the pass-band, a smooth
+        // −3 dB knee AT the corner, asymptoting to slopeDbPerOct in the stop-band.
+        // Order N = slope/6; |H|^2 = 1/(1 + ratio^(2N)), ratio = fc/f (low cut) or
+        // f/fc (high cut). This gives the filter-like roundness a hard piecewise
+        // ramp lacks, while keeping the same far-field slope.
+        inline double cutDb (double f, double fc, double slopeDbPerOct, bool lowCut) noexcept
+        {
+            const double order = std::max (0.5, slopeDbPerOct / 6.0);
+            const double ratio = lowCut ? (fc / std::max (1.0e-6, f))
+                                        : (f  / std::max (1.0e-6, fc));
+            return -10.0 * std::log10 (1.0 + std::pow (ratio, 2.0 * order));
+        }
     } // namespace detail
 
     // Total profile deviation at frequency f (Hz), in dB (0 dB = nominal).
@@ -85,11 +98,10 @@ namespace factory_core
         const double lf = std::log (std::max (1.0e-6, f));
         double db = 0.0;
 
-        // Cuts: roll the profile off beyond the corner at slopeDbPerOct.
-        if (n.lowCut.on && f < n.lowCut.freqHz)
-            db -= n.lowCut.slopeDbPerOct * std::log2 (n.lowCut.freqHz / std::max (1.0e-6, f));
-        if (n.highCut.on && f > n.highCut.freqHz)
-            db -= n.highCut.slopeDbPerOct * std::log2 (f / n.highCut.freqHz);
+        // Cuts: a rounded Butterworth roll-off (−3 dB at the corner) — applies
+        // near/beyond the corner, ~0 deep in the pass-band.
+        if (n.lowCut.on)  db += detail::cutDb (f, n.lowCut.freqHz,  n.lowCut.slopeDbPerOct,  true);
+        if (n.highCut.on) db += detail::cutDb (f, n.highCut.freqHz, n.highCut.slopeDbPerOct, false);
 
         for (const auto& b : n.bands)
             if (b.on)

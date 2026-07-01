@@ -503,15 +503,22 @@ namespace
           if (db (10000.0, n) < 5.5) fail ("high shelf not full above");
           if (db (100.0, n) > 0.5)   fail ("high shelf not zero below"); }
 
-        // Cuts: -slope at one octave beyond the corner, 0 inside, monotone.
+        // Cuts are rounded (Butterworth): exactly −3 dB at the corner for every
+        // slope, monotone, ~0 deep in the pass-band, and the stop-band asymptotes
+        // to slopeDbPerOct measured over a deep octave (away from the knee).
         for (double slope : { 6.0, 12.0, 24.0, 48.0 })
         {
             auto lo = oneCut (true, 1000.0, slope);
-            near (db (500.0, lo), -slope, 0.02, "low cut slope");
-            if (std::abs (db (2000.0, lo)) > 1e-9) fail ("low cut acts above corner");
+            near (db (1000.0, lo), -3.0103, 0.02, "low cut -3 dB at corner");
+            if (db (8000.0, lo) < -0.25)  fail ("low cut acts deep in pass-band");     // 3 oct above ~0
+            near (db (62.5, lo) - db (125.0, lo), -slope, slope * 0.06, "low cut asymptotic slope");
+            if (! (db (500.0, lo) < db (1000.0, lo))) fail ("low cut not monotone");
+
             auto hi = oneCut (false, 1000.0, slope);
-            near (db (2000.0, hi), -slope, 0.02, "high cut slope");
-            if (std::abs (db (500.0, hi)) > 1e-9) fail ("high cut acts below corner");
+            near (db (1000.0, hi), -3.0103, 0.02, "high cut -3 dB at corner");
+            if (db (125.0, hi) < -0.25)   fail ("high cut acts deep in pass-band");
+            near (db (16000.0, hi) - db (8000.0, hi), -slope, slope * 0.06, "high cut asymptotic slope");
+            if (! (db (2000.0, hi) < db (1000.0, hi))) fail ("high cut not monotone");
         }
 
         // Band shelf: flat-topped bump == sens at centre. Band reject: dip.

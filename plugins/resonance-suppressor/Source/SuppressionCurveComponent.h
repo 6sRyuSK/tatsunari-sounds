@@ -194,23 +194,70 @@ private:
         }
     }
 
+    // A ReductionNodes config with only node `id` enabled (its own contribution).
+    static factory_core::ReductionNodes singleNode (const factory_core::ReductionNodes& all, int id)
+    {
+        factory_core::ReductionNodes one; // all off by default
+        if      (id == 0) one.lowCut  = all.lowCut;
+        else if (id == 1) one.highCut = all.highCut;
+        else              one.bands[(size_t) (id - 2)] = all.bands[(size_t) (id - 2)];
+        return one;
+    }
+
     // The reduction-profile curve — the SAME shape functions the audio rasteriser
     // uses (factory_core::reductionProfileDbAt), so what you see is what runs.
+    // Modern-EQ styling (like the dynamic EQ): each active node draws its own
+    // translucent filled curve, over which the combined response is a bright
+    // stroke with a soft glow.
     void drawProfile (juce::Graphics& g)
     {
         const auto nodes = ResonanceSuppressorAudioProcessor::readNodes (apvts);
         const int steps = juce::jmax (2, (int) plot.getWidth());
-        juce::Path curve;
+        const float y0 = sensToY (0.0f); // nominal (0 dB) line
+
+        std::array<factory_core::ReductionNodes, kNumNodes> single;
+        std::array<juce::Path, kNumNodes> nodePath;
+        std::array<bool, kNumNodes> started {};
+        for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
+
+        juce::Path combined;
         for (int i = 0; i <= steps; ++i)
         {
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
-            const float db = (float) factory_core::reductionProfileDbAt (xToFreq (x), nodes);
-            const float y = sensToY (db);
-            if (i == 0) curve.startNewSubPath (x, y);
-            else        curve.lineTo (x, y);
+            const float f = xToFreq (x);
+            const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
+            if (i == 0) combined.startNewSubPath (x, yT);
+            else        combined.lineTo (x, yT);
+
+            for (int id = 0; id < kNumNodes; ++id)
+            {
+                if (! nodeOn (id)) continue;
+                const float yB = sensToY ((float) factory_core::reductionProfileDbAt (f, single[(size_t) id]));
+                if (! started[(size_t) id]) { nodePath[(size_t) id].startNewSubPath (x, yB); started[(size_t) id] = true; }
+                else nodePath[(size_t) id].lineTo (x, yB);
+            }
         }
-        g.setColour (FactoryLookAndFeel::text().withAlpha (0.6f));
-        g.strokePath (curve, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved));
+
+        // Per-node translucent fill (from the nominal line) + coloured stroke.
+        for (int id = 0; id < kNumNodes; ++id)
+        {
+            if (! started[(size_t) id]) continue;
+            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
+            auto fp = nodePath[(size_t) id];
+            fp.lineTo (plot.getRight(), y0);
+            fp.lineTo (plot.getX(), y0);
+            fp.closeSubPath();
+            g.setColour (col.withAlpha (0.12f));
+            g.fillPath (fp);
+            g.setColour (col.withAlpha (0.7f));
+            g.strokePath (nodePath[(size_t) id], juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
+        }
+
+        // Combined response: soft glow under a crisp stroke.
+        g.setColour (FactoryLookAndFeel::text().withAlpha (0.16f));
+        g.strokePath (combined, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour (FactoryLookAndFeel::text().withAlpha (0.9f));
+        g.strokePath (combined, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
     void drawNodes (juce::Graphics& g)
