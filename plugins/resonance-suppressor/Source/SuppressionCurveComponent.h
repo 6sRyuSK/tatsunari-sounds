@@ -87,7 +87,7 @@ private:
     juce::Rectangle<float> plotRect() const
     {
         auto r = getLocalBounds().toFloat().reduced (12.0f);
-        r.removeFromBottom (14.0f); // Hz labels
+        r.removeFromTop (14.0f); // Hz labels sit above the plot
         return r;
     }
 
@@ -99,27 +99,28 @@ private:
                           : ResonanceSuppressorAudioProcessor::bandPid (id - 2, s);
     }
 
-    // Non-uniform frequency axis: the 500 Hz–8 kHz region (log-centred on 2 kHz)
-    // gets the middle 60% of the width; 20–500 Hz and 8–20 kHz are log-compressed
-    // into the outer 20% each — so 2 kHz sits dead centre and the mids are zoomed.
+    // Non-uniform frequency axis: 500 Hz–5 kHz gets the middle 55% of the width
+    // (uniform log), 20–500 Hz the left 30% and 5–20 kHz the right 15%, both
+    // log-compressed — so the low end is gentler, the top is tighter and 2 kHz
+    // sits a little right of centre.
     static float freqToT (float f)
     {
         f = juce::jlimit (20.0f, 20000.0f, f);
         const float lf = std::log (f);
         auto seg = [lf] (float f0, float f1, float t0, float t1)
         { return t0 + (t1 - t0) * (lf - std::log (f0)) / (std::log (f1) - std::log (f0)); };
-        if (f <= 500.0f)  return seg (20.0f,   500.0f,   0.0f, 0.2f);
-        if (f <= 8000.0f) return seg (500.0f,  8000.0f,  0.2f, 0.8f);
-        return                   seg (8000.0f, 20000.0f, 0.8f, 1.0f);
+        if (f <= 500.0f)  return seg (20.0f,   500.0f,   0.0f,  0.30f);
+        if (f <= 5000.0f) return seg (500.0f,  5000.0f,  0.30f, 0.85f);
+        return                   seg (5000.0f, 20000.0f, 0.85f, 1.0f);
     }
     static float tToFreq (float t)
     {
         t = juce::jlimit (0.0f, 1.0f, t);
         auto seg = [t] (float t0, float t1, float f0, float f1)
         { return std::exp (std::log (f0) + (std::log (f1) - std::log (f0)) * (t - t0) / (t1 - t0)); };
-        if (t <= 0.2f) return seg (0.0f, 0.2f, 20.0f,   500.0f);
-        if (t <= 0.8f) return seg (0.2f, 0.8f, 500.0f,  8000.0f);
-        return               seg (0.8f, 1.0f, 8000.0f, 20000.0f);
+        if (t <= 0.30f) return seg (0.0f,  0.30f, 20.0f,   500.0f);
+        if (t <= 0.85f) return seg (0.30f, 0.85f, 500.0f,  5000.0f);
+        return                seg (0.85f, 1.0f,  5000.0f, 20000.0f);
     }
     float freqToX (float f) const { return plot.getX() + freqToT (f) * plot.getWidth(); }
     float xToFreq (float x) const { return tToFreq ((x - plot.getX()) / plot.getWidth()); }
@@ -153,7 +154,7 @@ private:
             g.setColour (FactoryLookAndFeel::track().withAlpha (0.7f));
             g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
             g.setColour (FactoryLookAndFeel::textDim());
-            g.drawText (fl.s, juce::Rectangle<float> (x - 18.0f, plot.getBottom() + 1.0f, 36.0f, 12.0f),
+            g.drawText (fl.s, juce::Rectangle<float> (x - 18.0f, plot.getY() - 13.0f, 36.0f, 12.0f),
                         juce::Justification::centred);
         }
         for (float db = 0.0f; db >= -60.0f; db -= 12.0f)

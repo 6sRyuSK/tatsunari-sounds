@@ -87,14 +87,18 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     titleLabel.setBounds (top);
 
     r.removeFromTop (10);
-    auto knobs = r.removeFromBottom (104);
+    // Bottom control row at ~80% of its former height so the analyser gets the
+    // extra vertical space. The row is centred horizontally so the smaller knobs
+    // don't stretch edge-to-edge.
+    auto knobs = r.removeFromBottom (83);
     r.removeFromBottom (12);
     curve.setBounds (r);
 
     juce::Slider* sl[] = { &depthS, &sharpS, &atkS, &relS, &mixS };
     juce::Label*  lb[] = { &depthL, &sharpL, &atkL, &relL, &mixL };
     const int n = (int) std::size (sl);
-    const int cw = knobs.getWidth() / n;
+    const int cw = juce::jmin (96, knobs.getWidth() / n);
+    knobs = knobs.withSizeKeepingCentre (cw * n, knobs.getHeight());
     for (int i = 0; i < n; ++i)
     {
         auto cell = (i == n - 1) ? knobs : knobs.removeFromLeft (cw);
