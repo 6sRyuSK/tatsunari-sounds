@@ -377,9 +377,16 @@ jobs:
               echo "- ${name} ${ver}"
             done < <(jq -c '.[]' <<<"$plugins")
             echo
+            base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${tag}"
             echo "### ダウンロード"
-            echo "- 全部入り: \`tatsunari-plugins-${tag}-macOS.zip\` / \`tatsunari-plugins-${tag}-Windows.zip\`"
-            echo "- 個別プラグイン: \`<plugin>-<version>-macOS.zip\` / \`<plugin>-<version>-Windows.zip\`"
+            echo
+            echo "| プラグイン | macOS (VST3+AU) | Windows (VST3) |"
+            echo "|---|---|---|"
+            echo "| **🎁 全部入り（全 $(jq 'length' <<<"$plugins") 本）** | [⬇ macOS](${base}/tatsunari-plugins-${tag}-macOS.zip) | [⬇ Windows](${base}/tatsunari-plugins-${tag}-Windows.zip) |"
+            while read -r row; do
+              slug=$(jq -r .slug <<<"$row"); ver=$(jq -r .version <<<"$row"); name=$(jq -r .name <<<"$row")
+              echo "| ${name} ${ver} | [zip](${base}/${slug}-${ver}-macOS.zip) | [zip](${base}/${slug}-${ver}-Windows.zip) |"
+            done < <(jq -c '.[]' <<<"$plugins")
             echo
             echo "## インストール (macOS)"
             echo
