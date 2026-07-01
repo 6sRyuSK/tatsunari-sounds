@@ -143,8 +143,20 @@ void DynamicEqAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPer
     analyzerRing.fill (0.0f);
     analyzerRingPost.fill (0.0f);
     ringWrite.store (0);
+
+    // Ramp Freq / Gain / Q over ~30 ms; reset each smoother to its current
+    // parameter value so the first block starts settled (no ramp from zero).
+    constexpr double kRampSeconds = 0.03;
     for (int b = 0; b < kNumBands; ++b)
+    {
+        freqSmooth[(size_t) b].reset (sampleRate, kRampSeconds);
+        gainSmooth[(size_t) b].reset (sampleRate, kRampSeconds);
+        qSmooth[(size_t) b].reset (sampleRate, kRampSeconds);
+        freqSmooth[(size_t) b].setCurrentAndTargetValue (params[(size_t) b].freq->load());
+        gainSmooth[(size_t) b].setCurrentAndTargetValue (params[(size_t) b].gain->load());
+        qSmooth[(size_t) b].setCurrentAndTargetValue (params[(size_t) b].q->load());
         liveGainDb[(size_t) b].store (0.0f, std::memory_order_relaxed);
+    }
 }
 
 bool DynamicEqAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -172,7 +184,11 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         return;
     }
 
-    // Configure bands from parameters (per block).
+    // Configure bands from parameters (per block). The continuous Freq / Gain /
+    // Q are NOT applied here — they are smoothed and applied in sub-block chunks
+    // below (see the chunked loop) to avoid zipper noise on automation. Only the
+    // non-continuous settings (type, channel, slope, knee, dynamics) are set
+    // per block.
     for (int b = 0; b < kNumBands; ++b)
     {
         auto& bp = params[(size_t) b];
@@ -185,14 +201,15 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         // Present (even if bypassed) bands are configured so Listen/solo works.
         band.setType (static_cast<factory_core::BandType> ((int) bp.type->load()));
         band.setChannelMode (static_cast<factory_core::ChannelMode> ((int) bp.chan->load()));
-        band.setFrequency (bp.freq->load());
-        band.setGainDb (bp.gain->load());
-        band.setQ (bp.q->load());
         band.setSlopeStages ((int) bp.slope->load() + 1); // choice index 0..7 -> 1..8 sections
         band.setKnee (bp.knee->load());
         band.setDynamics (bp.dyn->load() > 0.5f, bp.thr->load(), bp.rng->load());
         band.setDynamicsTimes (bp.atk->load(), bp.rel->load());
-        band.updateCoefficients();
+
+        // Smooth the continuous Freq / Gain / Q toward the current parameter.
+        freqSmooth[(size_t) b].setTargetValue (bp.freq->load());
+        gainSmooth[(size_t) b].setTargetValue (bp.gain->load());
+        qSmooth[(size_t) b].setTargetValue (bp.q->load());
     }
 
     const int numSamples = buffer.getNumSamples();
@@ -207,24 +224,49 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         { soloBand = b; break; }
 
     int w = ringWrite.load (std::memory_order_relaxed);
-    for (int i = 0; i < numSamples; ++i)
+    for (int start = 0; start < numSamples; start += kSmoothChunk)
     {
-        double l = L[i];
-        double r = (R != nullptr) ? R[i] : l;
+        const int end = juce::jmin (start + kSmoothChunk, numSamples);
+        const int chunk = end - start;
 
-        analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
+        // Advance the smoothers by this chunk and reconfigure each present
+        // band's Freq / Gain / Q + coefficients before processing the chunk.
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            if (params[(size_t) b].on->load() <= 0.5f)
+            {
+                // Keep the smoothers moving so a freed slot doesn't jump later.
+                freqSmooth[(size_t) b].skip (chunk);
+                gainSmooth[(size_t) b].skip (chunk);
+                qSmooth[(size_t) b].skip (chunk);
+                continue;
+            }
+            auto& band = bands[(size_t) b];
+            band.setFrequency (freqSmooth[(size_t) b].skip (chunk));
+            band.setGainDb    (gainSmooth[(size_t) b].skip (chunk));
+            band.setQ         (qSmooth[(size_t) b].skip (chunk));
+            band.updateCoefficients();
+        }
 
-        if (soloBand >= 0)
-            bands[(size_t) soloBand].processListen (l, r); // band-pass of the dry input
-        else
-            for (auto& band : bands)
-                band.processStereo (l, r);
+        for (int i = start; i < end; ++i)
+        {
+            double l = L[i];
+            double r = (R != nullptr) ? R[i] : l;
 
-        analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
-        ++w;
+            analyzerRing[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
 
-        L[i] = (float) l;
-        if (R != nullptr) R[i] = (float) r;
+            if (soloBand >= 0)
+                bands[(size_t) soloBand].processListen (l, r); // band-pass of the dry input
+            else
+                for (auto& band : bands)
+                    band.processStereo (l, r);
+
+            analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
+            ++w;
+
+            L[i] = (float) l;
+            if (R != nullptr) R[i] = (float) r;
+        }
     }
     ringWrite.store (w, std::memory_order_release);
 
