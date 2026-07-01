@@ -192,7 +192,11 @@ private:
 
     void drawProfile (juce::Graphics& g)
     {
-        // Smooth profile multiplier across frequency (same model as the processor).
+        // Summed profile deviation across frequency (same gaussian model as the
+        // processor's rasteriser). Plotted in the node's "amount" space — i.e.
+        // WITHOUT the processor's unity (+1.0) baseline — so a node's dot sits on
+        // its own bump instead of one unit below it (see #22): at a node's centre
+        // the sum equals its amount, which is exactly where drawNodes places it.
         const int steps = juce::jmax (2, (int) plot.getWidth());
         juce::Path curve;
         for (int i = 0; i <= steps; ++i)
@@ -200,14 +204,14 @@ private:
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
             const float f = xToFreq (x);
             const float lf = std::log (juce::jmax (10.0f, f));
-            float mul = 1.0f;
+            float sum = 0.0f;
             for (int n = 0; n < ResonanceSuppressorAudioProcessor::kNumNodes; ++n)
                 if (nodeOn (n))
                 {
                     const float d = (lf - std::log (juce::jmax (10.0f, nodeFreq (n)))) / 0.30f;
-                    mul += nodeAmt (n) * std::exp (-0.5f * d * d);
+                    sum += nodeAmt (n) * std::exp (-0.5f * d * d);
                 }
-            const float y = amtToY (juce::jlimit (kAmtMin, kAmtMax, mul));
+            const float y = amtToY (juce::jlimit (kAmtMin, kAmtMax, sum));
             if (i == 0) curve.startNewSubPath (x, y);
             else        curve.lineTo (x, y);
         }

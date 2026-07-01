@@ -50,7 +50,9 @@ void ResonanceSuppressorAudioProcessorEditor::addKnob (juce::Slider& s, juce::La
     addAndMakeVisible (s);
     addAndMakeVisible (l);
     knobAtts.push_back (std::make_unique<SA> (processor.apvts, id, s));
-    s.setNumDecimalPlacesToDisplay (id.containsIgnoreCase ("freq") ? 0 : 2);
+    // Freq reads as integer Hz; everything else to 2 dp. Must run after the
+    // attachment, which otherwise formats with up to 7 decimals (see #23).
+    factory_ui::setSliderDecimals (s, id.containsIgnoreCase ("freq") ? 0 : 2);
 }
 
 void ResonanceSuppressorAudioProcessorEditor::paint (juce::Graphics& g)
@@ -64,11 +66,13 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     auto r = getLocalBounds().reduced (16);
 
     auto top = r.removeFromTop (28);
-    bypassB.setBounds (top.removeFromRight (84));
-    top.removeFromRight (4);
-    linkB.setBounds (top.removeFromRight (64));
-    top.removeFromRight (4);
-    deltaB.setBounds (top.removeFromRight (74));
+    // Each pill reserves ~42px (toggle box + gap) before its caption, so give
+    // every toggle room for its full label — "Link" was clipped at 64px (see #25).
+    bypassB.setBounds (top.removeFromRight (98));
+    top.removeFromRight (6);
+    linkB.setBounds (top.removeFromRight (82));
+    top.removeFromRight (6);
+    deltaB.setBounds (top.removeFromRight (86));
     titleLabel.setBounds (top);
 
     r.removeFromTop (10);

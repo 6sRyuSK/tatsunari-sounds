@@ -50,4 +50,19 @@ namespace factory_ui
         label.setJustificationType (juce::Justification::centred);
         label.setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
     }
+
+    // Pin a slider's text box to a fixed number of decimal places.
+    //
+    // JUCE's SliderAttachment installs its own textFromValueFunction that formats
+    // via the *parameter's* NormalisableRange; for a continuous range (no interval)
+    // that prints up to 7 decimals, so Slider::setNumDecimalPlacesToDisplay() is
+    // silently ignored. Clearing textFromValueFunction restores the slider's own
+    // "numDecimalPlaces + suffix" formatting. MUST be called AFTER the attachment
+    // is constructed (the attachment overwrites the function in its constructor).
+    inline void setSliderDecimals (juce::Slider& slider, int places)
+    {
+        slider.setNumDecimalPlacesToDisplay (places);
+        slider.textFromValueFunction = nullptr; // fall back to numDecimalPlaces + suffix
+        slider.updateText();
+    }
 }
