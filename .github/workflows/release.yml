@@ -243,6 +243,12 @@ jobs:
     runs-on: ${{ matrix.os == 'macOS' && 'macos-latest' || 'windows-latest' }}
     env:
       GH_TOKEN: ${{ github.token }}
+      # This job has no checkout, so `gh release download` (carry-over of unchanged
+      # plugins from the previous release) can't infer the repo from git and fails
+      # with "not a git repository". Pin it explicitly. Only surfaces once a run has
+      # an unchanged plugin to carry over (first exercised when dynamic-eq was the
+      # sole unchanged plugin in 2026.2).
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download rebuilt plugin zips
         if: needs.plan.outputs.any_changed == 'true'
