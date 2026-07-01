@@ -99,15 +99,30 @@ private:
                           : ResonanceSuppressorAudioProcessor::bandPid (id - 2, s);
     }
 
-    float freqToX (float f) const
+    // Non-uniform frequency axis: the 500 Hz–8 kHz region (log-centred on 2 kHz)
+    // gets the middle 60% of the width; 20–500 Hz and 8–20 kHz are log-compressed
+    // into the outer 20% each — so 2 kHz sits dead centre and the mids are zoomed.
+    static float freqToT (float f)
     {
-        const float t = std::log (juce::jlimit (20.0f, 20000.0f, f) / 20.0f) / std::log (1000.0f);
-        return plot.getX() + t * plot.getWidth();
+        f = juce::jlimit (20.0f, 20000.0f, f);
+        const float lf = std::log (f);
+        auto seg = [lf] (float f0, float f1, float t0, float t1)
+        { return t0 + (t1 - t0) * (lf - std::log (f0)) / (std::log (f1) - std::log (f0)); };
+        if (f <= 500.0f)  return seg (20.0f,   500.0f,   0.0f, 0.2f);
+        if (f <= 8000.0f) return seg (500.0f,  8000.0f,  0.2f, 0.8f);
+        return                   seg (8000.0f, 20000.0f, 0.8f, 1.0f);
     }
-    float xToFreq (float x) const
+    static float tToFreq (float t)
     {
-        return 20.0f * std::pow (1000.0f, (x - plot.getX()) / plot.getWidth());
+        t = juce::jlimit (0.0f, 1.0f, t);
+        auto seg = [t] (float t0, float t1, float f0, float f1)
+        { return std::exp (std::log (f0) + (std::log (f1) - std::log (f0)) * (t - t0) / (t1 - t0)); };
+        if (t <= 0.2f) return seg (0.0f, 0.2f, 20.0f,   500.0f);
+        if (t <= 0.8f) return seg (0.2f, 0.8f, 500.0f,  8000.0f);
+        return               seg (0.8f, 1.0f, 8000.0f, 20000.0f);
     }
+    float freqToX (float f) const { return plot.getX() + freqToT (f) * plot.getWidth(); }
+    float xToFreq (float x) const { return tToFreq ((x - plot.getX()) / plot.getWidth()); }
     float dbToY (float db) const
     {
         return plot.getY() + (kMaxDb - juce::jlimit (kMinDb, kMaxDb, db)) / (kMaxDb - kMinDb) * plot.getHeight();
