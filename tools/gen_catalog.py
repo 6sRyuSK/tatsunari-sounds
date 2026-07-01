@@ -10,14 +10,16 @@ Rewrites only the block between:
   <!-- BEGIN:CATALOG -->  ...  <!-- END:CATALOG -->
 
 Usage:
-  python tools/gen_catalog.py            # rewrite README.md in place
-  python tools/gen_catalog.py --check    # exit 1 if README is out of date (CI)
+  python tools/gen_catalog.py                     # rewrite README.md in place
+  python tools/gen_catalog.py --check             # exit 1 if README stale (CI)
+  python tools/gen_catalog.py --emit-json PATH     # write catalog.json for the installer
 
 Requires Python 3.11+ (stdlib tomllib).
 """
 from __future__ import annotations
 
 import glob
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -44,6 +46,33 @@ def load_plugins():
         }
         (shipped if entry["status"] == "shipped" else in_progress).append(entry)
     return shipped, in_progress
+
+
+def load_all_plugins():
+    """Every plugin (shipped + in-progress), formats kept as an array. Consumed
+    by the TUI installer's catalog.json — NOT filtered by status, since all
+    released plugins are still "in-progress" yet shipped."""
+    out = []
+    for path in sorted(glob.glob(str(ROOT / "plugins" / "*" / "plugin.toml"))):
+        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+        p = raw.get("plugin", raw)
+        out.append({
+            "name": p.get("name", "?"),
+            "slug": p.get("slug", Path(path).parent.name),
+            "category": p.get("category", "?"),
+            "formats": list(p.get("formats", [])),
+            "status": p.get("status", "shipped"),
+            "version": p.get("version", ""),
+            "reference": p.get("reference", "—"),
+        })
+    return out
+
+
+def emit_json(dest: str) -> None:
+    data = load_all_plugins()
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    Path(dest).write_text(text, encoding="utf-8", newline="\n")
+    print(f"catalog.json written: {dest} ({len(data)} plugins)")
 
 
 def load_roadmap():
@@ -98,7 +127,15 @@ def splice(readme_text: str, block: str) -> str:
 
 
 def main() -> None:
-    check = "--check" in sys.argv
+    args = sys.argv[1:]
+    if "--emit-json" in args:
+        i = args.index("--emit-json")
+        if i + 1 >= len(args):
+            raise SystemExit("--emit-json requires a destination path")
+        emit_json(args[i + 1])
+        return
+
+    check = "--check" in args
     current = README.read_text(encoding="utf-8")
     updated = splice(current, render())
     if check:

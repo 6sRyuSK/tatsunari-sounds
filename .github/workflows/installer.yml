@@ -1,0 +1,69 @@
+# Builds the cross-platform TUI installer and attaches its binaries + catalog.json
+# to a release. Runs right AFTER release.yml publishes (on: release: published),
+# so it never touches the protected release workflow or manifest.json.
+name: installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach installer assets to (e.g. 2026.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/installer/go.mod
+          cache-dependency-path: tools/installer/go.sum
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build installer binaries
+        working-directory: tools/installer
+        env:
+          CGO_ENABLED: "0"
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p dist
+          ldflags="-s -w -X main.version=${TAG}"
+          build() { GOOS="$1" GOARCH="$2" go build -trimpath -ldflags "$ldflags" -o "dist/$3" . ; }
+          # darwin/arm64 is ad-hoc signed by Go's internal linker, so it runs
+          # unsigned on Apple Silicon without being SIGKILLed.
+          build darwin  amd64 tatsunari-darwin-amd64
+          build darwin  arm64 tatsunari-darwin-arm64
+          build windows amd64 tatsunari-windows-amd64.exe
+          ls -l dist
+
+      - name: Generate catalog.json
+        run: python3 tools/gen_catalog.py --emit-json tools/installer/dist/catalog.json
+
+      - name: Attach assets to the release
+        working-directory: tools/installer/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "$TAG" \
+            tatsunari-darwin-amd64 \
+            tatsunari-darwin-arm64 \
+            tatsunari-windows-amd64.exe \
+            catalog.json \
+            --clobber

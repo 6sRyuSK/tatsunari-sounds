@@ -1,0 +1,8 @@
+# Build output (installer binaries + generated catalog) — produced in CI.
+/dist/
+
+# Local build artifacts.
+/tatsunari
+/tatsunari.exe
+*.exe
+*.syso

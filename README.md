@@ -35,6 +35,29 @@ _None yet._
 
 ## Install
 
+<!-- BEGIN:BOOTSTRAP -->
+### TUI インストーラー（推奨 / recommended）
+
+A cross-platform terminal installer (`tatsunari`) that lets you pick individual
+plugins and formats (VST3 / AU), installs them into the right folders, and
+updates in place. It runs **unelevated** and asks the **OS** for a password /
+UAC prompt only when you choose a system-wide install — the app never handles
+your password itself. Choose "just me" for a no-password, per-user install.
+
+**macOS** (Terminal):
+
+    curl -fsSL https://raw.githubusercontent.com/6sRyuSK/tatsunari-plugins/main/tools/installer/bootstrap/install.sh | bash
+
+**Windows** (PowerShell):
+
+    irm https://raw.githubusercontent.com/6sRyuSK/tatsunari-plugins/main/tools/installer/bootstrap/install.ps1 | iex
+
+The UI is bilingual (Japanese / English, following your OS locale). Source and
+build notes live in [`tools/installer/`](tools/installer/README.md).
+<!-- END:BOOTSTRAP -->
+
+### Manual install
+
 Each GitHub Release is a single consolidated build of the whole factory, tagged
 `<year>.<n>` (e.g. `2026.1`). Grab either the everything bundle for your OS
 (`tatsunari-plugins-<tag>-macOS.zip` / `-Windows.zip`) or an individual

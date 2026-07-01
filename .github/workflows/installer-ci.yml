@@ -1,0 +1,51 @@
+# PR gate for the Go TUI installer (tools/installer). Kept separate from the
+# JUCE/CMake ci.yml so it never touches that protected gate. Runs only when the
+# installer sources change.
+name: installer-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/installer/**"
+      - ".github/workflows/installer-ci.yml"
+  pull_request:
+    paths:
+      - "tools/installer/**"
+      - ".github/workflows/installer-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/installer/go.mod
+          cache-dependency-path: tools/installer/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Cross-compile (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=darwin  GOARCH=amd64 go build ./...
+          GOOS=darwin  GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go build ./...
