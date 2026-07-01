@@ -43,6 +43,56 @@ bundles into your plugin folders:
 - **AU** (`.component`) → `~/Library/Audio/Plug-Ins/Components/` (or `/Library/...` for all users)
 - **VST3** (`.vst3`) → `~/Library/Audio/Plug-Ins/VST3/` (or `/Library/...`)
 
+### curl で最新版をインストール
+
+Asset filenames embed the release version, so instead of hard-coding a URL the
+snippets below ask the GitHub API for the **latest** release and download from
+there (only `curl` and `unzip` — no `jq`). Downloading with `curl` also skips the
+`com.apple.quarantine` flag a browser attaches, so the macOS "damaged" prompt
+below does **not** appear.
+
+#### macOS — everything bundle (AU + VST3, all plugins)
+
+    REPO=6sRyuSK/tatsunari-plugins
+    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+      | grep -oE '"browser_download_url": *"[^"]*macOS-(AU|VST3)\.zip"' \
+      | cut -d'"' -f4 \
+      | while read -r url; do
+          case "$url" in
+            *macOS-AU.zip)   dest="$HOME/Library/Audio/Plug-Ins/Components" ;;
+            *macOS-VST3.zip) dest="$HOME/Library/Audio/Plug-Ins/VST3" ;;
+          esac
+          mkdir -p "$dest"
+          curl -fL "$url" -o /tmp/tp-bundle.zip
+          unzip -o /tmp/tp-bundle.zip -d "$dest" && rm -f /tmp/tp-bundle.zip
+        done
+
+Swap `macOS-(AU|VST3)\.zip` for `Windows\.zip` (and pick your VST3 folder, e.g.
+`%CommonProgramFiles%\VST3`) to grab the Windows bundle instead.
+
+#### macOS — a single plugin
+
+Filter to one plugin's zips by its slug (`resonance-suppressor`,
+`dynamic-parametric-eq`, … — the `plugins/<slug>` folder name):
+
+    REPO=6sRyuSK/tatsunari-plugins
+    SLUG=resonance-suppressor
+    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+      | grep -oE "\"browser_download_url\": *\"[^\"]*${SLUG}-[^\"]*macOS-(AU|VST3)\\.zip\"" \
+      | cut -d'"' -f4 \
+      | while read -r url; do
+          case "$url" in
+            *macOS-AU.zip)   dest="$HOME/Library/Audio/Plug-Ins/Components" ;;
+            *macOS-VST3.zip) dest="$HOME/Library/Audio/Plug-Ins/VST3" ;;
+          esac
+          mkdir -p "$dest"
+          curl -fL "$url" -o /tmp/tp-plugin.zip
+          unzip -o /tmp/tp-plugin.zip -d "$dest" && rm -f /tmp/tp-plugin.zip
+        done
+
+Then restart your DAW and rescan (for AU you may also need
+`killall -9 AudioComponentRegistrar`).
+
 ### macOS: "「…」は壊れているため開けません" / "…is damaged and can't be opened"
 
 The release binaries are **not code-signed or notarized**, and macOS attaches a
