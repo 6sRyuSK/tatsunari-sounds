@@ -12,13 +12,14 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (8)
+### In progress (9)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
 | Bus Compressor | Dynamics | SSL G-series bus comp |
 | Dynamic Parametric EQ | EQ | FabFilter Pro-Q 4 |
 | Granular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
+| NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
 | Resonance Suppressor | EQ | oeksound soothe2 |
 | Saturator | Saturation | Analog tape / tube soft-clip |
 | Shimmer Reverb | Reverb | FDN shimmer (octave-up feedback) |

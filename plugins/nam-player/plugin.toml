@@ -1,0 +1,8 @@
+[plugin]
+name      = "NAM Player"
+slug      = "nam-player"
+category  = "Amp Sim"
+status    = "in-progress"
+version   = "0.1.0"
+formats   = ["VST3", "AU", "Standalone"]
+reference = "Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4)"
