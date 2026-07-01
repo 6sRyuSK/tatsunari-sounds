@@ -156,6 +156,14 @@ namespace factory_core
     private:
         static constexpr double kPi = 3.14159265358979323846;
         static constexpr double kThreshDb = 3.0; // excess below this is not a resonance
+        // Absolute detection floor (dBFS): a bin quieter than this is treated as
+        // silence and never suppressed. kThreshDb is only a *relative* gate
+        // (peak-vs-local-envelope), so without an absolute floor the detector
+        // paints a reduction "curtain" on the near-silent idle output of some
+        // sources (e.g. a synth emitting ~-100 dBFS when a note is not held),
+        // even though nothing audible is happening (issue #24). 0 dBFS here is a
+        // full-scale sine, whose bin magnitude is N/4.
+        static constexpr double kFloorDb = -80.0;
 
         static double coeff (double ms, double rate) noexcept
         {
@@ -169,6 +177,8 @@ namespace factory_core
         {
             const int half = N / 2;
             const double wf = std::pow (2.0, smoothOct); // envelope half-width factor
+            // Raw-magnitude equivalent of kFloorDb (a full-scale sine bin is N/4).
+            const double floorMag = 0.25 * (double) N * std::pow (10.0, kFloorDb / 20.0);
 
             // Smoothed envelope via running prefix sum of magnitude.
             prefix[0] = 0.0;
@@ -185,7 +195,9 @@ namespace factory_core
             for (int k = 0; k <= half; ++k)
             {
                 double target = 1.0;
-                if (k >= lowBin && k <= highBin && depth > 0.0)
+                // Only act on in-range bins that carry audible energy: the
+                // absolute floor keeps the engine idle on near-silent input.
+                if (k >= lowBin && k <= highBin && depth > 0.0 && mag[(size_t) k] > floorMag)
                 {
                     const double exDb = 20.0 * std::log10 ((mag[(size_t) k] + 1.0e-12) / (env[(size_t) k] + 1.0e-12));
                     // Only act on genuine peaks: ignore excess within a small

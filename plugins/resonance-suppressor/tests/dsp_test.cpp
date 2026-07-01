@@ -251,6 +251,37 @@ namespace
         std::printf ("  maxLRdiff=%.2e\n", e);
     }
 
+    // Regression guard for issue #24: a near-silent source (e.g. a synth's idle
+    // output at ~-100 dBFS) that still has spectral peaks must NOT trigger any
+    // gain reduction. A purely relative peak-vs-envelope detector would paint a
+    // phantom reduction "curtain" on it; the absolute floor must keep the engine
+    // idle so silence stays silent on the display and in the audio.
+    void silenceTest (double Fs)
+    {
+        std::printf ("Silence floor (no reduction on near-silent input) @ Fs=%.0f\n", Fs);
+        const int M = 1 << 15;
+        const double amp = 1.0e-5; // ~ -100 dBFS peaks — inaudible
+        std::mt19937 rng (13);
+        std::normal_distribution<double> g (0.0, amp * 0.1);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng)
+                          + amp * std::sin (2.0 * kPi * 400.0 * n / Fs)
+                          + amp * std::sin (2.0 * kPi * 800.0 * n / Fs);
+
+        factory_core::ResonanceSuppressor s; s.prepare (Fs, orderFor (Fs));
+        s.setDepth (1.5); s.setSharpness (0.5);
+        for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = l; s.process (l, r); }
+
+        const double* red = s.reductionDb();
+        double worst = 0.0; // most negative reduction across all bins
+        for (int k = 0; k < s.numBins(); ++k) worst = std::min (worst, red[(size_t) k]);
+        if (worst < -0.5)
+            fail ("phantom reduction on near-silent input: " + std::to_string (worst)
+                  + " dB at Fs=" + std::to_string (Fs));
+        std::printf ("  worstReduction=%.3f dB (expect ~0)\n", worst);
+    }
+
     // Regression guard for the 192 kHz analyser bug: a fixed FFT order makes the
     // bin width (fs/N) and window length (N/fs) drift with the sample rate. The
     // order chosen by fftOrderForSampleRate must keep both within bounds at every
@@ -293,6 +324,7 @@ int main (int argc, char** argv)
         suppressionTest (Fs);
         profileTest (Fs);
         stereoLinkTest (Fs);
+        silenceTest (Fs);
         resolutionTest (Fs);
     }
 
