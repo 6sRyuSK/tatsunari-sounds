@@ -221,15 +221,38 @@ jobs:
           prev=$(git tag --list "${slug}-v*" --sort=-v:refname | grep -vFx "$tag" | head -1)
           if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
           echo "Changelog range: ${prev:-<start>}..HEAD (path: plugins/$slug)"
+
+          # Group commits into Features / Fixes / Other by subject keyword. The
+          # repo has no conventional-commit prefixes, so this is a heuristic:
+          # a `fix`/`bug` subject is a fix, an `Add`/`feat` subject is a feature,
+          # everything else falls through to Other. (Adopting feat:/fix: prefixes
+          # would make this exact — both forms are matched.) Order within a group
+          # stays newest-first, as `git log` returns it.
+          git log $range --no-merges --pretty='%s|%h' -- "plugins/${slug}/" > commits.txt || true
+          feats=""; fixes=""; others=""
+          while IFS='|' read -r subj hash; do
+            [ -z "$subj" ] && continue
+            line="- ${subj} (${hash})"
+            lc=$(printf '%s' "$subj" | tr '[:upper:]' '[:lower:]')
+            case "$lc" in
+              *fix*|*bug*|*regression*|*hotfix*|*correct*) fixes+="${line}"$'\n' ;;
+              add\ *|feat*|*introduce*)                    feats+="${line}"$'\n' ;;
+              *)                                           others+="${line}"$'\n' ;;
+            esac
+          done < commits.txt
+
           {
             echo "## Changes in ${slug}"
             [ -n "$prev" ] && echo "_Since ${prev}._" || echo "_Initial release._"
             echo
-            git log $range --no-merges --pretty='- %s (%h)' -- "plugins/${slug}/"
+            if [ -z "${feats}${fixes}${others}" ]; then
+              echo "- No plugin-specific changes since the previous release."
+            else
+              [ -n "$feats" ]  && { echo "### 機能";   echo; printf '%s' "$feats";  echo; }
+              [ -n "$fixes" ]  && { echo "### 修正";   echo; printf '%s' "$fixes";  echo; }
+              [ -n "$others" ] && { echo "### その他"; echo; printf '%s' "$others"; echo; }
+            fi
           } > notes.md
-          if ! grep -q '^- ' notes.md; then
-            echo "- No plugin-specific changes since the previous release." >> notes.md
-          fi
           echo "----- notes.md -----"; cat notes.md
 
       - name: Publish
