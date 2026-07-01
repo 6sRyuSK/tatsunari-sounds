@@ -32,8 +32,11 @@ on:
         default: false
         type: boolean
 
+# Scope concurrency per plugin so releasing two plugins at once (both dispatched
+# from `main`) don't share a group and cancel each other. On a tag push
+# `github.ref_name` is the unique tag; on a manual run it's the `slug` input.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.inputs.slug || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
