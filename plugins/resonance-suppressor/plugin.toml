@@ -3,6 +3,6 @@ name      = "Resonance Suppressor"
 slug      = "resonance-suppressor"
 category  = "EQ"
 status    = "in-progress"
-version   = "0.1.4"
+version   = "0.2.0"
 formats   = ["VST3", "AU"]
 reference = "oeksound soothe2"
