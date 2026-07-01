@@ -10,19 +10,23 @@ name: Release
 #   1. plan    — read every plugins/<slug>/plugin.toml version, compare against
 #                the previous release's manifest.json, and build the list of
 #                plugins whose version changed (single source of truth: plugin.toml).
-#   2. build   — compile ONLY the changed plugins, on macOS (VST3 + AU) and
-#                Windows (VST3), and zip each ON ITS NATIVE OS so bundle structure
-#                and file permissions are preserved. Unchanged plugins are not rebuilt.
-#   3. package — per OS, on the native runner: gather the changed plugins' zips
-#                (this run) and the unchanged plugins' zips (copied verbatim from
-#                the previous release), and assemble the per-OS "everything" bundle.
-#                A macOS bundle is therefore only ever unzipped/rezipped on macOS —
-#                never round-tripped through Linux — so it stays loadable.
+#   2. build   — compile ONLY the changed plugins and zip each ON ITS NATIVE OS
+#                (so bundle structure + permissions survive). macOS ships AU and
+#                VST3 as SEPARATE per-plugin zips; Windows ships VST3. Unchanged
+#                plugins are not rebuilt.
+#   3. package — per OS, on the native runner: gather each plugin's zips (rebuilt
+#                this run, or carried verbatim from the previous release) and
+#                assemble the per-OS "everything" bundles — macOS-AU, macOS-VST3,
+#                Windows — FLATTENED so a user can unzip and drop the contents
+#                straight into one plugin folder. A macOS bundle is only ever
+#                unzipped/rezipped on macOS, never round-tripped through Linux.
 #   4. release — publish one Release with every asset plus manifest.json (slug ->
-#                version), which the next run reads to decide what to rebuild vs carry.
+#                version, drives the next run) and per-changed-plugin notes.
 #
 # The tag version comes from the release count, not from any single plugin, so
 # the bundle has its own product-style version independent of per-plugin semver.
+# Version tokens in asset filenames use `v<major>_<minor>_<patch>` (and the tag
+# as `v<year>_<n>`) so the dots never collide with the `-` field separator.
 
 on:
   workflow_dispatch:
@@ -193,19 +197,28 @@ jobs:
             -exec cp -R {} out/ \;
           ls -la out
 
+      # macOS ships AU (.component) and VST3 (.vst3) as SEPARATE zips so a user
+      # can grab just the format they need. Version in the filename uses
+      # `v<major>_<minor>_<patch>` (dots would clash with the `-` field separator).
       - name: Zip plugin (macOS)
         if: matrix.entry.os == 'macOS'
         shell: bash
+        env:
+          SLUG: ${{ matrix.entry.slug }}
+          VER: ${{ matrix.entry.version }}
         run: |
           mkdir -p pkg
-          ( cd out && zip -r -y -q "$GITHUB_WORKSPACE/pkg/${{ matrix.entry.slug }}-${{ matrix.entry.version }}-macOS.zip" . )
+          vus="v${VER//./_}"
+          ( cd out && zip -r -y -q "$GITHUB_WORKSPACE/pkg/${SLUG}-${vus}-macOS-AU.zip"   *.component )
+          ( cd out && zip -r -y -q "$GITHUB_WORKSPACE/pkg/${SLUG}-${vus}-macOS-VST3.zip" *.vst3 )
 
       - name: Zip plugin (Windows)
         if: matrix.entry.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force pkg | Out-Null
-          Compress-Archive -Path out/* -DestinationPath "pkg/${{ matrix.entry.slug }}-${{ matrix.entry.version }}-Windows.zip" -Force
+          $vus = "v" + ("${{ matrix.entry.version }}" -replace '\.','_')
+          Compress-Archive -Path out/*.vst3 -DestinationPath "pkg/${{ matrix.entry.slug }}-$vus-Windows.zip" -Force
 
       - name: Upload plugin zip
         uses: actions/upload-artifact@v4
@@ -239,6 +252,10 @@ jobs:
           path: built
           merge-multiple: true
 
+      # Per-plugin AU/VST3 zips (rebuilt this run, or carried verbatim from the
+      # previous release) are re-emitted as-is, and their contents are FLATTENED
+      # into the everything bundle (bundles sit at the zip root, so a user can
+      # unzip and drop the whole contents straight into one plugin folder).
       - name: Assemble bundle (macOS)
         if: matrix.os == 'macOS'
         shell: bash
@@ -249,25 +266,26 @@ jobs:
           CHANGED: ${{ needs.plan.outputs.changed }}
         run: |
           set -euo pipefail
-          root="$PWD"; os="macOS"
-          mkdir -p dist prev stage
+          root="$PWD"
+          mkdir -p dist prev stageAU stageVST3
           [ -n "$PREV_TAG" ] && gh release download "$PREV_TAG" -D prev || true
           is_changed() { jq -e --arg s "$1" 'index($s) != null' <<<"$CHANGED" >/dev/null; }
+          tus="v${TAG//./_}"
           while read -r row; do
             slug=$(jq -r .slug <<<"$row"); ver=$(jq -r .version <<<"$row")
-            zipname="${slug}-${ver}-${os}.zip"
-            if is_changed "$slug"; then
-              [ -f "built/$zipname" ] || { echo "::error::missing rebuilt $zipname"; exit 1; }
-              cp "built/$zipname" "dist/$zipname"
-            else
-              [ -f "prev/$zipname" ] || { echo "::error::carry-over asset missing: $zipname (prev=$PREV_TAG)"; exit 1; }
-              cp "prev/$zipname" "dist/$zipname"
-            fi
-            mkdir -p "stage/$slug"
-            ( cd "stage/$slug" && unzip -q "$root/dist/$zipname" )
+            vus="v${ver//./_}"
+            for fmt in AU VST3; do
+              zipname="${slug}-${vus}-macOS-${fmt}.zip"
+              if is_changed "$slug"; then src="built/$zipname"; else src="prev/$zipname"; fi
+              [ -f "$src" ] || { echo "::error::missing $zipname (changed=$(is_changed "$slug" && echo yes || echo no), prev=$PREV_TAG)"; exit 1; }
+              cp "$src" "dist/$zipname"
+            done
+            ( cd stageAU   && unzip -q "$root/dist/${slug}-${vus}-macOS-AU.zip" )
+            ( cd stageVST3 && unzip -q "$root/dist/${slug}-${vus}-macOS-VST3.zip" )
           done < <(jq -c '.[]' <<<"$PLUGINS")
-          ( cd stage && zip -r -y -q "$root/dist/tatsunari-plugins-${TAG}-${os}.zip" . )
-          echo "----- dist ($os) -----"; ls -la dist
+          ( cd stageAU   && zip -r -y -q "$root/dist/tatsunari-plugins-${tus}-macOS-AU.zip" . )
+          ( cd stageVST3 && zip -r -y -q "$root/dist/tatsunari-plugins-${tus}-macOS-VST3.zip" . )
+          echo "----- dist (macOS) -----"; ls -la dist
 
       - name: Assemble bundle (Windows)
         if: matrix.os == 'Windows'
@@ -279,24 +297,20 @@ jobs:
           CHANGED: ${{ needs.plan.outputs.changed }}
         run: |
           $ErrorActionPreference = "Stop"
-          $os = "Windows"
-          New-Item -ItemType Directory -Force dist, prev, stage | Out-Null
+          New-Item -ItemType Directory -Force dist, prev, stageWin | Out-Null
           if ($env:PREV_TAG) { gh release download $env:PREV_TAG -D prev }
           $plugins = $env:PLUGINS | ConvertFrom-Json
           $changed = @($env:CHANGED | ConvertFrom-Json)
+          $tus = "v" + ($env:TAG -replace '\.','_')
           foreach ($p in $plugins) {
-            $zipname = "$($p.slug)-$($p.version)-$os.zip"
-            if ($changed -contains $p.slug) {
-              if (-not (Test-Path "built/$zipname")) { throw "missing rebuilt $zipname" }
-              Copy-Item "built/$zipname" "dist/$zipname"
-            } else {
-              if (-not (Test-Path "prev/$zipname")) { throw "carry-over asset missing: $zipname (prev=$($env:PREV_TAG))" }
-              Copy-Item "prev/$zipname" "dist/$zipname"
-            }
-            New-Item -ItemType Directory -Force "stage/$($p.slug)" | Out-Null
-            Expand-Archive "dist/$zipname" -DestinationPath "stage/$($p.slug)" -Force
+            $vus = "v" + ($p.version -replace '\.','_')
+            $zipname = "$($p.slug)-$vus-Windows.zip"
+            if ($changed -contains $p.slug) { $src = "built/$zipname" } else { $src = "prev/$zipname" }
+            if (-not (Test-Path $src)) { throw "missing $zipname (prev=$($env:PREV_TAG))" }
+            Copy-Item $src "dist/$zipname"
+            Expand-Archive "dist/$zipname" -DestinationPath stageWin -Force
           }
-          Compress-Archive -Path "stage/*" -DestinationPath "dist/tatsunari-plugins-$($env:TAG)-$os.zip" -Force
+          Compress-Archive -Path "stageWin/*" -DestinationPath "dist/tatsunari-plugins-$tus-Windows.zip" -Force
           Get-ChildItem dist
 
       - name: Upload per-OS assets
@@ -318,6 +332,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download per-OS assets
         uses: actions/download-artifact@v4
         with:
@@ -325,79 +343,77 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Build manifest and notes
+      - name: Build manifest
+        shell: bash
+        env:
+          PLUGINS: ${{ needs.plan.outputs.plugins }}
+        run: |
+          # manifest.json — slug -> version for every plugin (drives next run's
+          # change detection and carry-over).
+          jq -c 'map({(.slug): .version}) | add' <<<"$PLUGINS" > dist/manifest.json
+          cat dist/manifest.json
+
+      # Release notes: one entry per CHANGED plugin listing its commits since the
+      # previous release, grouped by conventional-commit prefix (feat -> fix ->
+      # other -> none) and oldest-first within a group. Plus a download table.
+      - name: Build release notes
         shell: bash
         env:
           TAG: ${{ needs.plan.outputs.tag }}
           PREV_TAG: ${{ needs.plan.outputs.prev_tag }}
           PLUGINS: ${{ needs.plan.outputs.plugins }}
           CHANGED: ${{ needs.plan.outputs.changed }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          plugins="$PLUGINS"; changed="$CHANGED"; tag="$TAG"; prev_tag="$PREV_TAG"
-          is_changed() { jq -e --arg s "$1" 'index($s) != null' <<<"$changed" >/dev/null; }
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          tag = os.environ['TAG']; prev = os.environ['PREV_TAG']
+          plugins = json.loads(os.environ['PLUGINS'])
+          changed = set(json.loads(os.environ['CHANGED']))
+          base = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}"
 
-          # manifest.json — slug -> version for every plugin (drives next run).
-          jq -c 'map({(.slug): .version}) | add' <<<"$plugins" > dist/manifest.json
+          RECOG = {"feat","fix","docs","refactor","perf","test","chore","ci","build","style","revert"}
+          pat = re.compile(r'^([a-zA-Z]+)(\([^)]*\))?!?:')
+          def rank(s):
+              m = pat.match(s)
+              if m and m.group(1).lower() in RECOG:
+                  t = m.group(1).lower()
+                  return 0 if t == "feat" else 1 if t == "fix" else 2
+              return 3
+          def vus(v):
+              return "v" + v.replace(".", "_")
+          def commits(slug):
+              rng = (prev + "..HEAD") if prev else "HEAD"
+              out = subprocess.check_output(
+                  ["git","log","--no-merges","--pretty=%s",rng,"--",f"plugins/{slug}/"], text=True)
+              cs = [l for l in out.splitlines() if l.strip()][::-1]   # oldest-first
+              return sorted(cs, key=rank)                            # stable within a group
 
-          # previous manifest for version-transition lines in the notes
-          mkdir -p prev
-          prev_manifest=""
-          if [ -n "$prev_tag" ]; then
-            if gh release download "$prev_tag" -p manifest.json -D prev 2>/dev/null; then
-              prev_manifest="prev/manifest.json"
-            fi
-          fi
+          L = [f"## リリース {tag}",
+               ("_初回リリース_" if not prev else f"_{prev} からの変更_"),
+               "", "### リリースノート"]
+          any_notes = False
+          for p in plugins:
+              if p['slug'] in changed:
+                  any_notes = True
+                  L.append(f"- **{p['name']} v{p['version']}**")
+                  for c in commits(p['slug']):
+                      L.append(f"  - {c}")
+          if not any_notes:
+              L.append("- 変更されたプラグインはありません（再パッケージのみ）。")
 
-          {
-            echo "## リリース ${tag}"
-            if [ -n "$prev_tag" ]; then echo "_${prev_tag} からの変更_"; else echo "_初回リリース_"; fi
-            echo
-            echo "### 更新プラグイン"
-            nchg=0
-            while read -r row; do
-              slug=$(jq -r .slug <<<"$row"); ver=$(jq -r .version <<<"$row"); name=$(jq -r .name <<<"$row")
-              if is_changed "$slug"; then
-                nchg=$((nchg + 1))
-                pv=""
-                [ -n "$prev_manifest" ] && pv=$(jq -r --arg s "$slug" '.[$s] // ""' "$prev_manifest")
-                if [ -n "$pv" ]; then
-                  echo "- ${name}: ${pv} → ${ver}"
-                else
-                  echo "- ${name}: ${ver}（新規収録）"
-                fi
-              fi
-            done < <(jq -c '.[]' <<<"$plugins")
-            [ "$nchg" -eq 0 ] && echo "- 変更されたプラグインはありません（再パッケージのみ）。"
-            echo
-            echo "### 収録プラグイン（全 $(jq 'length' <<<"$plugins") 本）"
-            while read -r row; do
-              name=$(jq -r .name <<<"$row"); ver=$(jq -r .version <<<"$row")
-              echo "- ${name} ${ver}"
-            done < <(jq -c '.[]' <<<"$plugins")
-            echo
-            echo "### ダウンロード"
-            echo "- 全部入り: \`tatsunari-plugins-${tag}-macOS.zip\` / \`tatsunari-plugins-${tag}-Windows.zip\`"
-            echo "- 個別プラグイン: \`<plugin>-<version>-macOS.zip\` / \`<plugin>-<version>-Windows.zip\`"
-            echo
-            echo "## インストール (macOS)"
-            echo
-            echo "リリースの macOS バイナリは**未署名・未notarize**です。ブラウザで zip を"
-            echo "ダウンロードすると macOS が検疫属性 (\`com.apple.quarantine\`) を付けるため、"
-            echo "Gatekeeper が「壊れているため開けません」と表示します（プラグインは壊れて"
-            echo "いません）。インストール後にターミナルで検疫属性を外してください:"
-            echo
-            echo '```bash'
-            echo "# <PluginName> はインストールした .component / .vst3 の実際の名前に置き換える"
-            echo "# （ユーザー領域に入れた場合は /Library を ~/Library に、sudo は不要）"
-            echo 'sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/<PluginName>.component"'
-            echo 'sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/<PluginName>.vst3"'
-            echo '```'
-            echo
-            echo "その後 DAW を再起動して再スキャン（AU は \`killall -9 AudioComponentRegistrar\` の併用も有効）。"
-          } > notes.md
-          echo "----- notes.md -----"; cat notes.md
+          tus = vus(tag)
+          L += ["", "### ダウンロード", "",
+                "| プラグイン | macOS (AU) | macOS (VST3) | Windows (VST3) |",
+                "|---|---|---|---|",
+                f"| **All Plugins ({len(plugins)})** | [AU]({base}/tatsunari-plugins-{tus}-macOS-AU.zip) | [VST3]({base}/tatsunari-plugins-{tus}-macOS-VST3.zip) | [VST3]({base}/tatsunari-plugins-{tus}-Windows.zip) |"]
+          for p in plugins:
+              fv = vus(p['version'])
+              L.append(f"| {p['name']} v{p['version']} | [AU]({base}/{p['slug']}-{fv}-macOS-AU.zip) | [VST3]({base}/{p['slug']}-{fv}-macOS-VST3.zip) | [VST3]({base}/{p['slug']}-{fv}-Windows.zip) |")
+
+          with open("notes.md", "w") as f:
+              f.write("\n".join(L) + "\n")
+          print(open("notes.md").read())
+          PY
 
       - name: Publish
         uses: softprops/action-gh-release@v2
