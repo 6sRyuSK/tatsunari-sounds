@@ -54,12 +54,12 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
 
     NormalisableRange<float> atkR { 1.0f, 200.0f }; atkR.setSkewForCentre (20.0f);
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "attack", 1 }, "Attack", atkR, 15.0f,
+        ParameterID { "attack", 1 }, "Attack", atkR, 100.0f,
         AudioParameterFloatAttributes().withLabel (" ms")));
 
     NormalisableRange<float> relR { 5.0f, 500.0f }; relR.setSkewForCentre (100.0f);
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "release", 1 }, "Release", relR, 120.0f,
+        ParameterID { "release", 1 }, "Release", relR, 50.0f,
         AudioParameterFloatAttributes().withLabel (" ms")));
 
     layout.add (std::make_unique<AudioParameterFloat> (
