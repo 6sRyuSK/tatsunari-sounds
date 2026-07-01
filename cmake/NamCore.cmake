@@ -45,6 +45,10 @@ file(GLOB NAM_SOURCES CONFIGURE_DEPENDS
 
 add_library(nam_core OBJECT ${NAM_SOURCES})
 target_compile_features(nam_core PUBLIC cxx_std_20)
+# The objects are linked into the plugin's shared module, so they must be PIC. JUCE
+# sets this on its own targets, but our OBJECT library needs it set explicitly (Linux
+# ld rejects non-PIC objects — incl. thread-local relocations — in a shared object).
+set_target_properties(nam_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # SYSTEM includes so Eigen/NAM/json warnings never collide with the plugin's
 # juce_recommended_warning_flags.
 target_include_directories(nam_core SYSTEM PUBLIC
