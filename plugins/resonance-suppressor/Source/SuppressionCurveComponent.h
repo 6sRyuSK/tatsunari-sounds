@@ -99,10 +99,10 @@ private:
                           : ResonanceSuppressorAudioProcessor::bandPid (id - 2, s);
     }
 
-    // Non-uniform frequency axis: 500 Hz–5 kHz gets the middle 55% of the width
-    // (uniform log), 20–500 Hz the left 30% and 5–20 kHz the right 15%, both
-    // log-compressed — so the low end is gentler, the top is tighter and 2 kHz
-    // sits a little right of centre.
+    // Non-uniform frequency axis: 500 Hz–9 kHz gets the middle 55% of the width
+    // (uniform log), 20–500 Hz the left 30% and 9–20 kHz the right 15%, both
+    // log-compressed — so the low end is gentle, the top is tight and 2 kHz lands
+    // just right of centre (where 1.5 kHz used to sit).
     static float freqToT (float f)
     {
         f = juce::jlimit (20.0f, 20000.0f, f);
@@ -110,8 +110,8 @@ private:
         auto seg = [lf] (float f0, float f1, float t0, float t1)
         { return t0 + (t1 - t0) * (lf - std::log (f0)) / (std::log (f1) - std::log (f0)); };
         if (f <= 500.0f)  return seg (20.0f,   500.0f,   0.0f,  0.30f);
-        if (f <= 5000.0f) return seg (500.0f,  5000.0f,  0.30f, 0.85f);
-        return                   seg (5000.0f, 20000.0f, 0.85f, 1.0f);
+        if (f <= 9000.0f) return seg (500.0f,  9000.0f,  0.30f, 0.85f);
+        return                   seg (9000.0f, 20000.0f, 0.85f, 1.0f);
     }
     static float tToFreq (float t)
     {
@@ -119,8 +119,8 @@ private:
         auto seg = [t] (float t0, float t1, float f0, float f1)
         { return std::exp (std::log (f0) + (std::log (f1) - std::log (f0)) * (t - t0) / (t1 - t0)); };
         if (t <= 0.30f) return seg (0.0f,  0.30f, 20.0f,   500.0f);
-        if (t <= 0.85f) return seg (0.30f, 0.85f, 500.0f,  5000.0f);
-        return                seg (0.85f, 1.0f,  5000.0f, 20000.0f);
+        if (t <= 0.85f) return seg (0.30f, 0.85f, 500.0f,  9000.0f);
+        return                seg (0.85f, 1.0f,  9000.0f, 20000.0f);
     }
     float freqToX (float f) const { return plot.getX() + freqToT (f) * plot.getWidth(); }
     float xToFreq (float x) const { return tToFreq ((x - plot.getX()) / plot.getWidth()); }

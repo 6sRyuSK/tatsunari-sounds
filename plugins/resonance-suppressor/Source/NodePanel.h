@@ -12,9 +12,10 @@
 //
 // A small, bright inline editor for the currently-selected reduction node, shown
 // over the analyser (bottom-centre) when a node is selected. It rebinds its APVTS
-// attachments to that node on selection (Pro-Q-style). The node name sits centred
-// on top; below it a row of controls: cut nodes show On + Slope + Freq, band
-// nodes show On + Type + Freq + Sens. Frequencies read in kHz at/above 1 kHz.
+// attachments to that node on selection (Pro-Q-style). The node name is *painted*
+// (floating) at the top-centre so it never steals layout height from the knobs;
+// below it a centred control row: cut nodes show On + Slope + Freq, band nodes
+// show On + Type + Freq + Sens. Frequencies read in kHz at/above 1 kHz.
 // Horizontal "kawaii" card styling (factory_ui). GUI-thread only.
 //
 class NodePanel : public juce::Component
@@ -22,10 +23,6 @@ class NodePanel : public juce::Component
 public:
     explicit NodePanel (juce::AudioProcessorValueTreeState& s) : apvts (s)
     {
-        title.setJustificationType (juce::Justification::centred);
-        title.setFont (juce::Font (juce::FontOptions (14.0f, juce::Font::bold)));
-        addAndMakeVisible (title);
-
         onButton.setButtonText ("On");
         addAndMakeVisible (onButton);
 
@@ -41,8 +38,8 @@ public:
 
     int  currentNode()    const noexcept { return nodeId; }
     bool isCutNode()      const noexcept { return isCut; }
-    int  preferredWidth() const noexcept { return isCut ? 330 : 400; }
-    static constexpr int kHeight = 94;
+    int  preferredWidth() const noexcept { return isCut ? 300 : 384; }
+    static constexpr int kHeight = 96;
 
     // Rebind to node `id` (0 = low cut, 1 = high cut, 2.. = band). Drops the old
     // attachments first so syncing the new ones can't write back to the old node.
@@ -53,8 +50,8 @@ public:
 
         onAtt.reset(); choiceAtt.reset(); freqAtt.reset(); sensAtt.reset();
 
-        title.setText (nodeName(), juce::dontSendNotification);
-        title.setColour (juce::Label::textColourId, nodeColour());
+        nameText = nodeName();
+        nameCol  = nodeColour();
 
         choiceBox.clear (juce::dontSendNotification);
         if (isCut) choiceBox.addItemList ({ "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct" }, 1);
@@ -87,21 +84,27 @@ public:
         if (! isCut) factory_ui::setSliderDecimals (sensSlider, 1);
 
         resized();
+        repaint();
     }
 
     void paint (juce::Graphics& g) override
     {
         factory_ui::paintCard (g, getLocalBounds().toFloat(), 12.0f);
+        // Floating node name — painted, not a child, so it costs no layout height.
+        g.setColour (nameCol);
+        g.setFont (juce::Font (juce::FontOptions (14.0f, juce::Font::bold)));
+        g.drawText (nameText, getLocalBounds().removeFromTop (24).reduced (8, 5),
+                    juce::Justification::centred);
     }
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (14, 10);
-        title.setBounds (r.removeFromTop (20));
-        r.removeFromTop (4);
+        auto r = getLocalBounds().reduced (12, 6);
+        r.removeFromTop (18); // clear the floating name strip (drawn in paint)
+        r.removeFromTop (2);
 
-        // Centre the control row within the card.
-        constexpr int on = 54, combo = 118, knobW = 68, gap = 10;
+        // Bigger Freq/Sens knobs (~80% of the Depth knob) — centre the row.
+        constexpr int on = 54, combo = 118, knobW = 62, gap = 10;
         const int total = on + gap + combo + gap + knobW + (isCut ? 0 : gap + knobW);
         r.removeFromLeft (juce::jmax (0, (r.getWidth() - total) / 2));
 
@@ -113,8 +116,8 @@ public:
         auto knob = [&r] (juce::Slider& s, juce::Label& l)
         {
             auto c = r.removeFromLeft (knobW);
-            l.setBounds (c.removeFromTop (14));
-            s.setBounds (c);
+            l.setBounds (c.removeFromTop (12));
+            s.setBounds (c);              // slider fills the rest (~54 px)
             r.removeFromLeft (gap);
         };
         knob (freqSlider, freqLabel);
@@ -140,8 +143,9 @@ private:
     juce::AudioProcessorValueTreeState& apvts;
     int  nodeId = 0;
     bool isCut  = true;
+    juce::String nameText;
+    juce::Colour nameCol { FactoryLookAndFeel::accent() };
 
-    juce::Label title;
     juce::ToggleButton onButton;
     juce::ComboBox choiceBox;
     juce::Slider freqSlider, sensSlider;
