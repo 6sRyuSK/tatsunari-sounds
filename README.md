@@ -71,27 +71,9 @@ DAW and rescan afterwards.
     Expand-Archive tp-win.zip -DestinationPath "C:\Program Files\Common Files\VST3" -Force
     Remove-Item tp-win.zip
 
-### ダウンロードの検証（任意だが推奨）
-
-The bundles are **not code-signed or notarized** (that needs a paid Apple
-Developer account), so instead each release ships two *free* integrity anchors.
-Neither removes the macOS "damaged" prompt below — they let you confirm the zip
-is genuine before you trust it.
-
-**Build-provenance attestation** — cryptographically ties each zip to the exact
-CI workflow, commit and repo that built it, recorded in a public transparency
-log. Verify with the GitHub CLI:
-
-    gh attestation verify tatsunari-plugins-v2026_1-macOS-AU.zip --repo 6sRyuSK/tatsunari-plugins
-
-**SHA-256 checksums** — every release lists the digests in its notes (pinned to
-the git tag) and ships them as `SHA256SUMS.txt`. Download it next to the zips and
-check integrity:
-
-    # macOS
-    shasum -a 256 -c SHA256SUMS.txt
-    # Linux / WSL
-    sha256sum -c SHA256SUMS.txt
+The bundles are **not code-signed or notarized**, but each release ships a
+build-provenance attestation (`gh attestation verify`) and `SHA256SUMS.txt` — see
+the release notes to verify a download before trusting it.
 
 ### macOS: "「…」は壊れているため開けません" / "…is damaged and can't be opened"
 
