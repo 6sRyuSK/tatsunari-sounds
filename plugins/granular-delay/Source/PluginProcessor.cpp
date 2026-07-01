@@ -95,9 +95,21 @@ GranularDelayAudioProcessor::GranularDelayAudioProcessor()
 void GranularDelayAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
     currentSampleRate = sampleRate;
-    engine.prepare (sampleRate, 2.0);
+    // Size the delay buffer for the true tempo-sync worst case (issue #37):
+    // dotted 1/4 (1.5 beats) at kMinSyncBpm with +25% LFO headroom.
+    engine.prepare (sampleRate, kMaxDelaySeconds);
     lfoPhase = 0.0;
     outputLevel.store (0.0f);
+
+    // Zipper-free ramps (issue #40): ~40 ms so per-block parameter steps glide.
+    const double rampSeconds = 0.04;
+    feedbackSmoothed.reset (sampleRate, rampSeconds);
+    mixSmoothed.reset (sampleRate, rampSeconds);
+    delaySamplesSmoothed.reset (sampleRate, rampSeconds);
+
+    feedbackSmoothed.setCurrentAndTargetValue (feedbackParam->load() * 0.01);
+    mixSmoothed.setCurrentAndTargetValue (mixParam->load() * 0.01);
+    delaySamplesSmoothed.setCurrentAndTargetValue (delayParam->load() * 1.0e-3 * sampleRate);
 }
 
 bool GranularDelayAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -132,12 +144,20 @@ void GranularDelayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
             if (auto pos = ph->getPosition())
                 if (auto b = pos->getBpm())
                     bpm = *b;
+        // Clamp to the supported tempo floor the delay buffer is sized for
+        // (issue #37): slower reported tempi are held at kMinSyncBpm so the
+        // required delay can never exceed the preallocated buffer.
+        bpm = juce::jmax (bpm, kMinSyncBpm);
         baseDelaySec = factory_core::tempoSyncSeconds (bpm, divisionBeats ((int) divisionParam->load()));
     }
     const double baseDelaySamples = baseDelaySec * currentSampleRate;
 
-    engine.setFeedback (feedbackParam->load() * 0.01);
-    engine.setMix (mixParam->load() * 0.01);
+    // Set smoothed-parameter targets once per block; the smoothers glide to
+    // them per sample below (issue #40).
+    feedbackSmoothed.setTargetValue (feedbackParam->load() * 0.01);
+    mixSmoothed.setTargetValue (mixParam->load() * 0.01);
+    delaySamplesSmoothed.setTargetValue (baseDelaySamples);
+
     engine.setGrainSizeMs (sizeParam->load());
     engine.setDensityHz (densityParam->load());
     engine.setPositionJitterMs (jitterParam->load());
@@ -160,7 +180,9 @@ void GranularDelayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
         lfoPhase += lfoInc;
         if (lfoPhase >= 1.0) lfoPhase -= 1.0;
 
-        engine.setDelaySamples (baseDelaySamples * (1.0 + 0.25 * lfoDepth * lfo));
+        engine.setFeedback (feedbackSmoothed.getNextValue());
+        engine.setMix (mixSmoothed.getNextValue());
+        engine.setDelaySamples (delaySamplesSmoothed.getNextValue() * (1.0 + 0.25 * lfoDepth * lfo));
 
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
