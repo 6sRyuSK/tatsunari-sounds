@@ -9,7 +9,8 @@
 #include <cmath>
 
 //
-// The centrepiece: a spectrum display showing the input magnitude, the live
+// The centrepiece: a spectrum display showing the output (post-processing)
+// magnitude, the live
 // per-frequency gain reduction (teal "curtain" — what the suppressor is cutting
 // right now), and the soothe-style reduction-profile curve with fixed nodes:
 // a low cut and a high cut (drag frequency; right-click for slope) plus four

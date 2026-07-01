@@ -259,7 +259,6 @@ namespace factory_core
             {
                 magL[(size_t) k] = std::abs (specL[(size_t) k]);
                 magR[(size_t) k] = std::abs (specR[(size_t) k]);
-                dispMag[(size_t) k] = std::max (magL[(size_t) k], magR[(size_t) k]) / (0.5 * N);
             }
 
             if (link)
@@ -279,6 +278,13 @@ namespace factory_core
                 for (int k = 0; k <= half; ++k)
                     dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (std::min (gainL[(size_t) k], gainR[(size_t) k]), 1.0e-6));
             }
+
+            // Analyser shows the post-processing (output) magnitude: the input
+            // spectrum scaled by the per-bin gain just computed (the reduction
+            // curtain shows that gain). Gain is real, so |spec * g| = mag * g.
+            for (int k = 0; k <= half; ++k)
+                dispMag[(size_t) k] = std::max (magL[(size_t) k] * gainL[(size_t) k],
+                                                magR[(size_t) k] * gainR[(size_t) k]) / (0.5 * (double) N);
 
             // Apply the real per-bin gains, keeping the spectrum Hermitian.
             specL[0] *= gainL[0];               specR[0] *= gainR[0];
