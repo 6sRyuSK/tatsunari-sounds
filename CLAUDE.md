@@ -17,11 +17,19 @@ is objective; humans judge taste and authorize shipping.
   - Description (Japanese): keep **identifiers and technical terms in English**
     (`STFT`, `Nyquist`, function/file names) so `git log` stays greppable —
     e.g. `fix(resonance-suppressor): STFTオーダーをサンプルレート連動にして192kHz対応`.
-  - The release changelog groups by the prefix — `feat:` → 機能, `fix:` → 修正,
-    everything else → その他 — and strips the prefix from the shown line, so the
-    prefix keeps notes accurate while the Japanese description reads naturally.
   - Keep the version bump for a change in the **same commit** as the change it
-    describes, so it shows in that plugin's notes.
+    describes, so `plugin.toml` stays the single source of truth for what shipped.
+
+## Releasing
+- One consolidated GitHub Release per run, tagged `<year>.<n>` (e.g. `2026.1`),
+  built by `.github/workflows/release.yml` (manual `workflow_dispatch` only).
+- A run **rebuilds only the plugins whose `plugin.toml` version changed** since
+  the previous release (compared against that release's `manifest.json`);
+  unchanged plugins are **carried over** from the previous release's assets
+  verbatim (no rebuild). Bump `version` to ship a plugin — that is the trigger.
+- Assets: a per-OS everything bundle (`tatsunari-plugins-<tag>-macOS.zip` /
+  `-Windows.zip`), a per-plugin zip each (`<slug>-<version>-<os>.zip`), and
+  `manifest.json`. The release notes list per-plugin version transitions.
 
 ## Repository layout
 - `core/` — shared, spec'd DSP primitives (filters, dynamics, …). Versioned;

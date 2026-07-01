@@ -34,8 +34,11 @@ _None yet._
 
 ## Install
 
-Download the per-plugin zip from the GitHub Release and copy the bundles into
-your plugin folders:
+Each GitHub Release is a single consolidated build of the whole factory, tagged
+`<year>.<n>` (e.g. `2026.1`). Grab either the everything bundle for your OS
+(`tatsunari-plugins-<tag>-macOS.zip` / `-Windows.zip`) or an individual
+plugin zip (`<plugin>-<version>-macOS.zip` / `-Windows.zip`), then copy the
+bundles into your plugin folders:
 
 - **AU** (`.component`) → `~/Library/Audio/Plug-Ins/Components/` (or `/Library/...` for all users)
 - **VST3** (`.vst3`) → `~/Library/Audio/Plug-Ins/VST3/` (or `/Library/...`)
