@@ -25,6 +25,7 @@ namespace factory_core
             xoverL.prepare (sampleRate);
             xoverR.prepare (sampleRate);
             for (auto& c : comps) c.prepare (sampleRate);
+            reset(); // clear stale LR4 / compressor state on (re)prepare
         }
 
         void reset() noexcept

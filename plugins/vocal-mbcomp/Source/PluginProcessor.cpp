@@ -63,6 +63,23 @@ void VocalMbCompAudioProcessor::prepareToPlay (double sampleRate, int /*samplesP
         mb.band (b).prepare (sampleRate);
         bandGr[(size_t) b].store (0.0f);
     }
+
+    // Log-domain smoothing of the crossover frequencies (~40 ms ramp) so
+    // automation of Low/Mid and Mid/High moves the LR4 cutoffs continuously
+    // instead of overwriting the biquad coeffs discontinuously each block.
+    constexpr double kRampSeconds = 0.04;
+    const double low  = (double) lowFreqParam->load();
+    const double high = (double) highFreqParam->load();
+    lowFreqSmoothed.reset (sampleRate, kRampSeconds);
+    highFreqSmoothed.reset (sampleRate, kRampSeconds);
+    lowFreqSmoothed.setCurrentAndTargetValue (std::log (low));
+    highFreqSmoothed.setCurrentAndTargetValue (std::log (high));
+
+    // Seed the crossover with the current frequencies and prime the cache so
+    // processBlock only recomputes coeffs when the smoothed value moves.
+    mb.setCrossover (low, high);
+    lastLowFreq  = low;
+    lastHighFreq = high;
 }
 
 bool VocalMbCompAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -88,7 +105,12 @@ void VocalMbCompAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         return;
     }
 
-    mb.setCrossover (lowFreqParam->load(), highFreqParam->load());
+    // Move the smoothing targets toward the current parameter values (in the
+    // log domain). The actual coeff updates happen at sub-block granularity in
+    // the sample loop below, only when the smoothed frequency actually moves.
+    lowFreqSmoothed.setTargetValue (std::log ((double) lowFreqParam->load()));
+    highFreqSmoothed.setTargetValue (std::log ((double) highFreqParam->load()));
+
     mb.setMix (mixParam->load() * 0.01);
 
     // Map the macro controls onto each band's threshold/ratio + auto makeup.
@@ -115,6 +137,20 @@ void VocalMbCompAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     std::array<float, kBands> minGr { 0.0f, 0.0f, 0.0f };
     for (int i = 0; i < numSamples; ++i)
     {
+        // Advance the smoothed crossover frequencies and push new coeffs to the
+        // crossover at sub-block granularity, only when they actually changed.
+        if ((i % kXoverUpdateSamples) == 0)
+        {
+            const double low  = std::exp (lowFreqSmoothed.skip (i == 0 ? 0 : kXoverUpdateSamples));
+            const double high = std::exp (highFreqSmoothed.skip (i == 0 ? 0 : kXoverUpdateSamples));
+            if (low != lastLowFreq || high != lastHighFreq)
+            {
+                mb.setCrossover (low, high);
+                lastLowFreq  = low;
+                lastHighFreq = high;
+            }
+        }
+
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
         mb.processStereo (l, r);

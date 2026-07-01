@@ -3,6 +3,6 @@ name      = "Shimmer Reverb"
 slug      = "shimmer-reverb"
 category  = "Reverb"
 status    = "in-progress"
-version   = "0.1.1"
+version   = "0.1.2"
 formats   = ["VST3", "AU"]
 reference = "FDN shimmer (octave-up feedback)"

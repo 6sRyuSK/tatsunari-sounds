@@ -40,7 +40,19 @@ namespace factory_core
         void setFrequency  (double f)      noexcept { freqHz = f; }
         void setGainDb     (double g)      noexcept { staticGainDb = g; }
         void setQ          (double q)      noexcept { Q = q; }
-        void setChannelMode (ChannelMode m) noexcept { channelMode = m; }
+        void setChannelMode (ChannelMode m) noexcept
+        {
+            if (m == channelMode) return;
+            channelMode = m;
+            // A chain that was idle in the old mode carries stale biquad z-state
+            // from the last time it ran (e.g. Right->Stereo reactivates filterL).
+            // Resuming from that state clicks / bursts a transient, so reset both
+            // filter chains and the detectors when the channel target changes.
+            for (auto& f : filterL) f.reset();
+            for (auto& f : filterR) f.reset();
+            detL.reset(); detR.reset();
+            env = 0.0;
+        }
         // Slope for HP/LP only: 12 * numStages dB/oct, numStages in [1, kMaxStages].
         void setSlopeStages (int n)        noexcept { slopeStages = std::clamp (n, 1, kMaxStages); }
         void setKnee       (double kDb)    noexcept { kneeDb = std::max (0.0, kDb); }

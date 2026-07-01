@@ -163,6 +163,84 @@ namespace
                      linToDb (midComp) - linToDb (midFlat), linToDb (lowComp), linToDb (lowFlat));
     }
 
+    // Independent static gain-reduction oracle. For a hard-knee compressor the
+    // static curve is  out = T + (in - T)/R  above threshold, so the expected
+    // steady-state gain reduction (magnitude, dB) is  GR = (L - T)*(1 - 1/R)
+    // for L > T, and 0 below. Derived from the SPEC only — never read from the
+    // implementation under test.
+    double grOracleDb (double L, double T, double R)
+    {
+        if (L <= T) return 0.0;
+        return (L - T) * (1.0 - 1.0 / R);
+    }
+
+    void perBandGrOracleTest (double Fs)
+    {
+        std::printf ("Per-band gain-reduction oracle @ Fs=%.0f\n", Fs);
+        // Long settle so the decoupled ballistics reach steady state; the
+        // measure window is an integer-ish number of periods for a clean RMS.
+        const int settle = (int) (0.5 * Fs), measure = (int) (0.2 * Fs);
+        const double fTone = 1000.0; // lives in the mid band
+
+        // Build a multiband comp with a known threshold/ratio on the mid band
+        // and identity (ratio 1) elsewhere. Hard knee (kneeDb default 0),
+        // no makeup — matching the oracle's static curve.
+        auto makeMb = [&] (double thr, double ratio) {
+            auto mb = std::make_unique<factory_core::MultibandCompressor>();
+            mb->prepare (Fs);
+            mb->setCrossover (250.0, 4000.0);
+            mb->setMix (1.0);
+            for (int i = 0; i < 3; ++i) { mb->band (i).setThresholdDb (0.0); mb->band (i).setRatio (1.0); }
+            mb->band (1).setThresholdDb (thr);
+            mb->band (1).setRatio (ratio);
+            mb->band (1).setKneeDb (0.0);
+            mb->band (1).setMakeupDb (0.0);
+            // Fast attack + long release so the decoupled ballistics LATCH the
+            // gain at the peak-level static reduction: the rectified-sine
+            // detector re-affirms the peak every cycle while the slow release
+            // barely eases it through the brief troughs, so the applied gain is
+            // ~constant at staticGainDb(peak-L). That is what makes the peak
+            // static-curve the correct independent oracle here (an audio-rate
+            // attack/release would apply a time-varying gain whose RMS average
+            // is shallower than the peak reduction, and would NOT match the
+            // static curve). This calibrates the measurement to the spec; it
+            // does not loosen the ±1 dB tolerance.
+            mb->band (1).setAttackMs (0.5);
+            mb->band (1).setReleaseMs (1500.0);
+            mb->band (1).prepare (Fs);
+            return mb;
+        };
+
+        // A sine of amplitude A has level 20*log10(A) dBFS at its peak; the
+        // compressor detects on the (linked) peak envelope, so the input level
+        // driving the static curve is the peak level in dBFS.
+        struct Point { double L, T, R; };
+        const Point pts[] = {
+            { -6.0, -24.0, 4.0 },
+            { -6.0, -18.0, 2.0 },
+            { -12.0, -30.0, 3.0 },
+        };
+
+        for (const auto& p : pts)
+        {
+            const double amp = dbToLin (p.L);
+            // Reference: same band at ratio 1 (no compression) to isolate the
+            // crossover's own passband gain from the compression reduction.
+            auto comp = makeMb (p.T, p.R);
+            auto flat = makeMb (p.T, 1.0);
+            const double rComp = toneRms (*comp, Fs, fTone, amp, settle, measure);
+            const double rFlat = toneRms (*flat, Fs, fTone, amp, settle, measure);
+            const double measuredGr = -(linToDb (rComp) - linToDb (rFlat)); // magnitude
+            const double expectedGr = grOracleDb (p.L, p.T, p.R);
+            std::printf ("  L=%.0f T=%.0f R=%.1f  expected GR=%.2f dB  measured GR=%.2f dB\n",
+                         p.L, p.T, p.R, expectedGr, measuredGr);
+            if (std::abs (measuredGr - expectedGr) > 1.0)
+                fail ("gain-reduction oracle mismatch: expected " + std::to_string (expectedGr)
+                      + " got " + std::to_string (measuredGr) + " dB (L=" + std::to_string (p.L)
+                      + " T=" + std::to_string (p.T) + " R=" + std::to_string (p.R) + ")");
+        }
+    }
+
     void mixTest (double Fs)
     {
         std::printf ("Mix=0 dry passthrough @ Fs=%.0f\n", Fs);
@@ -188,13 +266,14 @@ int main (int argc, char** argv)
 {
     std::vector<double> rates;
     if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 96000.0 };
+    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     for (double Fs : rates)
     {
         crossoverTest (Fs);
         transparentTest (Fs);
         perBandTest (Fs);
+        perBandGrOracleTest (Fs);
         mixTest (Fs);
     }
 

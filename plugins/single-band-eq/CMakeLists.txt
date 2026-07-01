@@ -48,7 +48,7 @@ target_link_libraries(single_band_eq_dsp_test PRIVATE factory_core)
 target_compile_features(single_band_eq_dsp_test PRIVATE cxx_std_20)
 
 # Oracle + invariants at each required sample rate.
-foreach(_fs 44100 48000 96000)
+foreach(_fs 44100 48000 88200 96000 176400 192000)
   add_test(NAME single_band_eq_dsp_${_fs}
            COMMAND single_band_eq_dsp_test ${_fs})
 endforeach()

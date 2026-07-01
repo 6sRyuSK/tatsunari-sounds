@@ -158,6 +158,14 @@ namespace
         std::printf ("  HF tail energy: damp0.1=%.4e  damp0.9=%.4e\n", lowDamp, hiDamp);
     }
 
+    // A sane linear peak ceiling for the reverb output. The input bursts here
+    // peak at 0.4, and a stable FDN — even with pitch-shifted shimmer feedback
+    // and modulation — must not build far past the excitation level. 10.0 is
+    // ~28 dB above the 0.4 burst: generous headroom for transient buildup, yet
+    // it still catches the real divergence (freeze+shimmer used to run away to
+    // 1e6+). The old 1e6 (~120 dB) bound was effectively "not NaN".
+    constexpr double kPeakCeiling = 10.0;
+
     void freezeTest (double Fs)
     {
         std::printf ("Freeze @ Fs=%.0f\n", Fs);
@@ -185,6 +193,75 @@ namespace
         if (frozen < 0.5)        fail ("freeze did not sustain (ratio " + std::to_string (frozen) + ")");
         if (frozen <= normal)    fail ("freeze not more sustained than normal");
         std::printf ("  sustain ratio: freeze=%.3f  normal=%.3f\n", frozen, normal);
+    }
+
+    // Guards the P0 that used to make Freeze + Shimmer diverge: with shimmer > 0
+    // and Freeze ON, holding for tens of seconds must stay finite AND bounded to
+    // a sane ceiling (issue #35).
+    void freezeShimmerTest (double Fs)
+    {
+        std::printf ("Freeze+Shimmer @ Fs=%.0f\n", Fs);
+        auto run = [&] (double shimmer) {
+            factory_core::ShimmerReverb rv;
+            rv.prepare (Fs);
+            rv.setSize (1.2); rv.setDecaySec (4.0); rv.setDamping (0.1);
+            rv.setShimmer (shimmer); rv.setPitchASemis (12.0); rv.setPitchBSemis (7.0);
+            rv.setVoiceBMix (0.5); rv.setModDepth (0.5); rv.setMix (1.0);
+
+            // Feed a burst to excite the tail, then freeze and hold ~45s silent.
+            const int burst = (int) (0.2 * Fs);
+            for (int n = 0; n < burst; ++n)
+            {
+                double l = 0.4 * std::sin (2.0 * kPi * 300.0 * n / Fs), r = l;
+                rv.processStereo (l, r);
+            }
+            rv.setFreeze (true);
+
+            const int hold = (int) (45.0 * Fs);
+            double peak = 0.0;
+            for (int n = 0; n < hold; ++n)
+            {
+                double l = 0.0, r = 0.0;
+                rv.processStereo (l, r);
+                if (! std::isfinite (l) || ! std::isfinite (r))
+                { fail ("freeze+shimmer non-finite at shimmer=" + std::to_string (shimmer) + " n=" + std::to_string (n)); return; }
+                peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+            }
+            if (peak > kPeakCeiling)
+                fail ("freeze+shimmer grew past ceiling (shimmer=" + std::to_string (shimmer)
+                      + " peak=" + std::to_string (peak) + ")");
+            std::printf ("  shimmer=%.2f: finite over 45s, peak=%.3f\n", shimmer, peak);
+        };
+        run (0.35);
+        run (0.95);
+    }
+
+    // High shimmer + long decay transient: peak must stay within the sane bound
+    // (issue #35).
+    void highShimmerTransientTest (double Fs)
+    {
+        std::printf ("High-shimmer transient @ Fs=%.0f\n", Fs);
+        factory_core::ShimmerReverb rv;
+        rv.prepare (Fs);
+        rv.setSize (1.4); rv.setDecaySec (12.0); rv.setDamping (0.0);
+        rv.setShimmer (0.95); rv.setPitchASemis (12.0); rv.setPitchBSemis (19.0);
+        rv.setVoiceBMix (0.5); rv.setModDepth (1.0); rv.setMix (1.0);
+
+        double peak = 0.0;
+        const int burst = (int) (0.1 * Fs);
+        const int N = (int) (20.0 * Fs);
+        for (int n = 0; n < N; ++n)
+        {
+            const double x = (n < burst) ? 0.4 * std::sin (2.0 * kPi * 220.0 * n / Fs) : 0.0;
+            double l = x, r = x;
+            rv.processStereo (l, r);
+            if (! std::isfinite (l) || ! std::isfinite (r))
+            { fail ("high-shimmer transient non-finite at n=" + std::to_string (n)); return; }
+            peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+        }
+        if (peak > kPeakCeiling)
+            fail ("high-shimmer transient exceeded ceiling (peak " + std::to_string (peak) + ")");
+        std::printf ("  finite, peak=%.3f\n", peak);
     }
 
     void mixTest (double Fs)
@@ -224,7 +301,7 @@ namespace
             if (! std::isfinite (l) || ! std::isfinite (r)) { fail ("non-finite output at n=" + std::to_string (n)); break; }
             peak = std::max (peak, std::abs (l));
         }
-        if (peak > 1.0e6) fail ("output grew unbounded (peak " + std::to_string (peak) + ")");
+        if (peak > kPeakCeiling) fail ("output grew unbounded (peak " + std::to_string (peak) + ")");
         std::printf ("  finite, peak=%.2f\n", peak);
     }
 }
@@ -235,7 +312,7 @@ int main (int argc, char** argv)
 
     std::vector<double> rates;
     if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 96000.0 };
+    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     for (double Fs : rates)
     {
@@ -243,6 +320,8 @@ int main (int argc, char** argv)
         decayTest (Fs);
         dampingTest (Fs);
         freezeTest (Fs);
+        freezeShimmerTest (Fs);
+        highShimmerTransientTest (Fs);
         mixTest (Fs);
         stabilityTest (Fs);
     }

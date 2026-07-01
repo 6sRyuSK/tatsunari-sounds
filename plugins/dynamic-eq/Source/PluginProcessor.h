@@ -90,6 +90,15 @@ private:
     std::array<factory_core::DynamicEqBand, kNumBands> bands;
     std::atomic<float>* bypassParam = nullptr;
 
+    // Per-band smoothing of the continuous Freq / Gain / Q parameters, driven
+    // in sub-block chunks in processBlock so automation/fast moves don't zip or
+    // click. Sized once (members) and reset in prepareToPlay — no allocation on
+    // the audio thread.
+    std::array<juce::SmoothedValue<double>, kNumBands> freqSmooth;
+    std::array<juce::SmoothedValue<double>, kNumBands> gainSmooth;
+    std::array<juce::SmoothedValue<double>, kNumBands> qSmooth;
+    static constexpr int kSmoothChunk = 32; // samples per coefficient update
+
     double currentSampleRate = 44100.0;
 
     // Analyzer ring buffer (single producer: audio thread).

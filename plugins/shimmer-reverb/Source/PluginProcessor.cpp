@@ -97,6 +97,13 @@ void ShimmerReverbAudioProcessor::prepareToPlay (double sampleRate, int /*sample
 {
     engine.prepare (sampleRate);
     outputLevel.store (0.0f);
+
+    // ~40ms ramp keeps Size read-position and Mix moves continuous (issue #40).
+    constexpr double kRampSec = 0.04;
+    sizeSmoothed.reset (sampleRate, kRampSec);
+    mixSmoothed.reset (sampleRate, kRampSec);
+    sizeSmoothed.setCurrentAndTargetValue (sizeParam->load() * 0.01);
+    mixSmoothed.setCurrentAndTargetValue (mixParam->load() * 0.01);
 }
 
 bool ShimmerReverbAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -122,7 +129,6 @@ void ShimmerReverbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
         return;
     }
 
-    engine.setSize (sizeParam->load() * 0.01);
     engine.setDecaySec (decayParam->load());
     engine.setDamping (dampParam->load() * 0.01);
     engine.setPreDelayMs (preDelayParam->load());
@@ -135,7 +141,11 @@ void ShimmerReverbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     engine.setModRateHz (modRateParam->load());
     engine.setModDepth (modDepthParam->load() * 0.01);
     engine.setFreeze (freezeParam->load() > 0.5f);
-    engine.setMix (mixParam->load() * 0.01);
+
+    // Size and Mix are continuous and jump audibly if stepped at block
+    // boundaries; ramp them per-sample via SmoothedValue (issue #40).
+    sizeSmoothed.setTargetValue (sizeParam->load() * 0.01);
+    mixSmoothed.setTargetValue (mixParam->load() * 0.01);
 
     const int numSamples = buffer.getNumSamples();
     const int numCh = juce::jmin (buffer.getNumChannels(), 2);
@@ -145,6 +155,9 @@ void ShimmerReverbAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     double sumSq = 0.0;
     for (int i = 0; i < numSamples; ++i)
     {
+        engine.setSize (sizeSmoothed.getNextValue());
+        engine.setMix (mixSmoothed.getNextValue());
+
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
         engine.processStereo (l, r);

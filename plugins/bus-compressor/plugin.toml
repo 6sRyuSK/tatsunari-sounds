@@ -3,6 +3,6 @@ name      = "Bus Compressor"
 slug      = "bus-compressor"
 category  = "Dynamics"
 status    = "in-progress"
-version   = "0.1.1"
+version   = "0.1.2"
 formats   = ["VST3", "AU"]
 reference = "SSL G-series bus comp"

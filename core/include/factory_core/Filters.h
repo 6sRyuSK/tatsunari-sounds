@@ -7,6 +7,7 @@
 //
 #include "Biquad.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace factory_core
@@ -119,9 +120,16 @@ namespace factory_core
                                          int stage, int numStages, double sampleRate) noexcept
     {
         constexpr double butterQ = 0.70710678118654752440; // 1/sqrt(2)
+        // Bound the resonant peak. A 2nd-order section's peak magnitude grows
+        // ~= Q, so cap the (single) resonant peak section's Q to keep the cascade
+        // resonance within ~+18 dB even at max slope + max user Q. Without this,
+        // 96 dB/oct (8 stages) + Q=18 reaches ~+25 dB (~18x) — a loud clipping
+        // hazard reachable with two normal sliders. userQ == Butterworth (0.7071)
+        // is unaffected (stays flat) since the cap only engages for high Q.
+        constexpr double kMaxSectionQ = 8.0; // ~+18 dB peak ceiling
         double q = butterworthSectionQ (stage, numStages);
         if (stage == numStages - 1)
-            q *= userQ / butterQ; // resonance on the peak section
+            q = std::min (q * userQ / butterQ, kMaxSectionQ); // resonance on the peak section, capped
         return designFilter (type, freqHz, 0.0, q, sampleRate);
     }
 } // namespace factory_core

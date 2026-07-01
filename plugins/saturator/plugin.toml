@@ -3,6 +3,6 @@ name      = "Saturator"
 slug      = "saturator"
 category  = "Saturation"
 status    = "in-progress"
-version   = "0.1.1"
+version   = "0.1.2"
 formats   = ["VST3", "AU"]
 reference = "Analog tape / tube soft-clip"

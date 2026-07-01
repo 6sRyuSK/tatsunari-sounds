@@ -141,6 +141,83 @@ namespace
         std::printf ("  echo ratios = %.3f, %.3f (expect %.2f)\n", r12, r23, fb);
     }
 
+    // Sparse-overlap feedback stability (issue #34). In the sparse region
+    // (density such that grain interval > grainSize/2) an isolated grain must
+    // not amplify the delayed signal, or feedback*grain-gain can exceed 1 and
+    // the loop diverges. Now that the core caps grain gain at unity, drive an
+    // impulse through the loop at max feedback and assert the impulse response
+    // is NON-INCREASING and bounded: the delay-tap peaks must not grow tap over
+    // tap, and the tail energy must decay. This is an independent bound (loop
+    // gain < 1), not derived from the implementation's coefficients.
+    void sparseOverlapDecayTest (double Fs)
+    {
+        std::printf ("Sparse-overlap feedback decay @ Fs=%.0f\n", Fs);
+        // density = 20 Hz, grainSize = 40 ms -> interval = Fs/20, grain = 0.04*Fs.
+        // interval (0.05*Fs) > grain/2 (0.02*Fs): genuinely sparse overlap.
+        const double grainMs = 40.0;
+        const int D = (int) (0.15 * Fs);
+
+        factory_core::GranularDelay g;
+        g.prepare (Fs, 2.0);
+        g.setGrainSizeMs (grainMs);
+        g.setDensityHz (20.0);
+        g.setDelaySamples ((double) D);
+        g.setFeedback (0.95); // plugin's feedback maximum
+        g.setPositionJitterMs (0.0);
+        g.setPitchSemitones (0.0);
+        g.setPitchRandomSemis (0.0);
+        g.setSpread (0.0);
+        g.setMix (1.0);
+
+        const int total = (int) (3.0 * Fs);
+        std::vector<double> out ((size_t) total);
+        double globalPeak = 0.0;
+        for (int n = 0; n < total; ++n)
+        {
+            double x = (n == 0) ? 1.0 : 0.0; // unit impulse
+            double l = x, r = x;
+            g.processStereo (l, r);
+            out[(size_t) n] = l;
+            globalPeak = std::max (globalPeak, std::abs (l));
+        }
+
+        // Bounded: nothing may blow up (allow modest transient headroom).
+        if (! std::isfinite (globalPeak) || globalPeak > 4.0)
+            fail ("sparse-overlap output not bounded: peak " + std::to_string (globalPeak));
+
+        // Per-tap peak: measure the largest |sample| in a window around each
+        // successive delay tap; require it to be NON-INCREASING (loop gain < 1).
+        const int win = (int) (0.05 * Fs);
+        auto tapPeak = [&] (int centre)
+        {
+            double p = 0.0;
+            for (int i = std::max (0, centre - win); i < std::min (total, centre + win); ++i)
+                p = std::max (p, std::abs (out[(size_t) i]));
+            return p;
+        };
+        double prev = tapPeak (D);
+        for (int k = 2; k <= 12; ++k)
+        {
+            const int centre = k * D;
+            if (centre + win >= total) break;
+            const double p = tapPeak (centre);
+            // Allow a tiny epsilon for grain-scheduling phase, but forbid growth.
+            if (p > prev + 1.0e-9)
+                fail ("sparse-overlap tap " + std::to_string (k) + " grew: "
+                      + std::to_string (p) + " > " + std::to_string (prev));
+            prev = p;
+        }
+
+        // Late-window energy must have decayed well below the first echo.
+        const double eEarly = rms (out, D, win);
+        const double eLate  = rms (out, total - win, win);
+        if (! (eLate < eEarly))
+            fail ("sparse-overlap tail did not decay: late " + std::to_string (eLate)
+                  + " >= early " + std::to_string (eEarly));
+        std::printf ("  peak=%.4f  early rms=%.4e  late rms=%.4e (non-increasing)\n",
+                     globalPeak, eEarly, eLate);
+    }
+
     void mixTest (double Fs)
     {
         std::printf ("Mix=0 dry passthrough @ Fs=%.0f\n", Fs);
@@ -169,12 +246,13 @@ int main (int argc, char** argv)
 
     std::vector<double> rates;
     if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 96000.0 };
+    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     for (double Fs : rates)
     {
         colaTest (Fs);
         feedbackTest (Fs);
+        sparseOverlapDecayTest (Fs);
         mixTest (Fs);
     }
 

@@ -63,6 +63,16 @@ private:
     factory_core::MultibandCompressor mb;
     std::array<std::atomic<float>, kBands> bandGr { };
 
+    // Crossover frequency smoothing (log-domain) to avoid LR4 coefficient
+    // zipper/clicks when the crossover parameters are automated. We smooth
+    // log(freq) then exp, and only push new coeffs to the crossover at
+    // sub-block granularity and when the value actually moved.
+    juce::SmoothedValue<double> lowFreqSmoothed;
+    juce::SmoothedValue<double> highFreqSmoothed;
+    double lastLowFreq  = 0.0; // cache of last value pushed to mb.setCrossover
+    double lastHighFreq = 0.0;
+    static constexpr int kXoverUpdateSamples = 32; // sub-block granularity
+
     // Fixed vocal-tuned ballistics per band.
     static constexpr double kAttackMs[kBands]  = { 25.0, 12.0, 4.0 };
     static constexpr double kReleaseMs[kBands] = { 180.0, 120.0, 70.0 };

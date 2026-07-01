@@ -60,6 +60,14 @@ private:
     factory_core::Compressor compressor;
     std::atomic<float> gainReductionDb { 0.0f };
 
+    // Bypass edge detection: reset ballistics on the bypass->active transition
+    // so releasing bypass does not click with stale gain state.
+    bool wasBypassed = false;
+
+    // Zipper-free parameter delivery: ramp makeup (dB) and mix over ~40 ms.
+    juce::SmoothedValue<double> makeupSmoothed;
+    juce::SmoothedValue<double> mixSmoothed;
+
     static double ratioFromIndex (int index) noexcept;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BusCompressorAudioProcessor)

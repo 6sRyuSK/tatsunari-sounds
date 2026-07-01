@@ -154,7 +154,10 @@ namespace factory_core
             slot->gR = std::sin (theta);
 
             // Normalize level for overlap: 50% overlap (interval = dur/2) -> 1.
-            slot->gain = std::clamp (2.0 * interval / dur, 0.0, 4.0);
+            // Cap at unity: in the sparse region (interval > dur/2) an isolated
+            // grain must NOT amplify the delayed signal, or the feedback loop
+            // gain (feedback * grain-cloud gain) can exceed 1 and diverge.
+            slot->gain = std::clamp (2.0 * interval / dur, 0.0, 1.0);
         }
 
         double fs = 44100.0;

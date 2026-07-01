@@ -81,14 +81,22 @@ namespace factory_core
 
             preDelay.write (inMono);
             const double pre = preDelay.readInterpolated (preDelaySamples);
-            const double rin = (freeze ? 0.0 : pre) + shimmerFb;
+            // Freeze must cut the shimmer feedback too: the FDN is lossless while
+            // frozen (write-back gain 1.0, damping bypassed), so injecting the
+            // pitch-shifted tail every sample drives the loss-free loop to
+            // infinity. Gate the whole external input, not just `pre`.
+            const double rin = freeze ? 0.0 : (pre + shimmerFb);
 
-            // Read tails (with LFO modulation), then damp.
+            // Read tails (with LFO modulation), then damp. Guard against a
+            // non-finite state (denormal/overflow): flush the line so one Inf/NaN
+            // cannot poison the feedback loop permanently.
             std::array<double, kLines> s {};
             for (int i = 0; i < kLines; ++i)
             {
                 const double len = baseLen[i] * size + modDepth * kModMax * std::sin (2.0 * kPi * lfoPhase + i * 0.7);
-                s[(size_t) i] = lines[(size_t) i].readInterpolated (std::max (1.0, len));
+                double sv = lines[(size_t) i].readInterpolated (std::max (1.0, len));
+                if (! std::isfinite (sv)) { sv = 0.0; lines[(size_t) i].reset(); }
+                s[(size_t) i] = sv;
             }
 
             std::array<double, kLines> h {};
@@ -116,6 +124,7 @@ namespace factory_core
             double voice = (1.0 - voiceBMix) * pA + voiceBMix * pB;
             voice = highCut.lp (lowCut.hp (voice));
             shimmerFb = shimmer * voice;
+            if (! std::isfinite (shimmerFb)) shimmerFb = 0.0;
 
             l = (1.0 - mix) * dryL + mix * wetL;
             r = (1.0 - mix) * dryR + mix * wetR;

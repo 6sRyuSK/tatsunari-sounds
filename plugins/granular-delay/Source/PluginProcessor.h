@@ -72,5 +72,18 @@ private:
     double lfoPhase = 0.0;
     std::atomic<float> outputLevel { 0.0f };
 
+    // Zipper-free parameter ramps (P3). Preallocated members; reset in
+    // prepareToPlay, driven per sample in processBlock — RT-safe.
+    juce::SmoothedValue<double> feedbackSmoothed;
+    juce::SmoothedValue<double> mixSmoothed;
+    juce::SmoothedValue<double> delaySamplesSmoothed;
+
+    // Tempo-sync worst case governs the delay-buffer length (issue #37):
+    //   maxDivisionBeats(1.5) * 60 / kMinSyncBpm(20) * lfoMaxFactor(1.25)
+    //   = 1.5 * 60 / 20 * 1.25 = 5.625 s  ->  size for 6.0 s.
+    // Free mode (2000 ms) * 1.25 LFO = 2.5 s is also covered.
+    static constexpr double kMinSyncBpm     = 20.0;
+    static constexpr double kMaxDelaySeconds = 6.0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GranularDelayAudioProcessor)
 };

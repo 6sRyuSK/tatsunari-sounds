@@ -68,5 +68,9 @@ private:
     factory_core::ShimmerReverb engine;
     std::atomic<float> outputLevel { 0.0f };
 
+    // Smoothed continuous params to avoid zipper/click when moved (issue #40).
+    juce::SmoothedValue<double> sizeSmoothed;
+    juce::SmoothedValue<double> mixSmoothed;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ShimmerReverbAudioProcessor)
 };

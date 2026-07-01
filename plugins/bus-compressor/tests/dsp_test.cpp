@@ -164,7 +164,7 @@ int main (int argc, char** argv)
 {
     std::vector<double> rates;
     if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 96000.0 };
+    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     for (double Fs : rates)
     {

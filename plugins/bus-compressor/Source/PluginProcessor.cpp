@@ -77,6 +77,13 @@ void BusCompressorAudioProcessor::prepareToPlay (double sampleRate, int /*sample
 {
     compressor.prepare (sampleRate);
     gainReductionDb.store (0.0f);
+    wasBypassed = false;
+
+    constexpr double rampSeconds = 0.04; // ~40 ms zipper-free ramp
+    makeupSmoothed.reset (sampleRate, rampSeconds);
+    mixSmoothed.reset (sampleRate, rampSeconds);
+    makeupSmoothed.setCurrentAndTargetValue (makeupParam != nullptr ? (double) makeupParam->load() : 0.0);
+    mixSmoothed.setCurrentAndTargetValue (mixParam != nullptr ? (double) mixParam->load() * 0.01 : 1.0);
 }
 
 bool BusCompressorAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -100,18 +107,35 @@ void BusCompressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     if (bypassParam->load() > 0.5f)
     {
         gainReductionDb.store (0.0f);
+        wasBypassed = true;
         return;
+    }
+
+    // Bypass -> active transition: clear stale ballistics (gainStateDb) so the
+    // first active block does not click, and jump the smoothers to the current
+    // targets so they don't ramp from a bypass-era value.
+    if (wasBypassed)
+    {
+        compressor.reset();
+        makeupSmoothed.setCurrentAndTargetValue ((double) makeupParam->load());
+        mixSmoothed.setCurrentAndTargetValue ((double) mixParam->load() * 0.01);
+        wasBypassed = false;
     }
 
     compressor.setThresholdDb (thresholdParam->load());
     compressor.setRatio (ratioFromIndex ((int) ratioParam->load()));
     compressor.setAttackMs (attackParam->load());
     compressor.setReleaseMs (releaseParam->load());
-    compressor.setMakeupDb (makeupParam->load());
 
-    const double mix = mixParam->load() * 0.01;
+    // Smoothed parameter delivery (zipper-free). Makeup is part of the core's
+    // gain law, so deliver the smoothed dB to the core per sub-block; mix is a
+    // dry/wet blend applied per sample from the smoothed value.
+    makeupSmoothed.setTargetValue ((double) makeupParam->load());
+    mixSmoothed.setTargetValue ((double) mixParam->load() * 0.01);
+
     const int numSamples = buffer.getNumSamples();
     const int numCh = juce::jmin (buffer.getNumChannels(), 2);
+    constexpr int subBlock = 32; // makeup update granularity
 
     float minGr = 0.0f; // most negative GR over the block, for the meter
 
@@ -121,6 +145,10 @@ void BusCompressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
         auto* R = buffer.getWritePointer (1);
         for (int i = 0; i < numSamples; ++i)
         {
+            if ((i % subBlock) == 0)
+                compressor.setMakeupDb (makeupSmoothed.skip (juce::jmin (subBlock, numSamples - i)));
+
+            const double mix = mixSmoothed.getNextValue();
             const double dl = L[i], dr = R[i];
             double cl = dl, cr = dr;
             compressor.processStereoSample (cl, cr);
@@ -134,6 +162,10 @@ void BusCompressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
         auto* x = buffer.getWritePointer (0);
         for (int i = 0; i < numSamples; ++i)
         {
+            if ((i % subBlock) == 0)
+                compressor.setMakeupDb (makeupSmoothed.skip (juce::jmin (subBlock, numSamples - i)));
+
+            const double mix = mixSmoothed.getNextValue();
             const double dx = x[i];
             const double g = compressor.processDetector (std::abs (dx));
             x[i] = (float) ((1.0 - mix) * dx + mix * (dx * g));

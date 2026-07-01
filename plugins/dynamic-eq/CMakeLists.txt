@@ -48,7 +48,7 @@ add_executable(dynamic_eq_dsp_test tests/dsp_test.cpp)
 target_link_libraries(dynamic_eq_dsp_test PRIVATE factory_core)
 target_compile_features(dynamic_eq_dsp_test PRIVATE cxx_std_20)
 
-foreach(_fs 44100 48000 96000)
+foreach(_fs 44100 48000 88200 96000 176400 192000)
   add_test(NAME dynamic_eq_dsp_${_fs}
            COMMAND dynamic_eq_dsp_test ${_fs})
 endforeach()

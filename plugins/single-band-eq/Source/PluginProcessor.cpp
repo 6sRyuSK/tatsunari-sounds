@@ -74,6 +74,15 @@ void SingleBandEqAudioProcessor::prepareToPlay (double sampleRate, int /*samples
         f.setCoeffs (initial);
     }
 
+    // Ramp state (#32): ~8 ms coefficient crossfade, derived from the sample rate.
+    currentCoeffs = initial;
+    targetCoeffs  = initial;
+    lastApplied   = initial;
+    rampSamples   = juce::jmax (1, (int) std::round (0.008 * sampleRate));
+    rampRemaining = 0;
+
+    wasBypassed = false; // (#41)
+
     coeffFifo.reset();
     haveSnapshot = false;
 
@@ -118,6 +127,9 @@ void SingleBandEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::ScopedNoDenormals noDenormals;
 
     // Pull the newest coefficients the producer published (lock-free, no alloc).
+    // Rather than swapping wholesale (which steps discontinuously against the
+    // biquad z-state => clicks, #32), start a ramp from currentCoeffs to the new
+    // target; the ramp is applied at sub-block granularity below.
     if (const int ready = coeffFifo.getNumReady(); ready > 0)
     {
         int start1, size1, start2, size2;
@@ -129,8 +141,14 @@ void SingleBandEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         coeffFifo.finishedRead (ready);
 
-        filters[0].setCoeffs (latest);
-        filters[1].setCoeffs (latest);
+        // If a ramp is still in flight, start the new one from where we are now
+        // (the last interpolated coeffs applied to the filters) so the crossfade
+        // stays continuous instead of jumping back to the last settled point.
+        if (rampRemaining > 0)
+            currentCoeffs = lastApplied;
+
+        targetCoeffs  = latest;
+        rampRemaining = rampSamples; // (re)start the crossfade toward the new target
     }
 
     const int totalIn  = getTotalNumInputChannels();
@@ -138,12 +156,61 @@ void SingleBandEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     for (int ch = totalIn; ch < totalOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
+    // Bypass (#41): on the bypass->active transition, clear filter z-state so
+    // stale state can't click back in. A hard branch by itself leaves that state.
     if (bypassParam->load() > 0.5f)
+    {
+        wasBypassed = true;
         return;
+    }
 
-    const int numCh = juce::jmin (buffer.getNumChannels(), 2);
-    for (int ch = 0; ch < numCh; ++ch)
-        filters[(size_t) ch].process (buffer.getWritePointer (ch), buffer.getNumSamples());
+    if (wasBypassed)
+    {
+        filters[0].reset();
+        filters[1].reset();
+        wasBypassed = false;
+    }
+
+    const int numSamples = buffer.getNumSamples();
+    const int numCh      = juce::jmin (buffer.getNumChannels(), 2);
+
+    // Process in sub-blocks, interpolating the 5 coefficients across the ramp so
+    // the change is applied smoothly. When not ramping this collapses to a single
+    // pass with the current coeffs — no per-sample cost.
+    int pos = 0;
+    while (pos < numSamples)
+    {
+        const int chunk = rampRemaining > 0
+                              ? juce::jmin (kRampUpdateInterval, numSamples - pos)
+                              : numSamples - pos;
+
+        if (rampRemaining > 0)
+        {
+            // Linear interpolation of each coefficient toward the target. `t` is
+            // how far along the ramp the end of this chunk sits.
+            rampRemaining = juce::jmax (0, rampRemaining - chunk);
+            const double t = 1.0 - (double) rampRemaining / (double) rampSamples;
+
+            factory_core::BiquadCoeffs c;
+            c.b0 = currentCoeffs.b0 + (targetCoeffs.b0 - currentCoeffs.b0) * t;
+            c.b1 = currentCoeffs.b1 + (targetCoeffs.b1 - currentCoeffs.b1) * t;
+            c.b2 = currentCoeffs.b2 + (targetCoeffs.b2 - currentCoeffs.b2) * t;
+            c.a1 = currentCoeffs.a1 + (targetCoeffs.a1 - currentCoeffs.a1) * t;
+            c.a2 = currentCoeffs.a2 + (targetCoeffs.a2 - currentCoeffs.a2) * t;
+
+            lastApplied = c;
+            for (int ch = 0; ch < numCh; ++ch)
+                filters[(size_t) ch].setCoeffs (c);
+
+            if (rampRemaining == 0)
+                currentCoeffs = targetCoeffs; // settle exactly on the target
+        }
+
+        for (int ch = 0; ch < numCh; ++ch)
+            filters[(size_t) ch].process (buffer.getWritePointer (ch) + pos, chunk);
+
+        pos += chunk;
+    }
 }
 
 juce::AudioProcessorEditor* SingleBandEqAudioProcessor::createEditor()
