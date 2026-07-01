@@ -72,5 +72,21 @@ private:
     // Audio-thread-owned state.
     factory_core::Biquad filters[2];
 
+    // Coefficient smoothing (#32): when new coeffs arrive we ramp from the
+    // currently-applied `currentCoeffs` to `targetCoeffs` over `rampSamples`,
+    // updating the biquads at sub-block granularity to avoid a discontinuous
+    // step (zipper/click) with non-zero z-state. All state below is preallocated
+    // in prepareToPlay; processBlock never allocates.
+    static constexpr int kRampUpdateInterval = 16; // samples between coeff updates
+    factory_core::BiquadCoeffs currentCoeffs {};   // ramp start (last settled coeffs)
+    factory_core::BiquadCoeffs targetCoeffs {};    // destination of the active ramp
+    factory_core::BiquadCoeffs lastApplied {};     // most recent interpolated coeffs
+    int rampSamples    = 0;   // total ramp length in samples (derived from sampleRate)
+    int rampRemaining  = 0;   // samples left in the active ramp (0 == not ramping)
+
+    // Bypass smoothing (#41): reset filter state on the bypass->active transition
+    // so stale z-state can't click back in.
+    bool wasBypassed = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SingleBandEqAudioProcessor)
 };
