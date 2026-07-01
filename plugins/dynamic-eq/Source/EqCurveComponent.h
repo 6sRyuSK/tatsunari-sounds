@@ -232,6 +232,18 @@ private:
     {
         return apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "lsn"))->load() > 0.5f;
     }
+    // Channel target of a band (matches factory_core::ChannelMode ordering:
+    // 0 Stereo, 1 Left, 2 Right, 3 Mid, 4 Side).
+    int bandChannel (int band) const
+    {
+        return (int) apvts.getRawParameterValue (DynamicEqAudioProcessor::pid (band, "chan"))->load();
+    }
+    // One-letter tag for a non-stereo channel target (nullptr for Stereo).
+    static const char* channelTag (int chan)
+    {
+        switch (chan) { case 1: return "L"; case 2: return "R"; case 3: return "M"; case 4: return "S"; }
+        return nullptr;
+    }
     // Effective display gain: active dynamic bands follow the live (post-dynamics)
     // gain so the curve/node breathe; static or bypassed bands use the param.
     float bandGainDb (int band) const
@@ -516,6 +528,23 @@ private:
             g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
             g.drawText (juce::String (b + 1), juce::Rectangle<float> (rad * 2.0f, rad * 2.0f).withCentre (p),
                         juce::Justification::centred);
+
+            // Channel target: L/R/M/S bands carry a small letter badge on the
+            // upper-right of the node so their scope reads at a glance; Stereo
+            // (the default) stays unadorned (see #27).
+            if (const char* tag = channelTag (bandChannel (b)))
+            {
+                const float br = 6.5f;
+                const juce::Point<float> bp (p.x + rad + 2.0f, p.y - rad - 2.0f);
+                g.setColour (juce::Colours::white);
+                g.fillEllipse (juce::Rectangle<float> (br * 2.0f + 2.0f, br * 2.0f + 2.0f).withCentre (bp));
+                g.setColour (col.withAlpha (byp ? 0.55f : 1.0f));
+                g.fillEllipse (juce::Rectangle<float> (br * 2.0f, br * 2.0f).withCentre (bp));
+                g.setColour (juce::Colours::white);
+                g.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
+                g.drawText (tag, juce::Rectangle<float> (br * 2.0f, br * 2.0f).withCentre (bp),
+                            juce::Justification::centred);
+            }
         }
     }
 

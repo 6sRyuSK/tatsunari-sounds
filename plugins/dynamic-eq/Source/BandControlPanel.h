@@ -105,10 +105,12 @@ public:
         relAtt    = std::make_unique<SA> (apvts, id ("rel"),   relSlider);
         kneeAtt   = std::make_unique<SA> (apvts, id ("knee"),  kneeSlider);
 
-        freqSlider.setNumDecimalPlacesToDisplay (0); // integer Hz
-        qSlider.setNumDecimalPlacesToDisplay (2);
+        // Pin the text-box precision. Must run after the attachments above, which
+        // otherwise format continuous ranges with up to 7 decimals (see #26).
+        factory_ui::setSliderDecimals (freqSlider, 0); // integer Hz
+        factory_ui::setSliderDecimals (qSlider, 2);
         for (auto* sl : { &gainSlider, &thrSlider, &rngSlider, &atkSlider, &relSlider, &kneeSlider })
-            sl->setNumDecimalPlacesToDisplay (2);
+            factory_ui::setSliderDecimals (*sl, 2);
 
         updateSlopeEnablement();
     }
