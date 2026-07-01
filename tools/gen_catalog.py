@@ -108,7 +108,8 @@ def main() -> None:
         print("README catalog is up to date.")
         return
     if current != updated:
-        README.write_text(updated, encoding="utf-8")
+        # Force LF so regenerating on Windows doesn't rewrite every line as CRLF.
+        README.write_text(updated, encoding="utf-8", newline="\n")
         print("README catalog updated.")
     else:
         print("README catalog already up to date.")
