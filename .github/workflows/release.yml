@@ -1,21 +1,29 @@
 name: Release
 
-# Build the plugins and attach them to a GitHub Release.
+# Build ONE plugin and attach it to a per-plugin GitHub Release.
 #
-# Triggered by pushing a version tag (e.g. `v1.2.3`). Builds on macOS and
-# Windows, packages each OS's plugins into a zip, and uploads them as assets
-# on the Release for that tag:
-#   - macOS:   VST3 + AU  -> tatsunari-plugins-<tag>-macOS.zip
-#   - Windows: VST3       -> tatsunari-plugins-<tag>-Windows.zip
+# Triggered by pushing a per-plugin tag `<slug>-v<version>` (e.g.
+# `saturator-v0.1.2`). Only that plugin is built — on macOS and Windows — and
+# packaged per OS:
+#   - macOS:   VST3 + AU  -> <slug>-v<version>-macOS.zip
+#   - Windows: VST3       -> <slug>-v<version>-Windows.zip
 #
-# The build setup mirrors ci.yml (Ninja + compiler cache) so it stays in sync.
-# `workflow_dispatch` builds the same artifacts for inspection but does not
-# publish a Release (there is no tag to attach to).
+# The tag version must match the plugin's plugin.toml version (single source of
+# truth: catalog == binary == release); a mismatch fails the run.
+#
+# The build setup mirrors ci.yml (Ninja + compiler cache). `workflow_dispatch`
+# builds the plugin named by the `slug` input for inspection but does not
+# publish a Release.
 
 on:
   push:
-    tags: [ 'v*' ]
+    tags: [ '*-v*' ]
   workflow_dispatch:
+    inputs:
+      slug:
+        description: "Plugin slug to build (e.g. saturator)"
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -35,17 +43,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A stable name for the release assets: the tag on a tag push, otherwise
-      # a short-SHA dev name so `workflow_dispatch` runs still produce zips.
-      - name: Compute version
-        id: ver
+      # Resolve which plugin to build from the tag `<slug>-v<version>` (or the
+      # `slug` input on workflow_dispatch), find its CMake target, and verify
+      # the tag version matches plugin.toml. Runs under bash on every OS (the
+      # Windows runner has Git bash).
+      - name: Resolve plugin
+        id: meta
         shell: bash
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            tag="${{ github.ref_name }}"
+            slug="${tag%-v*}"        # strip trailing -v<version>
+            version="${tag##*-v}"    # keep the <version>
           else
-            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            slug="${{ github.event.inputs.slug }}"
+            version=""               # filled from plugin.toml below
           fi
+
+          dir="plugins/$slug"
+          if [[ ! -f "$dir/plugin.toml" ]]; then
+            echo "::error::Unknown plugin slug '$slug' (no $dir/plugin.toml)"
+            exit 1
+          fi
+
+          target=$(grep -oE 'juce_add_plugin\(\s*[A-Za-z0-9_]+' "$dir/CMakeLists.txt" \
+                   | head -1 | sed -E 's/juce_add_plugin\(\s*//')
+          if [[ -z "$target" ]]; then
+            echo "::error::Could not find juce_add_plugin target in $dir/CMakeLists.txt"
+            exit 1
+          fi
+
+          manifest_version=$(grep -oE 'version[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' \
+                             "$dir/plugin.toml" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [[ -n "$version" && "$version" != "$manifest_version" ]]; then
+            echo "::error::Tag version $version != plugin.toml version $manifest_version for $slug"
+            exit 1
+          fi
+          version="$manifest_version"
+
+          {
+            echo "slug=$slug"
+            echo "version=$version"
+            echo "target=$target"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: slug=$slug target=$target version=$version"
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
@@ -72,19 +113,28 @@ jobs:
           -DCMAKE_C_COMPILER_LAUNCHER=${{ matrix.ccache }}
           -DCMAKE_CXX_COMPILER_LAUNCHER=${{ matrix.ccache }}
 
+      # Build only the target plugin's shippable formats (VST3 everywhere, AU on
+      # macOS) — not the whole factory.
       - name: Build
-        run: cmake --build build
+        shell: bash
+        run: |
+          targets="${{ steps.meta.outputs.target }}_VST3"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            targets="$targets ${{ steps.meta.outputs.target }}_AU"
+          fi
+          cmake --build build --target $targets
 
       # ---- package -----------------------------------------------------------
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          stage="tatsunari-plugins-${{ steps.ver.outputs.version }}-macOS"
+          stage="${{ steps.meta.outputs.slug }}-v${{ steps.meta.outputs.version }}-macOS"
           mkdir -p dist "$stage"
           while IFS= read -r p; do
             cp -R "$p" "$stage/"
-          done < <(find build \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' \))
+          done < <(find "build/plugins/${{ steps.meta.outputs.slug }}" \
+                     \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' \))
           ( cd "$stage" && zip -r "../dist/${stage}.zip" . )
           ls -la dist
 
@@ -92,9 +142,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "tatsunari-plugins-${{ steps.ver.outputs.version }}-Windows"
+          $stage = "${{ steps.meta.outputs.slug }}-v${{ steps.meta.outputs.version }}-Windows"
           New-Item -ItemType Directory -Force dist, $stage | Out-Null
-          Get-ChildItem build -Recurse -Directory -Filter *.vst3 |
+          Get-ChildItem "build/plugins/${{ steps.meta.outputs.slug }}" -Recurse -Directory -Filter *.vst3 |
             Where-Object { $_.FullName -match '[\\/]VST3[\\/]' } |
             ForEach-Object { Copy-Item -Recurse $_.FullName $stage }
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$stage.zip" -Force
@@ -103,7 +153,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: plugins-${{ matrix.name }}
+          name: plugin-${{ matrix.name }}
           path: dist/*.zip
           if-no-files-found: error
 
@@ -124,6 +174,7 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.ref_name }}
           files: dist/*.zip
           draft: false
           generate_release_notes: true
