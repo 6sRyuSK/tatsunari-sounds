@@ -32,6 +32,30 @@ _None yet._
 
 <!-- END:CATALOG -->
 
+## Install
+
+Download the per-plugin zip from the GitHub Release and copy the bundles into
+your plugin folders:
+
+- **AU** (`.component`) → `~/Library/Audio/Plug-Ins/Components/` (or `/Library/...` for all users)
+- **VST3** (`.vst3`) → `~/Library/Audio/Plug-Ins/VST3/` (or `/Library/...`)
+
+### macOS: "「…」は壊れているため開けません" / "…is damaged and can't be opened"
+
+The release binaries are **not code-signed or notarized**, and macOS attaches a
+quarantine flag (`com.apple.quarantine`) to anything downloaded via a browser.
+Gatekeeper then reports the unsigned bundle as *damaged* — the plugin is fine,
+it is just quarantined. Strip the flag after installing:
+
+    # Adjust the names/paths to what you installed (use ~/Library if you installed per-user).
+    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Resonance Suppressor.component"
+    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Resonance Suppressor.vst3"
+    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Dynamic Parametric EQ.component"
+    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Dynamic Parametric EQ.vst3"
+
+Then restart your DAW and rescan (for AU you may also need
+`killall -9 AudioComponentRegistrar`).
+
 ## Build
 
     cmake -B build -DCMAKE_BUILD_TYPE=Release

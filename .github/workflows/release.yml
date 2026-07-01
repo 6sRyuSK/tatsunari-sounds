@@ -264,6 +264,25 @@ jobs:
               [ -n "$fixes" ]  && { echo "### 修正";   echo; printf '%s' "$fixes";  echo; }
               [ -n "$others" ] && { echo "### その他"; echo; printf '%s' "$others"; echo; }
             fi
+            # macOS の検疫回避手順。リリースバイナリは未署名・未notarizeのため、
+            # ブラウザでダウンロードすると com.apple.quarantine が付き、Gatekeeper が
+            # 「壊れているため開けません」と表示する。プラグインは壊れていない。
+            echo
+            echo "## インストール (macOS)"
+            echo
+            echo "リリースの macOS バイナリは**未署名・未notarize**です。ブラウザで zip を"
+            echo "ダウンロードすると macOS が検疫属性 (\`com.apple.quarantine\`) を付けるため、"
+            echo "Gatekeeper が「壊れているため開けません」と表示します（プラグインは壊れて"
+            echo "いません）。インストール後にターミナルで検疫属性を外してください:"
+            echo
+            echo '```bash'
+            echo "# <PluginName> はインストールした .component / .vst3 の実際の名前に置き換える"
+            echo "# （ユーザー領域に入れた場合は /Library を ~/Library に、sudo は不要）"
+            echo 'sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/<PluginName>.component"'
+            echo 'sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/<PluginName>.vst3"'
+            echo '```'
+            echo
+            echo "その後 DAW を再起動して再スキャン（AU は \`killall -9 AudioComponentRegistrar\` の併用も有効）。"
           } > notes.md
           echo "----- notes.md -----"; cat notes.md
 
