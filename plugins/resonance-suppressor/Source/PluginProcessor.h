@@ -63,7 +63,7 @@ public:
     // Editor display snapshots (GUI thread reads; lock-free).
     float displayMagDb (int bin) const noexcept { return pubMag[(size_t) bin].load (std::memory_order_relaxed); }
     float displayRedDb (int bin) const noexcept { return pubRed[(size_t) bin].load (std::memory_order_relaxed); }
-    int   binsForDisplay() const noexcept { return activeBins; }
+    int   binsForDisplay() const noexcept { return activeBins.load (std::memory_order_relaxed); }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -86,7 +86,8 @@ private:
     factory_core::ResonanceSuppressor suppressor;
     double currentSampleRate = kRefSampleRate;
     int    currentFftOrder   = kBaseFftOrder;
-    int    activeBins        = (1 << kBaseFftOrder) / 2 + 1;
+    std::atomic<int> activeBins { (1 << kBaseFftOrder) / 2 + 1 };
+    bool   wasBypassed       = false;
     std::array<double, kMaxBins> profileBuf {};
     std::array<double, kMaxBins> magScratch {};
 

@@ -96,7 +96,7 @@ void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     currentSampleRate = sampleRate;
     currentFftOrder   = factory_core::fftOrderForSampleRate (sampleRate, kBaseFftOrder, kRefSampleRate, kMaxFftOrder);
-    activeBins        = (1 << currentFftOrder) / 2 + 1;
+    activeBins.store ((1 << currentFftOrder) / 2 + 1, std::memory_order_relaxed);
     suppressor.prepare (sampleRate, currentFftOrder);
     setLatencySamples (suppressor.latencySamples());
     for (auto& a : pubMag) a.store (-120.0f, std::memory_order_relaxed);
@@ -115,9 +115,10 @@ void ResonanceSuppressorAudioProcessor::rasterizeProfile()
 {
     const double sr = currentSampleRate;
     const int N = 1 << currentFftOrder;
+    const int bins = activeBins.load (std::memory_order_relaxed);
     constexpr double sigma = 0.30; // gaussian half-width in natural-log frequency
 
-    for (int k = 0; k < activeBins; ++k) profileBuf[(size_t) k] = 1.0;
+    for (int k = 0; k < bins; ++k) profileBuf[(size_t) k] = 1.0;
 
     for (int n = 0; n < kNumNodes; ++n)
     {
@@ -125,17 +126,17 @@ void ResonanceSuppressorAudioProcessor::rasterizeProfile()
         const double f0 = nodes[(size_t) n].freq->load();
         const double a  = nodes[(size_t) n].amt->load();
         const double lf0 = std::log (juce::jmax (10.0, f0));
-        for (int k = 1; k < activeBins; ++k)
+        for (int k = 1; k < bins; ++k)
         {
             const double f = (double) k * sr / N;
             const double d = (std::log (juce::jmax (10.0, f)) - lf0) / sigma;
             profileBuf[(size_t) k] += a * std::exp (-0.5 * d * d);
         }
     }
-    for (int k = 0; k < activeBins; ++k)
+    for (int k = 0; k < bins; ++k)
         profileBuf[(size_t) k] = juce::jlimit (0.0, 4.0, profileBuf[(size_t) k]);
 
-    suppressor.setProfile (profileBuf.data(), activeBins);
+    suppressor.setProfile (profileBuf.data(), bins);
 }
 
 void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -147,8 +148,24 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     for (int ch = totalIn; ch < totalOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    if (bypassParam->load() > 0.5f)
+    const bool byp = bypassParam->load() > 0.5f;
+    if (byp)
+    {
+        wasBypassed = true;
         return;
+    }
+
+    const int bins = activeBins.load (std::memory_order_relaxed);
+
+    // On the bypass -> active transition, flush the stale STFT ring so we don't
+    // burst N samples of pre-bypass audio, and clear the display snapshots.
+    if (wasBypassed)
+    {
+        suppressor.reset();
+        for (auto& a : pubMag) a.store (-120.0f, std::memory_order_relaxed);
+        for (auto& a : pubRed) a.store (0.0f, std::memory_order_relaxed);
+        wasBypassed = false;
+    }
 
     suppressor.setDepth     ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
@@ -177,7 +194,7 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // preallocated (sized for the top order) to keep processBlock allocation-free.
     const double* magDb = suppressor.magnitudeDb (magScratch.data());
     const double* redDb = suppressor.reductionDb();
-    for (int k = 0; k < activeBins; ++k)
+    for (int k = 0; k < bins; ++k)
     {
         pubMag[(size_t) k].store ((float) magDb[k], std::memory_order_relaxed);
         pubRed[(size_t) k].store ((float) redDb[k], std::memory_order_relaxed);
