@@ -2,6 +2,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "factory_core/ReductionProfile.h"
 #include "factory_core/ResonanceSuppressor.h"
 #include "factory_core/StftResolution.h"
 
@@ -27,7 +28,7 @@ public:
     static constexpr int    kMaxFftOrder   = 13;        // N = 8192, keeps ~23 Hz bins through 192 kHz
     static constexpr double kRefSampleRate = 48000.0;
     static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 4097
-    static constexpr int    kNumNodes      = 6;
+    static constexpr int    kNumBands      = 4; // + a low cut and a high cut
 
     ResonanceSuppressorAudioProcessor();
     ~ResonanceSuppressorAudioProcessor() override = default;
@@ -58,7 +59,15 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     double getSampleRateForDisplay() const noexcept { return currentSampleRate; }
 
-    static juce::String nodePid (int node, const char* suffix);
+    // Parameter-ID helpers (also used by the editor). Cuts: which 0 = low, 1 =
+    // high. Bands: 0..kNumBands-1.
+    static juce::String cutPid  (int which, const char* suffix);
+    static juce::String bandPid (int band,  const char* suffix);
+    // Cut slope choice index (0..3) -> dB/oct.
+    static double slopeValue (int index) noexcept;
+    // Build the reduction-node config from the current parameter values (GUI
+    // thread: the editor curve uses the same mapping as the audio rasteriser).
+    static factory_core::ReductionNodes readNodes (juce::AudioProcessorValueTreeState& apvts);
 
     // Editor display snapshots (GUI thread reads; lock-free).
     float displayMagDb (int bin) const noexcept { return pubMag[(size_t) bin].load (std::memory_order_relaxed); }
@@ -71,8 +80,6 @@ private:
 
     std::atomic<float>* depthParam  = nullptr;
     std::atomic<float>* sharpParam  = nullptr;
-    std::atomic<float>* lowParam    = nullptr;
-    std::atomic<float>* highParam   = nullptr;
     std::atomic<float>* atkParam    = nullptr;
     std::atomic<float>* relParam    = nullptr;
     std::atomic<float>* mixParam    = nullptr;
@@ -81,8 +88,14 @@ private:
     std::atomic<float>* bypassParam = nullptr;
     std::atomic<float>* modeParam   = nullptr;
 
-    struct NodeParams { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* amt = nullptr; };
-    std::array<NodeParams, kNumNodes> nodes;
+    // Reduction-node parameters, cached for the audio thread (lock-free reads).
+    struct CutParams  { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* slope = nullptr; };
+    struct BandParams { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* type = nullptr; std::atomic<float>* sens = nullptr; };
+    CutParams lowCut, highCut;
+    std::array<BandParams, kNumBands> bandParams;
+
+    // Assemble the node config from the cached audio-thread pointers.
+    factory_core::ReductionNodes currentNodes() const noexcept;
 
     factory_core::ResonanceSuppressor suppressor;
     double currentSampleRate = kRefSampleRate;

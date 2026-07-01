@@ -11,9 +11,10 @@
 //
 // The centrepiece: a spectrum display showing the input magnitude, the live
 // per-frequency gain reduction (teal "curtain" — what the suppressor is cutting
-// right now), and the user reduction-profile curve with draggable nodes
-// (double-click to add at a frequency, double-click a node to remove, drag for
-// frequency/amount). Edits go through the APVTS. GUI-thread only.
+// right now), and the soothe-style reduction-profile curve with fixed nodes:
+// a low cut and a high cut (drag frequency; right-click for slope) plus four
+// typed bands (drag frequency/sensitivity; right-click for type). Double-click
+// toggles a node on/off. Edits go through the APVTS. GUI-thread only.
 //
 class SuppressionCurveComponent : public juce::Component,
                                   private juce::Timer
@@ -43,16 +44,22 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         const int hit = nodeAt (e.position);
-        if (hit >= 0) { dragging = hit; beginGesture (hit); }
+        if (hit < 0) return;
+
+        if (e.mods.isPopupMenu()) { showNodeMenu (hit); return; }
+
+        dragging = hit;
+        beginGesture (hit);
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
         if (dragging < 0) return;
         const float f = xToFreq (juce::jlimit (plot.getX(), plot.getRight(), e.position.x));
-        const float a = yToAmt  (juce::jlimit (plot.getY(), plot.getBottom(), e.position.y));
-        setParam (ResonanceSuppressorAudioProcessor::nodePid (dragging, "freq"), f);
-        setParam (ResonanceSuppressorAudioProcessor::nodePid (dragging, "amt"),  a);
+        setParam (pid (dragging, "freq"), f);
+        if (! isCut (dragging)) // bands carry a sensitivity (Y); cuts sit on the 0 line
+            setParam (pid (dragging, "sens"),
+                      yToSens (juce::jlimit (plot.getY(), plot.getBottom(), e.position.y)));
     }
 
     void mouseUp (const juce::MouseEvent&) override
@@ -64,26 +71,23 @@ public:
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         const int hit = nodeAt (e.position);
-        if (hit >= 0) { setParam (ResonanceSuppressorAudioProcessor::nodePid (hit, "on"), 0.0f); repaint(); return; }
-
-        int slot = -1;
-        for (int n = 0; n < ResonanceSuppressorAudioProcessor::kNumNodes; ++n)
-            if (! nodeOn (n)) { slot = n; break; }
-        if (slot < 0) return;
-
-        const float x = juce::jlimit (plot.getX(), plot.getRight(), e.position.x);
-        setParam (ResonanceSuppressorAudioProcessor::nodePid (slot, "freq"), xToFreq (x));
-        setParam (ResonanceSuppressorAudioProcessor::nodePid (slot, "amt"),
-                  yToAmt (juce::jlimit (plot.getY(), plot.getBottom(), e.position.y)));
-        setParam (ResonanceSuppressorAudioProcessor::nodePid (slot, "on"), 1.0f);
-        repaint();
+        if (hit >= 0) { setParam (pid (hit, "on"), nodeOn (hit) ? 0.0f : 1.0f); repaint(); }
     }
 
 private:
     void timerCallback() override { repaint(); }
 
-    static constexpr float kMinDb = -90.0f, kMaxDb = 6.0f;
-    static constexpr float kAmtMin = -1.0f, kAmtMax = 2.0f;
+    static constexpr float kMinDb = -90.0f, kMaxDb = 6.0f;    // analyser axis
+    static constexpr float kSensMin = -30.0f, kSensMax = 30.0f; // profile (sens) axis
+    static constexpr int   kNumNodes = 2 + ResonanceSuppressorAudioProcessor::kNumBands; // LC, HC, bands
+
+    // Node id: 0 = low cut, 1 = high cut, 2.. = band 0..
+    static bool isCut (int id) { return id < 2; }
+    static juce::String pid (int id, const char* s)
+    {
+        return isCut (id) ? ResonanceSuppressorAudioProcessor::cutPid (id, s)
+                          : ResonanceSuppressorAudioProcessor::bandPid (id - 2, s);
+    }
 
     float freqToX (float f) const
     {
@@ -98,18 +102,20 @@ private:
     {
         return plot.getY() + (kMaxDb - juce::jlimit (kMinDb, kMaxDb, db)) / (kMaxDb - kMinDb) * plot.getHeight();
     }
-    float amtToY (float a) const
+    float sensToY (float s) const
     {
-        return plot.getBottom() - (juce::jlimit (kAmtMin, kAmtMax, a) - kAmtMin) / (kAmtMax - kAmtMin) * plot.getHeight();
+        return plot.getBottom() - (juce::jlimit (kSensMin, kSensMax, s) - kSensMin) / (kSensMax - kSensMin) * plot.getHeight();
     }
-    float yToAmt (float y) const
+    float yToSens (float y) const
     {
-        return kAmtMin + (plot.getBottom() - y) / plot.getHeight() * (kAmtMax - kAmtMin);
+        return kSensMin + (plot.getBottom() - y) / plot.getHeight() * (kSensMax - kSensMin);
     }
 
-    bool  nodeOn (int n) const { return apvts.getRawParameterValue (ResonanceSuppressorAudioProcessor::nodePid (n, "on"))->load() > 0.5f; }
-    float nodeFreq (int n) const { return apvts.getRawParameterValue (ResonanceSuppressorAudioProcessor::nodePid (n, "freq"))->load(); }
-    float nodeAmt (int n) const { return apvts.getRawParameterValue (ResonanceSuppressorAudioProcessor::nodePid (n, "amt"))->load(); }
+    bool  nodeOn   (int id) const { return apvts.getRawParameterValue (pid (id, "on"))->load() > 0.5f; }
+    float nodeFreq (int id) const { return apvts.getRawParameterValue (pid (id, "freq"))->load(); }
+    float nodeSens (int id) const { return isCut (id) ? 0.0f : apvts.getRawParameterValue (pid (id, "sens"))->load(); }
+
+    juce::Point<float> nodePos (int id) const { return { freqToX (nodeFreq (id)), sensToY (nodeSens (id)) }; }
 
     void drawGrid (juce::Graphics& g)
     {
@@ -131,6 +137,9 @@ private:
             g.setColour (FactoryLookAndFeel::track().withAlpha (db == 0.0f ? 0.9f : 0.4f));
             g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
         }
+        // Nominal (0 dB sensitivity) reference for the profile curve.
+        g.setColour (FactoryLookAndFeel::track().withAlpha (0.35f));
+        g.drawHorizontalLine ((int) sensToY (0.0f), plot.getX(), plot.getRight());
     }
 
     void drawAnalyzer (juce::Graphics& g)
@@ -190,78 +199,92 @@ private:
         }
     }
 
+    // The reduction-profile curve — the SAME shape functions the audio rasteriser
+    // uses (factory_core::reductionProfileDbAt), so what you see is what runs.
     void drawProfile (juce::Graphics& g)
     {
-        // Summed profile deviation across frequency (same gaussian model as the
-        // processor's rasteriser). Plotted in the node's "amount" space — i.e.
-        // WITHOUT the processor's unity (+1.0) baseline — so a node's dot sits on
-        // its own bump instead of one unit below it (see #22): at a node's centre
-        // the sum equals its amount, which is exactly where drawNodes places it.
+        const auto nodes = ResonanceSuppressorAudioProcessor::readNodes (apvts);
         const int steps = juce::jmax (2, (int) plot.getWidth());
         juce::Path curve;
         for (int i = 0; i <= steps; ++i)
         {
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
-            const float f = xToFreq (x);
-            const float lf = std::log (juce::jmax (10.0f, f));
-            float sum = 0.0f;
-            for (int n = 0; n < ResonanceSuppressorAudioProcessor::kNumNodes; ++n)
-                if (nodeOn (n))
-                {
-                    const float d = (lf - std::log (juce::jmax (10.0f, nodeFreq (n)))) / 0.30f;
-                    sum += nodeAmt (n) * std::exp (-0.5f * d * d);
-                }
-            const float y = amtToY (juce::jlimit (kAmtMin, kAmtMax, sum));
+            const float db = (float) factory_core::reductionProfileDbAt (xToFreq (x), nodes);
+            const float y = sensToY (db);
             if (i == 0) curve.startNewSubPath (x, y);
             else        curve.lineTo (x, y);
         }
-        g.setColour (FactoryLookAndFeel::text().withAlpha (0.55f));
+        g.setColour (FactoryLookAndFeel::text().withAlpha (0.6f));
         g.strokePath (curve, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved));
     }
 
     void drawNodes (juce::Graphics& g)
     {
-        for (int n = 0; n < ResonanceSuppressorAudioProcessor::kNumNodes; ++n)
+        for (int id = 0; id < kNumNodes; ++id)
         {
-            if (! nodeOn (n)) continue;
-            const juce::Point<float> p (freqToX (nodeFreq (n)), amtToY (nodeAmt (n)));
-            const auto col = FactoryLookAndFeel::bandColour (n);
+            if (! nodeOn (id)) continue;
+            const auto p = nodePos (id);
+            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
             g.setColour (juce::Colours::white);
             g.fillEllipse (juce::Rectangle<float> (18.0f, 18.0f).withCentre (p));
             g.setColour (col);
             g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre (p));
             g.setColour (juce::Colours::white);
-            g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
-            g.drawText (juce::String (n + 1), juce::Rectangle<float> (14.0f, 14.0f).withCentre (p), juce::Justification::centred);
+            g.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
+            const juce::String label = isCut (id) ? (id == 0 ? "LC" : "HC") : juce::String (id - 1);
+            g.drawText (label, juce::Rectangle<float> (16.0f, 16.0f).withCentre (p), juce::Justification::centred);
         }
     }
 
     int nodeAt (juce::Point<float> pos) const
     {
         int best = -1; float bestD = 14.0f;
-        for (int n = 0; n < ResonanceSuppressorAudioProcessor::kNumNodes; ++n)
+        for (int id = 0; id < kNumNodes; ++id)
         {
-            if (! nodeOn (n)) continue;
-            const juce::Point<float> p (freqToX (nodeFreq (n)), amtToY (nodeAmt (n)));
-            const float d = p.getDistanceFrom (pos);
-            if (d <= bestD) { bestD = d; best = n; }
+            if (! nodeOn (id)) continue;
+            const float d = nodePos (id).getDistanceFrom (pos);
+            if (d <= bestD) { bestD = d; best = id; }
         }
         return best;
+    }
+
+    // Right-click: On/Off + (cut) slope or (band) type. Radio-ticks the current.
+    void showNodeMenu (int id)
+    {
+        static const juce::StringArray slopes { "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct" };
+        static const juce::StringArray types  { "Bell", "Low Shelf", "High Shelf", "Band Shelf", "Band Reject", "Tilt" };
+        const auto& items = isCut (id) ? slopes : types;
+        const char* choiceSuffix = isCut (id) ? "slope" : "type";
+        const int current = (int) apvts.getRawParameterValue (pid (id, choiceSuffix))->load();
+
+        juce::PopupMenu m;
+        m.addItem (1, "On", true, nodeOn (id));
+        m.addSeparator();
+        for (int i = 0; i < items.size(); ++i)
+            m.addItem (100 + i, items[i], true, i == current);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                         [this, id, choiceSuffix] (int result)
+                         {
+                             if (result == 1) setParam (pid (id, "on"), nodeOn (id) ? 0.0f : 1.0f);
+                             else if (result >= 100) setParam (pid (id, choiceSuffix), (float) (result - 100));
+                             repaint();
+                         });
     }
 
     void setParam (const juce::String& id, float value)
     {
         if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value));
     }
-    void beginGesture (int n)
+    void beginGesture (int id)
     {
-        if (auto* p = apvts.getParameter (ResonanceSuppressorAudioProcessor::nodePid (n, "freq"))) p->beginChangeGesture();
-        if (auto* p = apvts.getParameter (ResonanceSuppressorAudioProcessor::nodePid (n, "amt")))  p->beginChangeGesture();
+        if (auto* p = apvts.getParameter (pid (id, "freq"))) p->beginChangeGesture();
+        if (! isCut (id)) if (auto* p = apvts.getParameter (pid (id, "sens"))) p->beginChangeGesture();
     }
-    void endGesture (int n)
+    void endGesture (int id)
     {
-        if (auto* p = apvts.getParameter (ResonanceSuppressorAudioProcessor::nodePid (n, "freq"))) p->endChangeGesture();
-        if (auto* p = apvts.getParameter (ResonanceSuppressorAudioProcessor::nodePid (n, "amt")))  p->endChangeGesture();
+        if (auto* p = apvts.getParameter (pid (id, "freq"))) p->endChangeGesture();
+        if (! isCut (id)) if (auto* p = apvts.getParameter (pid (id, "sens"))) p->endChangeGesture();
     }
 
     inline static const juce::Colour kTeal { juce::Colour (0xff45b8acu) };

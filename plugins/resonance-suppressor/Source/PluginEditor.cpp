@@ -30,8 +30,6 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
 
     addKnob (depthS, depthL, "Depth",     " %",  "depth");
     addKnob (sharpS, sharpL, "Sharpness", " %",  "sharpness");
-    addKnob (lowS,   lowL,   "Low",       " Hz", "lowfreq");
-    addKnob (highS,  highL,  "High",      " Hz", "highfreq");
     addKnob (atkS,   atkL,   "Attack",    " ms", "attack");
     addKnob (relS,   relL,   "Release",   " ms", "release");
     addKnob (mixS,   mixL,   "Mix",       " %",  "mix");
@@ -93,8 +91,8 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     r.removeFromBottom (12);
     curve.setBounds (r);
 
-    juce::Slider* sl[] = { &depthS, &sharpS, &lowS, &highS, &atkS, &relS, &mixS };
-    juce::Label*  lb[] = { &depthL, &sharpL, &lowL, &highL, &atkL, &relL, &mixL };
+    juce::Slider* sl[] = { &depthS, &sharpS, &atkS, &relS, &mixS };
+    juce::Label*  lb[] = { &depthL, &sharpL, &atkL, &relL, &mixL };
     const int n = (int) std::size (sl);
     const int cw = knobs.getWidth() / n;
     for (int i = 0; i < n; ++i)

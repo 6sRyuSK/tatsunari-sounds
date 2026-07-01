@@ -31,8 +31,8 @@ private:
     juce::Label titleLabel;
     SuppressionCurveComponent curve;
 
-    juce::Slider depthS, sharpS, lowS, highS, atkS, relS, mixS;
-    juce::Label  depthL, sharpL, lowL, highL, atkL, relL, mixL;
+    juce::Slider depthS, sharpS, atkS, relS, mixS;
+    juce::Label  depthL, sharpL, atkL, relL, mixL;
     juce::ToggleButton deltaB { "Delta" }, linkB { "Link" }, bypassB { "Bypass" };
     juce::ComboBox modeBox;
 

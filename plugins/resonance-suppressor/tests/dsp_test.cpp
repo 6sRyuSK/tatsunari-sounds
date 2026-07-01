@@ -30,6 +30,7 @@
 // gates exercise the real high-rate path.
 //
 #include "factory_core/FFT.h"
+#include "factory_core/ReductionProfile.h"
 #include "factory_core/ResonanceSuppressor.h"
 #include "factory_core/StftResolution.h"
 #include "factory_core/testing/DspInvariants.h"
@@ -452,6 +453,110 @@ namespace
             fail ("resolution out of range at Fs=" + std::to_string (Fs));
         std::printf ("  ok (peak=%.3f)\n", factory_core::testing::peakAbs (y));
     }
+
+    // ---- Reduction-profile (soothe-style depth EQ) shape invariants ----------
+    // Independent, oracle-free checks of the per-frequency sensitivity curve
+    // (factory_core::ReductionProfile), the single source of truth shared by the
+    // audio rasteriser and the editor. Rate-independent (the shape is a function
+    // of frequency only); reductionDefaultTest additionally rasterises the
+    // factory config across the full rate matrix.
+    using BT = factory_core::ReductionBandType;
+    factory_core::ReductionNodes oneBand (double f, BT type, double sens)
+    {
+        factory_core::ReductionNodes n; n.bands[0] = { true, f, type, sens }; return n;
+    }
+    factory_core::ReductionNodes oneCut (bool low, double f, double slope)
+    {
+        factory_core::ReductionNodes n; (low ? n.lowCut : n.highCut) = { true, f, slope }; return n;
+    }
+    factory_core::ReductionNodes defaultNodes()
+    {
+        factory_core::ReductionNodes n;
+        n.lowCut  = { true, 450.0,   24.0 };
+        n.highCut = { true, 16000.0, 24.0 };
+        n.bands[0] = { true, 991.0,  BT::Bell, 0.0 };
+        n.bands[1] = { true, 2500.0, BT::Bell, 0.0 };
+        n.bands[2] = { true, 5000.0, BT::Bell, 6.0 };
+        n.bands[3] = { true, 8000.0, BT::Bell, 0.0 };
+        return n;
+    }
+
+    void reductionProfileTest()
+    {
+        std::printf ("Reduction-profile shapes\n");
+        auto db = [] (double f, const factory_core::ReductionNodes& n)
+                  { return factory_core::reductionProfileDbAt (f, n); };
+        auto near = [] (double a, double b, double tol, const char* what)
+                    { if (std::abs (a - b) > tol) fail (std::string (what) + ": " + std::to_string (a)); };
+
+        // Bell: peak == sens at f0, ~0 two octaves away.
+        { auto n = oneBand (1000.0, BT::Bell, 6.0);
+          near (db (1000.0, n), 6.0, 0.02, "bell peak != sens");
+          if (std::abs (db (4000.0, n)) > 0.3) fail ("bell not local (2 oct)"); }
+
+        // Low/High shelf: full sens on one side, ~0 on the other, half at corner.
+        { auto n = oneBand (1000.0, BT::LowShelf, 6.0);
+          if (db (100.0, n) < 5.5)  fail ("low shelf not full below");
+          if (db (10000.0, n) > 0.5) fail ("low shelf not zero above");
+          near (db (1000.0, n), 3.0, 0.4, "low shelf corner != sens/2"); }
+        { auto n = oneBand (1000.0, BT::HighShelf, 6.0);
+          if (db (10000.0, n) < 5.5) fail ("high shelf not full above");
+          if (db (100.0, n) > 0.5)   fail ("high shelf not zero below"); }
+
+        // Cuts: -slope at one octave beyond the corner, 0 inside, monotone.
+        for (double slope : { 6.0, 12.0, 24.0, 48.0 })
+        {
+            auto lo = oneCut (true, 1000.0, slope);
+            near (db (500.0, lo), -slope, 0.02, "low cut slope");
+            if (std::abs (db (2000.0, lo)) > 1e-9) fail ("low cut acts above corner");
+            auto hi = oneCut (false, 1000.0, slope);
+            near (db (2000.0, hi), -slope, 0.02, "high cut slope");
+            if (std::abs (db (500.0, hi)) > 1e-9) fail ("high cut acts below corner");
+        }
+
+        // Band shelf: flat-topped bump == sens at centre. Band reject: dip.
+        { auto n = oneBand (1000.0, BT::BandShelf, 6.0);
+          near (db (1000.0, n), 6.0, 0.3, "band shelf centre");
+          if (std::abs (db (8000.0, n)) > 0.5) fail ("band shelf not local"); }
+        { auto n = oneBand (1000.0, BT::BandReject, 6.0);
+          near (db (1000.0, n), -6.0, 0.3, "band reject centre"); }
+
+        // Tilt: ±sens by two octaves, monotone through f0.
+        { auto n = oneBand (1000.0, BT::Tilt, 12.0);
+          near (db (4000.0, n),  12.0, 0.5, "tilt high");
+          near (db (250.0,  n), -12.0, 0.5, "tilt low");
+          near (db (1000.0, n),   0.0, 0.02, "tilt pivot");
+          if (! (db (2000.0, n) > db (500.0, n))) fail ("tilt not monotone"); }
+        std::printf ("  ok\n");
+    }
+
+    void reductionDefaultTest (double Fs)
+    {
+        std::printf ("Reduction default profile (rasterise) @ Fs=%.0f\n", Fs);
+        const int N = 1 << orderFor (Fs);
+        const int bins = N / 2 + 1;
+        const auto n = defaultNodes();
+
+        std::vector<double> prof ((size_t) bins);
+        for (int k = 0; k < bins; ++k)
+        {
+            const double f = (double) k * Fs / N;
+            prof[(size_t) k] = (k == 0) ? 1.0 : factory_core::reductionProfileLinearAt (f, n);
+        }
+        if (! factory_core::testing::allFinite (prof)) fail ("profile not finite");
+        for (double v : prof) if (v < 0.0 || v > 4.0) fail ("profile out of [0,4]: " + std::to_string (v));
+
+        auto P = [&n] (double f) { return factory_core::reductionProfileLinearAt (f, n); };
+        if (P (5000.0) < 1.5)                       fail ("5k emphasis (+6 dB) missing");
+        if (P (1000.0) < 0.9 || P (1000.0) > 1.1)   fail ("1k not ~unity");
+        if (P (100.0)  > 0.1)                        fail ("low cut not applied at 100 Hz");
+        if (P (20000.0) > 0.6)                       fail ("high cut not applied near 20 kHz");
+        if (! (P (5000.0) > P (1000.0)))            fail ("band3 should exceed 1 kHz");
+        if (! factory_core::testing::resolutionFollowsSampleRate (Fs, 25.0, 0.030))
+            fail ("resolution out of range at Fs=" + std::to_string (Fs));
+        std::printf ("  P(100)=%.3f P(1k)=%.3f P(5k)=%.3f P(20k)=%.3f\n",
+                     P (100.0), P (1000.0), P (5000.0), P (20000.0));
+    }
 }
 
 int main (int argc, char** argv)
@@ -463,6 +568,7 @@ int main (int argc, char** argv)
     else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     fftTest();
+    reductionProfileTest();
     for (double Fs : rates)
     {
         reconstructionTest (Fs);
@@ -478,6 +584,7 @@ int main (int argc, char** argv)
         hardLevelDependenceTest (Fs);
         hardSuppressionTest (Fs);
         hardStabilityTest (Fs);
+        reductionDefaultTest (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

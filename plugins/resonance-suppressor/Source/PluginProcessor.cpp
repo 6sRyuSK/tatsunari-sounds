@@ -3,9 +3,37 @@
 
 #include <cmath>
 
-juce::String ResonanceSuppressorAudioProcessor::nodePid (int node, const char* suffix)
+juce::String ResonanceSuppressorAudioProcessor::cutPid (int which, const char* suffix)
 {
-    return "n" + juce::String (node) + "_" + suffix;
+    return juce::String (which == 0 ? "lc_" : "hc_") + suffix;
+}
+
+juce::String ResonanceSuppressorAudioProcessor::bandPid (int band, const char* suffix)
+{
+    return "b" + juce::String (band) + "_" + suffix;
+}
+
+double ResonanceSuppressorAudioProcessor::slopeValue (int index) noexcept
+{
+    static constexpr double kSlopes[] = { 6.0, 12.0, 24.0, 48.0 };
+    return kSlopes[(size_t) juce::jlimit (0, 3, index)];
+}
+
+factory_core::ReductionNodes
+ResonanceSuppressorAudioProcessor::readNodes (juce::AudioProcessorValueTreeState& apvts)
+{
+    auto f = [&apvts] (const juce::String& id) { return apvts.getRawParameterValue (id)->load(); };
+    factory_core::ReductionNodes n;
+
+    n.lowCut  = { f (cutPid (0, "on")) > 0.5f, (double) f (cutPid (0, "freq")), slopeValue ((int) f (cutPid (0, "slope"))) };
+    n.highCut = { f (cutPid (1, "on")) > 0.5f, (double) f (cutPid (1, "freq")), slopeValue ((int) f (cutPid (1, "slope"))) };
+
+    for (int b = 0; b < kNumBands; ++b)
+        n.bands[(size_t) b] = { f (bandPid (b, "on")) > 0.5f,
+                                (double) f (bandPid (b, "freq")),
+                                (factory_core::ReductionBandType) (int) f (bandPid (b, "type")),
+                                (double) f (bandPid (b, "sens")) };
+    return n;
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -23,16 +51,6 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
         ParameterID { "sharpness", 1 }, "Sharpness",
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
         AudioParameterFloatAttributes().withLabel (" %")));
-
-    NormalisableRange<float> lowR { 20.0f, 2000.0f }; lowR.setSkewForCentre (200.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "lowfreq", 1 }, "Low", lowR, 20.0f,
-        AudioParameterFloatAttributes().withLabel (" Hz")));
-
-    NormalisableRange<float> highR { 1000.0f, 20000.0f }; highR.setSkewForCentre (6000.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "highfreq", 1 }, "High", highR, 20000.0f,
-        AudioParameterFloatAttributes().withLabel (" Hz")));
 
     NormalisableRange<float> atkR { 1.0f, 200.0f }; atkR.setSkewForCentre (20.0f);
     layout.add (std::make_unique<AudioParameterFloat> (
@@ -60,15 +78,38 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "mode", 1 }, "Mode", StringArray { "Soft", "Hard" }, 0));
 
-    for (int n = 0; n < kNumNodes; ++n)
+    // --- Reduction / depth-EQ nodes (soothe-style) ---
+    // Two cuts bound where processing acts (rolling the profile off at a chosen
+    // slope), four typed bands locally raise/lower the sensitivity. Defaults
+    // mirror the reference: low cut 450 Hz, high cut 16 kHz, bands flat except a
+    // +6 dB emphasis at 5 kHz, so the factory sound is mid-focused, not full-band.
+    const StringArray slopeChoices { "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct" };
+    const StringArray typeChoices  { "Bell", "Low Shelf", "High Shelf", "Band Shelf", "Band Reject", "Tilt" };
+
+    auto freqRange = [] { NormalisableRange<float> r { 20.0f, 20000.0f }; r.setSkewForCentre (650.0f); return r; };
+
+    struct CutDef  { const char* which; float freq; };
+    for (auto [w, cd] : { std::pair<int, CutDef> { 0, { "Low Cut",  450.0f } },
+                          std::pair<int, CutDef> { 1, { "High Cut", 16000.0f } } })
     {
-        const float defF = 80.0f * std::pow (16000.0f / 80.0f, (float) n / (float) (kNumNodes - 1));
-        NormalisableRange<float> fR { 20.0f, 20000.0f }; fR.setSkewForCentre (650.0f);
-        layout.add (std::make_unique<AudioParameterBool>  (ParameterID { nodePid (n, "on"),   1 }, "Node " + juce::String (n + 1) + " On", false));
-        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { nodePid (n, "freq"), 1 }, "Node " + juce::String (n + 1) + " Freq", fR, defF,
-                                                           AudioParameterFloatAttributes().withLabel (" Hz")));
-        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { nodePid (n, "amt"),  1 }, "Node " + juce::String (n + 1) + " Amount",
-                                                           NormalisableRange<float> { -1.0f, 2.0f, 0.01f }, 1.0f));
+        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { cutPid (w, "on"),    1 }, juce::String (cd.which) + " On", true));
+        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { cutPid (w, "freq"),  1 }, juce::String (cd.which) + " Freq", freqRange(), cd.freq,
+                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { cutPid (w, "slope"), 1 }, juce::String (cd.which) + " Slope", slopeChoices, 2)); // 24 dB/oct
+    }
+
+    const float bandFreqs[kNumBands] = { 991.0f, 2500.0f, 5000.0f, 8000.0f };
+    const float bandSens [kNumBands] = { 0.0f,   0.0f,    6.0f,    0.0f };
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        const juce::String name = "Band " + juce::String (b + 1);
+        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { bandPid (b, "on"),   1 }, name + " On", true));
+        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "freq"), 1 }, name + " Freq", freqRange(), bandFreqs[b],
+                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { bandPid (b, "type"), 1 }, name + " Type", typeChoices, 0)); // Bell
+        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "sens"), 1 }, name + " Sens",
+                                                            NormalisableRange<float> { -30.0f, 30.0f, 0.1f }, bandSens[b],
+                                                            AudioParameterFloatAttributes().withLabel (" dB")));
     }
 
     return layout;
@@ -82,8 +123,6 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
 {
     depthParam  = apvts.getRawParameterValue ("depth");
     sharpParam  = apvts.getRawParameterValue ("sharpness");
-    lowParam    = apvts.getRawParameterValue ("lowfreq");
-    highParam   = apvts.getRawParameterValue ("highfreq");
     atkParam    = apvts.getRawParameterValue ("attack");
     relParam    = apvts.getRawParameterValue ("release");
     mixParam    = apvts.getRawParameterValue ("mix");
@@ -92,12 +131,33 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     bypassParam = apvts.getRawParameterValue ("bypass");
     modeParam   = apvts.getRawParameterValue ("mode");
 
-    for (int n = 0; n < kNumNodes; ++n)
+    for (int w = 0; w < 2; ++w)
     {
-        nodes[(size_t) n].on   = apvts.getRawParameterValue (nodePid (n, "on"));
-        nodes[(size_t) n].freq = apvts.getRawParameterValue (nodePid (n, "freq"));
-        nodes[(size_t) n].amt  = apvts.getRawParameterValue (nodePid (n, "amt"));
+        auto& c = (w == 0) ? lowCut : highCut;
+        c.on    = apvts.getRawParameterValue (cutPid (w, "on"));
+        c.freq  = apvts.getRawParameterValue (cutPid (w, "freq"));
+        c.slope = apvts.getRawParameterValue (cutPid (w, "slope"));
     }
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        bandParams[(size_t) b].on   = apvts.getRawParameterValue (bandPid (b, "on"));
+        bandParams[(size_t) b].freq = apvts.getRawParameterValue (bandPid (b, "freq"));
+        bandParams[(size_t) b].type = apvts.getRawParameterValue (bandPid (b, "type"));
+        bandParams[(size_t) b].sens = apvts.getRawParameterValue (bandPid (b, "sens"));
+    }
+}
+
+factory_core::ReductionNodes ResonanceSuppressorAudioProcessor::currentNodes() const noexcept
+{
+    factory_core::ReductionNodes n;
+    n.lowCut  = { lowCut.on->load()  > 0.5f, (double) lowCut.freq->load(),  slopeValue ((int) lowCut.slope->load()) };
+    n.highCut = { highCut.on->load() > 0.5f, (double) highCut.freq->load(), slopeValue ((int) highCut.slope->load()) };
+    for (int b = 0; b < kNumBands; ++b)
+        n.bands[(size_t) b] = { bandParams[(size_t) b].on->load() > 0.5f,
+                                (double) bandParams[(size_t) b].freq->load(),
+                                (factory_core::ReductionBandType) (int) bandParams[(size_t) b].type->load(),
+                                (double) bandParams[(size_t) b].sens->load() };
+    return n;
 }
 
 void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
@@ -124,25 +184,14 @@ void ResonanceSuppressorAudioProcessor::rasterizeProfile()
     const double sr = currentSampleRate;
     const int N = 1 << currentFftOrder;
     const int bins = activeBins.load (std::memory_order_relaxed);
-    constexpr double sigma = 0.30; // gaussian half-width in natural-log frequency
+    const auto nodes = currentNodes();
 
-    for (int k = 0; k < bins; ++k) profileBuf[(size_t) k] = 1.0;
-
-    for (int n = 0; n < kNumNodes; ++n)
+    profileBuf[0] = 1.0; // DC: nominal (the engine leaves the range gate to the profile)
+    for (int k = 1; k < bins; ++k)
     {
-        if (nodes[(size_t) n].on->load() <= 0.5f) continue;
-        const double f0 = nodes[(size_t) n].freq->load();
-        const double a  = nodes[(size_t) n].amt->load();
-        const double lf0 = std::log (juce::jmax (10.0, f0));
-        for (int k = 1; k < bins; ++k)
-        {
-            const double f = (double) k * sr / N;
-            const double d = (std::log (juce::jmax (10.0, f)) - lf0) / sigma;
-            profileBuf[(size_t) k] += a * std::exp (-0.5 * d * d);
-        }
+        const double f = (double) k * sr / N;
+        profileBuf[(size_t) k] = factory_core::reductionProfileLinearAt (f, nodes);
     }
-    for (int k = 0; k < bins; ++k)
-        profileBuf[(size_t) k] = juce::jlimit (0.0, 4.0, profileBuf[(size_t) k]);
 
     suppressor.setProfile (profileBuf.data(), bins);
 }
@@ -177,7 +226,7 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
 
     suppressor.setDepth     ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
-    suppressor.setRange     (lowParam->load(), highParam->load());
+    suppressor.setRange     (20.0, 20000.0); // full band; the low/high cut nodes bound processing via the profile
     suppressor.setTimes     (atkParam->load(), relParam->load());
     suppressor.setMix       ((double) mixParam->load() / 100.0);
     suppressor.setDelta     (deltaParam->load() > 0.5f);
