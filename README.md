@@ -43,45 +43,33 @@ bundles into your plugin folders:
 - **AU** (`.component`) → `~/Library/Audio/Plug-Ins/Components/` (or `/Library/...` for all users)
 - **VST3** (`.vst3`) → `~/Library/Audio/Plug-Ins/VST3/` (or `/Library/...`)
 
-### curl で最新版をインストール
+### curl でインストール
 
-The snippets below install the **everything bundle** (all plugins). Asset
-filenames embed the release version, so instead of hard-coding a URL each snippet
-asks the GitHub API for the **latest** release and downloads from there (only
-`curl` and `unzip` — no `jq`). Downloading with `curl` also skips the
-`com.apple.quarantine` flag a browser attaches, so the macOS "damaged" prompt
-below does **not** appear. Restart your DAW and rescan afterwards.
+The commands below install the **everything bundle** (all plugins) for **all
+users**. Asset filenames embed the release version, so replace `2026.1` /
+`v2026_1` with the tag you want from the
+[Releases page](https://github.com/6sRyuSK/tatsunari-plugins/releases).
+Downloading with `curl` also skips the `com.apple.quarantine` flag a browser
+attaches, so the macOS "damaged" prompt below does **not** appear. Restart your
+DAW and rescan afterwards.
 
 #### macOS — AU (`.component`)
 
-    REPO=6sRyuSK/tatsunari-plugins
-    url=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-          | grep -oE '"browser_download_url": *"[^"]*macOS-AU\.zip"' | cut -d'"' -f4)
-    dest="$HOME/Library/Audio/Plug-Ins/Components"
-    mkdir -p "$dest"
-    curl -fL "$url" -o /tmp/tp-au.zip && unzip -o /tmp/tp-au.zip -d "$dest" && rm -f /tmp/tp-au.zip
-    killall -9 AudioComponentRegistrar 2>/dev/null   # force an AU rescan
+    curl -fL https://github.com/6sRyuSK/tatsunari-plugins/releases/download/2026.1/tatsunari-plugins-v2026_1-macOS-AU.zip -o /tmp/tp-au.zip
+    sudo unzip -o /tmp/tp-au.zip -d /Library/Audio/Plug-Ins/Components
+    rm -f /tmp/tp-au.zip
 
 #### macOS — VST3 (`.vst3`)
 
-    REPO=6sRyuSK/tatsunari-plugins
-    url=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-          | grep -oE '"browser_download_url": *"[^"]*macOS-VST3\.zip"' | cut -d'"' -f4)
-    dest="$HOME/Library/Audio/Plug-Ins/VST3"
-    mkdir -p "$dest"
-    curl -fL "$url" -o /tmp/tp-vst3.zip && unzip -o /tmp/tp-vst3.zip -d "$dest" && rm -f /tmp/tp-vst3.zip
+    curl -fL https://github.com/6sRyuSK/tatsunari-plugins/releases/download/2026.1/tatsunari-plugins-v2026_1-macOS-VST3.zip -o /tmp/tp-vst3.zip
+    sudo unzip -o /tmp/tp-vst3.zip -d /Library/Audio/Plug-Ins/VST3
+    rm -f /tmp/tp-vst3.zip
 
-#### Windows — VST3 (`.vst3`, PowerShell)
+#### Windows — VST3 (`.vst3`, PowerShell as Administrator)
 
-    $repo = "6sRyuSK/tatsunari-plugins"
-    $url  = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").assets |
-            Where-Object { $_.name -like "*-Windows.zip" } |
-            Select-Object -ExpandProperty browser_download_url
-    $dest = "$Env:CommonProgramFiles\VST3"
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Invoke-WebRequest $url -OutFile "$Env:TEMP\tp-win.zip"
-    Expand-Archive "$Env:TEMP\tp-win.zip" -DestinationPath $dest -Force
-    Remove-Item "$Env:TEMP\tp-win.zip"
+    Invoke-WebRequest https://github.com/6sRyuSK/tatsunari-plugins/releases/download/2026.1/tatsunari-plugins-v2026_1-Windows.zip -OutFile tp-win.zip
+    Expand-Archive tp-win.zip -DestinationPath "C:\Program Files\Common Files\VST3" -Force
+    Remove-Item tp-win.zip
 
 ### macOS: "「…」は壊れているため開けません" / "…is damaged and can't be opened"
 
