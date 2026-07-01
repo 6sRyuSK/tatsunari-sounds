@@ -12,8 +12,10 @@ name: Release
 # truth: catalog == binary == release); a mismatch fails the run.
 #
 # The build setup mirrors ci.yml (Ninja + compiler cache). `workflow_dispatch`
-# builds the plugin named by the `slug` input for inspection but does not
-# publish a Release.
+# builds the plugin named by the `slug` input; by default it only produces
+# downloadable artifacts, but checking `publish` also creates the Release and
+# tag `<slug>-v<version>` (version taken from plugin.toml) — a tagless way to
+# ship from the Actions UI.
 
 on:
   push:
@@ -24,6 +26,11 @@ on:
         description: "Plugin slug to build (e.g. saturator)"
         required: true
         type: string
+      publish:
+        description: "Create a GitHub Release (tag <slug>-v<version>) and attach the built artifacts"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ github.ref }}
@@ -159,7 +166,11 @@ jobs:
 
   release:
     name: Publish Release
-    if: startsWith(github.ref, 'refs/tags/')
+    # Publish on a tag push, or on a manual run with `publish` checked (which
+    # creates the tag from the plugin's manifest version).
+    if: >
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -171,10 +182,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The tag is the same either way: on a tag push it's github.ref_name; on a
+      # manual publish it's derived from the artifact name `<slug>-v<version>-<os>.zip`
+      # (the build job already verified it against plugin.toml). Deriving it here
+      # keeps a single source and lets action-gh-release create the tag on dispatch.
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          f=$(basename "$(ls dist/*.zip | head -1)")
+          tag="${f%-macOS.zip}"
+          tag="${tag%-Windows.zip}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
           files: dist/*.zip
           draft: false
           generate_release_notes: true
