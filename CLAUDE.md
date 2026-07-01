@@ -7,8 +7,21 @@ is objective; humans judge taste and authorize shipping.
 
 ## 言語 / Communication
 - Respond to the user in **Japanese** (ユーザーへの応答はすべて日本語で行う).
-- Keep code, identifiers, filenames, and **commit messages in English** — the
-  codebase and tooling convention. PR / issue descriptions may be in Japanese.
+- Keep code, identifiers, and filenames in **English** — the codebase
+  convention. PR / issue descriptions may be in Japanese.
+- **Commit subjects**: an English Conventional-Commits prefix, then a Japanese
+  description (this is the human-facing text that lands in release notes).
+  - Prefix (English, required): `feat:` (new feature/param), `fix:` (bug fix),
+    or one of `docs: / refactor: / perf: / test: / chore: / ci: / build: /
+    style:`. An optional `(scope)` is allowed (e.g. `feat(dynamic-eq): …`).
+  - Description (Japanese): keep **identifiers and technical terms in English**
+    (`STFT`, `Nyquist`, function/file names) so `git log` stays greppable —
+    e.g. `fix(resonance-suppressor): STFTオーダーをサンプルレート連動にして192kHz対応`.
+  - The release changelog groups by the prefix — `feat:` → 機能, `fix:` → 修正,
+    everything else → その他 — and strips the prefix from the shown line, so the
+    prefix keeps notes accurate while the Japanese description reads naturally.
+  - Keep the version bump for a change in the **same commit** as the change it
+    describes, so it shows in that plugin's notes.
 
 ## Repository layout
 - `core/` — shared, spec'd DSP primitives (filters, dynamics, …). Versioned;

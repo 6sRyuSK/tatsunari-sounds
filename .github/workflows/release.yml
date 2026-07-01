@@ -179,6 +179,12 @@ jobs:
     permissions:
       contents: write        # required to create the Release and upload assets
     steps:
+      # Full history + tags so the changelog can diff against this plugin's
+      # previous release tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -197,7 +203,69 @@ jobs:
           tag="${f%-macOS.zip}"
           tag="${tag%-Windows.zip}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "slug=${tag%-v*}" >> "$GITHUB_OUTPUT"
           echo "Release tag: $tag"
+
+      # Build per-plugin release notes. GitHub's generate_release_notes lists
+      # every PR since the previous tag repo-wide, which mixes in other plugins'
+      # changes. Instead, diff this plugin's previous <slug>-v* tag to HEAD and
+      # keep only commits that touched this plugin's directory. (Filtering on
+      # core/ui too would pull in unrelated plugins, since each plugin-add commit
+      # also drops its own primitive into core/. A core change that warrants a
+      # release bumps this plugin's plugin.toml, so it still lands in the log.)
+      - name: Build changelog
+        shell: bash
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          slug="${{ steps.tag.outputs.slug }}"
+          prev=$(git tag --list "${slug}-v*" --sort=-v:refname | grep -vFx "$tag" | head -1)
+          if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
+          echo "Changelog range: ${prev:-<start>}..HEAD (path: plugins/$slug)"
+
+          # Group commits into Features / Fixes / Other. Conventional-commit
+          # prefixes are authoritative: `feat:` -> 機能, `fix:` -> 修正, any other
+          # type (docs/refactor/chore/ci/…) -> その他, and the `type(scope)!:`
+          # prefix is stripped from the displayed text. Commits without a prefix
+          # fall back to a keyword heuristic (Add/introduce -> feature, fix/bug ->
+          # fix). Order within a group stays newest-first, as `git log` returns it.
+          git log $range --no-merges --pretty='%s|%h' -- "plugins/${slug}/" > commits.txt || true
+          feats=""; fixes=""; others=""
+          while IFS='|' read -r subj hash; do
+            [ -z "$subj" ] && continue
+            lc=$(printf '%s' "$subj" | tr '[:upper:]' '[:lower:]')
+            type=$(printf '%s' "$lc" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?:.*/\1/p')
+            display="$subj"
+            case "$type" in
+              feat|fix|docs|refactor|perf|test|chore|ci|build|style|revert)
+                display=$(printf '%s' "$subj" | sed -E 's/^[a-zA-Z]+(\([^)]*\))?!?:[[:space:]]*//') ;;
+              *) type="" ;;
+            esac
+            line="- ${display} (${hash})"
+            if   [ "$type" = "fix" ];  then fixes+="${line}"$'\n'
+            elif [ "$type" = "feat" ]; then feats+="${line}"$'\n'
+            elif [ -n "$type" ];       then others+="${line}"$'\n'
+            else
+              case "$lc" in
+                *fix*|*bug*|*regression*|*hotfix*|*correct*) fixes+="${line}"$'\n' ;;
+                add\ *|*introduce*)                          feats+="${line}"$'\n' ;;
+                *)                                           others+="${line}"$'\n' ;;
+              esac
+            fi
+          done < commits.txt
+
+          {
+            echo "## ${slug} の変更点"
+            [ -n "$prev" ] && echo "_${prev} からの変更_" || echo "_初回リリース_"
+            echo
+            if [ -z "${feats}${fixes}${others}" ]; then
+              echo "- 前回リリース以降、このプラグイン固有の変更はありません。"
+            else
+              [ -n "$feats" ]  && { echo "### 機能";   echo; printf '%s' "$feats";  echo; }
+              [ -n "$fixes" ]  && { echo "### 修正";   echo; printf '%s' "$fixes";  echo; }
+              [ -n "$others" ] && { echo "### その他"; echo; printf '%s' "$others"; echo; }
+            fi
+          } > notes.md
+          echo "----- notes.md -----"; cat notes.md
 
       - name: Publish
         uses: softprops/action-gh-release@v2
@@ -206,4 +274,4 @@ jobs:
           name: ${{ steps.tag.outputs.tag }}
           files: dist/*.zip
           draft: false
-          generate_release_notes: true
+          body_path: notes.md
