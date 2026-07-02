@@ -73,15 +73,40 @@ func (m Model) viewPlugins() string {
 		if m.selected[p.Slug] {
 			check = m.st.Check.Render("☑")
 		}
-		name := p.Name
+		nameStyle := m.st.Item
 		if i == m.cursor {
-			name = m.st.ItemSel.Render(name)
+			nameStyle = m.st.ItemSel
 		}
-		row := fmt.Sprintf("%s%s %-26s %-10s %s %s",
-			cursor, check, name, m.st.Dim.Render(p.Category), m.st.Dim.Render(p.Version), m.stateBadge(p))
+		// Fixed cell widths via lipgloss, which measures *visual* width — so the
+		// styling ANSI added when a row is selected never shifts the following
+		// columns (a plain %-26s counts the escape bytes and pushes the category
+		// left on selection).
+		name := nameStyle.Width(26).Render(p.Name)
+		cat := m.st.Dim.Width(10).Render(p.Category)
+		ver := m.st.Dim.Width(7).Render(p.Version)
+		row := fmt.Sprintf("%s%s %s %s %s %s", cursor, check, name, cat, ver, m.stateBadge(p))
+		if tag := m.referenceTag(p); tag != "" {
+			row += "  " + tag
+		}
 		rows = append(rows, row)
 	}
 	return intro + "\n\n" + strings.Join(rows, "\n")
+}
+
+// referenceTag renders the plugin's reference/inspiration as a dim
+// "◯◯ ライク" / "like ◯◯" tagline (e.g. dynamic-eq → "FabFilter Pro-Q 4",
+// resonance-suppressor → "oeksound soothe2"). Empty when the catalog carries no
+// reference; long references are trimmed so the row stays on one line.
+func (m Model) referenceTag(p model.Plugin) string {
+	ref := p.Reference
+	if ref == "" {
+		return ""
+	}
+	const maxRef = 34
+	if r := []rune(ref); len(r) > maxRef {
+		ref = strings.TrimRight(string(r[:maxRef]), " ") + "…"
+	}
+	return m.st.Dim.Render(m.tr.T(ref+" ライク", "like "+ref))
 }
 
 func (m Model) stateBadge(p model.Plugin) string {
