@@ -1,11 +1,20 @@
 # Builds the cross-platform TUI installer and attaches its binaries + catalog.json
-# to a release. Runs right AFTER release.yml publishes (on: release: published),
-# so it never touches the protected release workflow or manifest.json.
+# to a release. It never touches the protected release workflow or manifest.json.
+#
+# Trigger: release.yml publishes the GitHub Release using the repo GITHUB_TOKEN,
+# and GitHub deliberately does NOT emit a `release: published` event for a
+# token-created release (recursive-run prevention). So listening on `release`
+# never fires — this workflow used to have to be dispatched by hand after every
+# release. Instead we chain off the Release workflow *completing* via
+# `workflow_run`, which is not subject to that suppression, so the installer
+# assets are attached automatically. `workflow_dispatch` stays for manual
+# re-runs / back-fills (pass the tag explicitly).
 name: installer
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -18,6 +27,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # types: [completed] also fires on failure/cancellation — only proceed when
+    # the Release run actually succeeded. (workflow_dispatch has no such field.)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
 
@@ -28,12 +42,21 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
           else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            # workflow_run: release.yml just published the newest release.
+            tag="$(gh release view --json tagName --jq .tagName)"
           fi
+          if [ -z "$tag" ]; then
+            echo "::error::could not resolve a release tag"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $tag"
 
       - name: Build installer binaries
         working-directory: tools/installer
