@@ -29,6 +29,7 @@
 // noexcept (audio-thread safe). Templated on the streaming resampler type so the
 // band-limited PolyphaseResampler can be swapped in without touching this file.
 //
+#include "factory_core/PolyphaseResampler.h"
 #include "factory_core/Resampler.h"
 #include "factory_core/ResamplerLatency.h"
 
@@ -39,7 +40,11 @@
 
 namespace factory_core
 {
-    template <typename ResamplerT = Resampler>
+    // Defaults to the band-limited PolyphaseResampler: the section this brackets is
+    // non-linear (the NAM amp), so its output has energy above the lower Nyquist that
+    // the down/up conversions must not alias/image. (RateBracket<Resampler> exists for
+    // linear paths / comparison but must NOT wrap a non-linear section.)
+    template <typename ResamplerT = PolyphaseResampler>
     class RateBracket
     {
     public:
