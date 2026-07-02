@@ -91,7 +91,7 @@ with `CGO_ENABLED=0`, generates `catalog.json` via
 
 1. **Windows** clean VM: run the `irm … | iex` one-liner. Do a per-user install
    (0 prompts), then a system install (exactly one UAC). Confirm the `.vst3`
-   lands in `C:\Program Files\Common Files\VST3\tatsunari`.
+   lands in `C:\Program Files\Common Files\VST3\tatsunari-sounds`.
 2. **macOS** Intel + Apple Silicon: run the `curl … | bash` one-liner. Per-user
    then system (exactly one auth dialog). Confirm the `.vst3` / `.component`
    land under `~/Library` or `/Library`, and the DAW rescans.
