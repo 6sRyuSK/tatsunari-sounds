@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include "factory_core/PolyphaseResampler.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -15,29 +17,32 @@ namespace
 
     juce::AudioParameterFloatAttributes dbAttr() { return juce::AudioParameterFloatAttributes().withLabel ("dB"); }
 
-    // Simple linear resample of a mono IR from srcRate to dstRate, capped to maxOut
-    // samples. Off the audio thread; adequate for a smooth cabinet impulse.
+    // Band-limited resample of a mono IR from srcRate to dstRate, capped to maxOut
+    // samples. Off the audio thread, so it reuses the anti-alias PolyphaseResampler
+    // (linear interpolation would alias a bright cab IR). Its D-input-sample group
+    // delay is trimmed off the front so the IR onset stays at sample 0 (the convolver
+    // must remain zero-latency); its tail is flushed with D zeros so nothing is lost.
     std::vector<float> resampleIr (const float* src, int lenIn, double srcRate, double dstRate, int maxOut)
     {
         if (lenIn <= 0) return {};
         if (srcRate <= 0.0 || dstRate <= 0.0 || std::abs (srcRate - dstRate) < 1.0e-6)
-        {
-            const int n = std::min (lenIn, maxOut);
-            return std::vector<float> (src, src + n);
-        }
-        const double ratio = srcRate / dstRate;                       // src samples per dst sample
-        const int outLen = std::min (maxOut, (int) std::floor (lenIn / ratio));
-        std::vector<float> out ((size_t) std::max (0, outLen), 0.0f);
-        for (int i = 0; i < outLen; ++i)
-        {
-            const double pos = i * ratio;
-            const int    i0  = (int) pos;
-            const double fr  = pos - i0;
-            const float  a   = src[i0];
-            const float  b   = (i0 + 1 < lenIn) ? src[i0 + 1] : src[i0];
-            out[(size_t) i] = a + (float) fr * (b - a);
-        }
-        return out;
+            return std::vector<float> (src, src + std::min (lenIn, maxOut));
+
+        factory_core::PolyphaseResampler rs;
+        rs.prepare (srcRate, dstRate);
+        const int D        = rs.groupDelayInputSamples();
+        const int dropLead = (int) std::lround ((double) D * dstRate / srcRate);
+
+        std::vector<float> in (src, src + lenIn);
+        in.insert (in.end(), (size_t) (D + 2), 0.0f);                 // flush the group delay
+        const int cap = (int) std::ceil (in.size() * dstRate / srcRate) + 64;
+        std::vector<float> out ((size_t) std::max (1, cap), 0.0f);
+        const int m = rs.process (in.data(), (int) in.size(), out.data(), cap);
+
+        std::vector<float> trimmed;
+        for (int i = std::min (m, dropLead); i < m && (int) trimmed.size() < maxOut; ++i)
+            trimmed.push_back (out[(size_t) i]);
+        return trimmed;
     }
 }
 
@@ -121,6 +126,7 @@ NamPlayerAudioProcessor::NamPlayerAudioProcessor()
     loCutParam    = apvts.getRawParameterValue ("tone_locut");
     hiCutParam    = apvts.getRawParameterValue ("tone_hicut");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     startTimerHz (20);   // message-thread retirement of handed-off models / kernels
 }
@@ -159,10 +165,16 @@ void NamPlayerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     engine.prepare (resampling ? kNamRate : sampleRate, resampling ? namMaxBlk : currentBlock);
     engine.reset();
 
-    for (auto& c : irConv) { c.prepare (currentBlock, kMaxIrSamples); c.reset(); }
+    // IR length cap is time-based (rate-independent), so the effective cabinet
+    // response is the same duration at 44.1 kHz and 192 kHz.
+    maxIrSamples = std::max (1, (int) std::lround (kMaxIrSeconds * sampleRate));
+    for (auto& c : irConv) { c.prepare (currentBlock, maxIrSamples); c.reset(); }
     for (auto& b : loCut)  b.reset();
     for (auto& b : hiCut)  b.reset();
     for (auto& d : dryDelay) { d.prepare (reportedLatency + currentBlock + 4); d.reset(); }
+
+    bypassSm.reset (sampleRate, 0.010);   // ~10 ms click-free bypass crossfade
+    bypassSm.setCurrentAndTargetValue (bypassParam->load() > 0.5f ? 1.0f : 0.0f);
 
     // The convolver FFT size depends on the block size, so rebuild IR kernels here.
     if (irLoaded)
@@ -200,12 +212,35 @@ void NamPlayerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const int numOut = getTotalNumOutputChannels();
     for (int ch = numIn; ch < numOut; ++ch)
         buffer.clear (ch, 0, n);
-    if (n <= 0 || n > currentBlock)
+    if (n <= 0)
         return;
 
-    const float* in0 = buffer.getReadPointer (0);
-    const float* in1 = numIn > 1 ? buffer.getReadPointer (1) : in0;
-    for (int i = 0; i < n; ++i)
+    // Consume model / IR handoffs once per callback (so a swapped-out object is retired
+    // to the message thread even while bypassed). updateLive() is a couple of atomics.
+    for (int k = 0; k < kNumSlots; ++k)
+    {
+        engine.setModel (k, 0, modelHandoff[(size_t) k][0].updateLive());
+        engine.setModel (k, 1, modelHandoff[(size_t) k][1].updateLive());
+    }
+    const ImpulseKernel* kernL = irHandoff[0].updateLive();
+    const ImpulseKernel* kernR = irHandoff[1].updateLive();
+
+    // A host block larger than the prepared size is processed in chunks (never dropped).
+    for (int off = 0; off < n; off += currentBlock)
+        processChunk (buffer, off, std::min (currentBlock, n - off), kernL, kernR);
+}
+
+void NamPlayerAudioProcessor::processChunk (juce::AudioBuffer<float>& buffer, int start, int m,
+                                            const ImpulseKernel* kernL, const ImpulseKernel* kernR) noexcept
+{
+    const int numIn  = getTotalNumInputChannels();
+    const int numOut = getTotalNumOutputChannels();
+
+    const float* in0 = buffer.getReadPointer (0) + start;
+    const float* in1 = numIn > 1 ? buffer.getReadPointer (1) + start : in0;
+
+    // Latency-aligned dry path (always advanced so wet/dry stay in phase through bypass).
+    for (int i = 0; i < m; ++i)
     {
         wL[(size_t) i] = in0[i];
         wR[(size_t) i] = in1[i];
@@ -215,32 +250,25 @@ void NamPlayerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         dryR[(size_t) i] = (float) dryDelay[1].readInterpolated ((double) reportedLatency);
     }
 
-    // Consume model / IR handoffs every block (so a swapped-out object is retired to
-    // the message thread even while bypassed). updateLive() is a couple of atomics.
-    for (int k = 0; k < kNumSlots; ++k)
-    {
-        engine.setModel (k, 0, modelHandoff[(size_t) k][0].updateLive());
-        engine.setModel (k, 1, modelHandoff[(size_t) k][1].updateLive());
-    }
-    const ImpulseKernel* kernL = irHandoff[0].updateLive();
-    const ImpulseKernel* kernR = irHandoff[1].updateLive();
+    float* o0 = buffer.getWritePointer (0) + start;
+    float* o1 = numOut > 1 ? buffer.getWritePointer (1) + start : nullptr;
 
-    // Bypass outputs the latency-aligned dry signal.
-    if (bypassParam->load() > 0.5f)
+    const bool bypReq = bypassParam->load() > 0.5f;
+    bypassSm.setTargetValue (bypReq ? 1.0f : 0.0f);
+
+    // Fully settled at bypassed: emit the aligned dry signal and skip the (expensive)
+    // wet chain. The NAM section resumes from stale state on release, but the crossfade
+    // (the not-settled branch below) covers the transient.
+    if (bypReq && ! bypassSm.isSmoothing())
     {
-        float* b0 = buffer.getWritePointer (0);
-        for (int i = 0; i < n; ++i) b0[i] = dryL[(size_t) i];
-        if (numOut > 1)
-        {
-            float* b1 = buffer.getWritePointer (1);
-            for (int i = 0; i < n; ++i) b1[i] = dryR[(size_t) i];
-        }
+        for (int i = 0; i < m; ++i) o0[i] = dryL[(size_t) i];
+        if (o1 != nullptr) for (int i = 0; i < m; ++i) o1[i] = dryR[(size_t) i];
         return;
     }
 
     // Input trim.
     inTrimSm.setTargetValue (juce::Decibels::decibelsToGain (inTrimParam->load()));
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < m; ++i)
     {
         const float g = inTrimSm.getNextValue();
         wL[(size_t) i] *= g; wR[(size_t) i] *= g;
@@ -259,20 +287,20 @@ void NamPlayerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     }
 
     // NAM section: the RateBracket resamples host<->48k around it (or runs it at the
-    // host rate when they match) and delivers exactly n aligned host samples.
-    bracket.process (wL.data(), wR.data(), wL.data(), wR.data(), n,
-                     [this] (float* l, float* r, int m) noexcept
-                     { engine.process (l, r, l, r, m); });
+    // host rate when they match) and delivers exactly m aligned host samples.
+    bracket.process (wL.data(), wR.data(), wL.data(), wR.data(), m,
+                     [this] (float* l, float* r, int mm) noexcept
+                     { engine.process (l, r, l, r, mm); });
 
     // Cabinet IR (zero latency). IR level only applies when a kernel is loaded.
     if (irEnableParam->load() > 0.5f
-        && kernL != nullptr && ! kernL->H.empty()
-        && kernR != nullptr && ! kernR->H.empty())
+        && kernL != nullptr && ! kernL->k.head.empty()
+        && kernR != nullptr && ! kernR->k.head.empty())
     {
-        irConv[0].process (wL.data(), n, kernL->H);
-        irConv[1].process (wR.data(), n, kernR->H);
+        irConv[0].process (wL.data(), m, kernL->k);
+        irConv[1].process (wR.data(), m, kernR->k);
         const float irg = juce::Decibels::decibelsToGain (irLevelParam->load());
-        for (int i = 0; i < n; ++i) { wL[(size_t) i] *= irg; wR[(size_t) i] *= irg; }
+        for (int i = 0; i < m; ++i) { wL[(size_t) i] *= irg; wR[(size_t) i] *= irg; }
     }
 
     // Tone: low-cut (HPF) + high-cut (LPF), 12 dB/oct Butterworth, per channel.
@@ -281,28 +309,23 @@ void NamPlayerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const auto hc = factory_core::designFilter (factory_core::BandType::LowPass,  hiCutParam->load(), 0.0, 0.70710678, fs);
     loCut[0].setCoeffs (lc); loCut[1].setCoeffs (lc);
     hiCut[0].setCoeffs (hc); hiCut[1].setCoeffs (hc);
-    loCut[0].process (wL.data(), n); loCut[1].process (wR.data(), n);
-    hiCut[0].process (wL.data(), n); hiCut[1].process (wR.data(), n);
+    loCut[0].process (wL.data(), m); loCut[1].process (wR.data(), m);
+    hiCut[0].process (wL.data(), m); hiCut[1].process (wR.data(), m);
 
-    // Output gain (wet chain) then dry/wet blend.
+    // Output gain, dry/wet blend, then the bypass crossfade (b: 0 = wet, 1 = dry).
     outGainSm.setTargetValue (juce::Decibels::decibelsToGain (outGainParam->load()));
     mixSm.setTargetValue     (mixParam->load() * 0.01f);
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < m; ++i)
     {
         const float og = outGainSm.getNextValue();
-        const float m  = mixSm.getNextValue();
+        const float mx = mixSm.getNextValue();
+        const float b  = bypassSm.getNextValue();
         const float wetL = wL[(size_t) i] * og;
         const float wetR = wR[(size_t) i] * og;
-        wL[(size_t) i] = dryL[(size_t) i] + m * (wetL - dryL[(size_t) i]);
-        wR[(size_t) i] = dryR[(size_t) i] + m * (wetR - dryR[(size_t) i]);
-    }
-
-    float* o0 = buffer.getWritePointer (0);
-    for (int i = 0; i < n; ++i) o0[i] = wL[(size_t) i];
-    if (numOut > 1)
-    {
-        float* o1 = buffer.getWritePointer (1);
-        for (int i = 0; i < n; ++i) o1[i] = wR[(size_t) i];
+        const float mixedL = dryL[(size_t) i] + mx * (wetL - dryL[(size_t) i]);
+        const float mixedR = dryR[(size_t) i] + mx * (wetR - dryR[(size_t) i]);
+        o0[i] = dryL[(size_t) i] * b + mixedL * (1.0f - b);
+        if (o1 != nullptr) o1[i] = dryR[(size_t) i] * b + mixedR * (1.0f - b);
     }
 }
 
@@ -399,8 +422,12 @@ void NamPlayerAudioProcessor::loadIr (const juce::File& file)
         return;
     }
 
+    // Read generously (a few times the time cap) at the source rate so truncation can
+    // be detected and the resampler tail flushed; buildAndPublishIrKernels applies the
+    // actual time-based cap for the current host rate.
     const int numCh = (int) juce::jmax ((unsigned int) 1, reader->numChannels);
-    const int lenIn = (int) juce::jmin ((juce::int64) (kMaxIrSamples * 8), reader->lengthInSamples);
+    const juce::int64 readCap = (juce::int64) std::ceil (kMaxIrSeconds * reader->sampleRate * 4.0) + 64;
+    const int lenIn = (int) juce::jmin (readCap, reader->lengthInSamples);
     if (lenIn <= 0) return;
 
     juce::AudioBuffer<float> buf (numCh, lenIn);
@@ -433,13 +460,31 @@ void NamPlayerAudioProcessor::buildAndPublishIrKernels()
 {
     if (! irLoaded) return;
     const double dst = currentSampleRate;
+    const int    cap = maxIrSamples > 0 ? maxIrSamples
+                                        : std::max (1, (int) std::lround (kMaxIrSeconds * dst));
     for (int ch = 0; ch < 2; ++ch)
     {
-        auto rs = resampleIr (irRaw[(size_t) ch].data(), (int) irRaw[(size_t) ch].size(),
-                              irRawRate, dst, kMaxIrSamples);
+        const int srcLen = (int) irRaw[(size_t) ch].size();
+        auto rs = resampleIr (irRaw[(size_t) ch].data(), srcLen, irRawRate, dst, cap);
+
+        // If the IR was truncated by the time cap, taper the cut with a 5 ms
+        // raised-cosine fade so the hard edge isn't an audible click.
+        const int naturalLen = (irRawRate > 0.0 && std::abs (irRawRate - dst) > 1.0e-6)
+                             ? (int) std::floor (srcLen * dst / irRawRate) : srcLen;
+        if (naturalLen > cap && ! rs.empty())
+        {
+            const int fade = std::min ((int) rs.size(), std::max (1, (int) std::lround (0.005 * dst)));
+            for (int i = 0; i < fade; ++i)
+            {
+                const size_t idx = rs.size() - (size_t) fade + (size_t) i;
+                const float  g   = 0.5f + 0.5f * std::cos (3.14159265358979323846f * (float) (i + 1) / (float) fade);
+                rs[idx] *= g;
+            }
+        }
+
         auto kernel = std::make_unique<ImpulseKernel>();
         if (! rs.empty())
-            irConv[0].buildKernel (rs.data(), (int) rs.size(), kernel->H);   // same FFT size for both channels
+            irConv[0].buildKernel (rs.data(), (int) rs.size(), kernel->k);   // same geometry for both channels
         irHandoff[(size_t) ch].publish (std::move (kernel));
     }
 }

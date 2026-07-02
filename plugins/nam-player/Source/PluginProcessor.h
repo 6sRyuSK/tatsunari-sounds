@@ -3,8 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "factory_core/NamRoutingEngine.h"
-#include "factory_core/FftConvolver.h"
-#include "factory_core/Resampler.h"
+#include "factory_core/PartitionedConvolver.h"
 #include "factory_core/RateBracket.h"
 #include "factory_core/ResamplerLatency.h"
 #include "factory_core/DelayLine.h"
@@ -22,9 +21,11 @@
 //
 // NAM Player — loads up to three Neural Amp Modeler models + one cabinet IR and
 // mixes them with per-slot Series/Parallel routing (factory_core::NamRoutingEngine),
-// a zero-latency FFT cab convolver (factory_core::FftConvolver), tone hi/lo cut and
-// a dry/wet blend. The AudioProcessor is a thin, real-time-safe wrapper: everything
+// a zero-latency partitioned cab convolver (factory_core::PartitionedConvolver, with
+// a time-based IR-length cap), tone hi/lo cut, a dry/wet blend and a click-free
+// crossfade bypass. The AudioProcessor is a thin, real-time-safe wrapper: everything
 // is preallocated in prepareToPlay and processBlock does not allocate/lock/syscall.
+// An over-sized host block is chunked to the prepared size (never dropped).
 //
 // True stereo: L and R run through independent NAM instances (models are mono and
 // stateful), so each slot holds a model per channel. Models and IR kernels are
@@ -32,9 +33,10 @@
 // ModelHandoff; retired objects are freed back on the message thread (Timer).
 //
 // The NAM section always runs at kNamRate (48 kHz, the models' trained rate). When
-// the host runs at a different rate the section is bracketed by streaming resamplers
-// (factory_core::Resampler); a small output FIFO delivers exactly the host block
-// size, giving a fixed, reported latency that the dry path is delayed to match.
+// the host runs at a different rate the section is bracketed by band-limited
+// resamplers inside factory_core::RateBracket (PolyphaseResampler, so the non-linear
+// amp output does not alias); its output FIFO delivers exactly the host block size,
+// giving a fixed, reported latency that the dry path is delayed to match.
 //
 class NamPlayerAudioProcessor final : public juce::AudioProcessor,
                                       private juce::Timer
@@ -42,10 +44,10 @@ class NamPlayerAudioProcessor final : public juce::AudioProcessor,
 public:
     static constexpr int    kNumSlots     = 3;
     static constexpr double kNamRate      = 48000.0;   // fixed internal NAM-section rate
-    static constexpr int    kMaxIrSamples = 8192;      // cab IR length cap (~170 ms @ 48 kHz)
+    static constexpr double kMaxIrSeconds = 0.17;      // cab IR length cap in TIME (rate-independent)
     static constexpr int    kNamMaxBlock  = 8192;      // NAM Reset() max buffer (blocks are chunked to this)
 
-    struct ImpulseKernel { std::vector<std::complex<double>> H; };
+    struct ImpulseKernel { factory_core::PartitionedConvolver::Kernel k; };
 
     NamPlayerAudioProcessor();
     ~NamPlayerAudioProcessor() override;
@@ -57,6 +59,8 @@ public:
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
+
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
 
     const juce::String getName() const override { return "NAM Player"; }
     bool acceptsMidi() const override { return false; }
@@ -94,6 +98,11 @@ private:
     void reloadModelsFromState();
     void buildAndPublishIrKernels();
 
+    // Process a contiguous slice [start, start+m) of the buffer (m <= currentBlock);
+    // processBlock loops this so an over-sized host block is chunked, never dropped.
+    void processChunk (juce::AudioBuffer<float>& buffer, int start, int m,
+                       const ImpulseKernel* kernL, const ImpulseKernel* kernR) noexcept;
+
     struct SlotParams
     {
         std::atomic<float>* enable  = nullptr;
@@ -112,10 +121,11 @@ private:
     std::atomic<float>* loCutParam    = nullptr;
     std::atomic<float>* hiCutParam    = nullptr;
     std::atomic<float>* bypassParam   = nullptr;
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr;   // for getBypassParameter()
 
-    factory_core::NamRoutingEngine            engine;
-    std::array<factory_core::FftConvolver, 2> irConv;
-    std::array<factory_core::Biquad, 2>       loCut, hiCut;
+    factory_core::NamRoutingEngine                    engine;
+    std::array<factory_core::PartitionedConvolver, 2> irConv;
+    std::array<factory_core::Biquad, 2>               loCut, hiCut;
 
     std::array<std::array<ModelHandoff<NamModel>, 2>, kNumSlots> modelHandoff;
     std::array<ModelHandoff<ImpulseKernel>, 2>                   irHandoff;
@@ -123,6 +133,12 @@ private:
     std::array<std::vector<float>, 2> irRaw;
     double irRawRate = 0.0;
     bool   irLoaded  = false;
+    int    maxIrSamples = 0;                 // kMaxIrSeconds * sampleRate, set in prepareToPlay
+
+    // Bypass is a click-free crossfade (dry<->wet). While the fade is settled at fully
+    // bypassed we skip the (expensive) wet chain; on release the crossfade covers the
+    // transient from resuming the NAM section from stale state.
+    juce::SmoothedValue<float> bypassSm;
 
     // Resampling around the 48 kHz NAM section (bypassed when host == 48 kHz).
     // The whole host<->48k bracket + output FIFO + latency reporting lives in the

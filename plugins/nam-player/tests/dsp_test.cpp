@@ -10,6 +10,7 @@
 //
 #include "factory_core/NamRoutingEngine.h"
 #include "factory_core/FftConvolver.h"
+#include "factory_core/PartitionedConvolver.h"
 #include "factory_core/Resampler.h"
 #include "factory_core/PolyphaseResampler.h"
 #include "factory_core/ResamplerLatency.h"
@@ -356,6 +357,87 @@ namespace
         }
     }
 
+    // ---- Partitioned convolver: zero-latency identity + independent naive oracle -
+    //
+    // The plugin's cab IR now uses the zero-latency uniform-partitioned convolver
+    // (it caps the FFT size at high rates). Same independent time-domain oracle as
+    // the single-partition convolver, exercised across block sizes and IR lengths
+    // spanning many partitions, plus a rate-invariance check (a time-specified IR
+    // has the same effective length in seconds at every sample rate).
+    void partitionedConvolverTests()
+    {
+        std::printf ("Partitioned convolver\n");
+        std::mt19937 rng (20260702u);
+
+        for (int maxBlock : { 64, 128, 256, 512 })
+            for (int irLen : { 50, 200, 1000, 5000 })
+            {
+                const auto ir = randomSignal (rng, irLen, 1.0f);
+
+                // Impulse identity + zero latency + no energy past the IR length.
+                {
+                    factory_core::PartitionedConvolver conv; conv.prepare (maxBlock, 6000);
+                    factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+                    const int total = irLen + 300;
+                    std::vector<float> stream ((size_t) total, 0.0f); stream[0] = 1.0f;
+                    for (int p = 0; p < total; p += maxBlock)
+                        conv.process (stream.data() + p, std::min (maxBlock, total - p), K);
+                    double maxErr = 0.0, tail = 0.0;
+                    for (int i = 0; i < irLen; ++i)     maxErr = std::max (maxErr, (double) std::abs (stream[(size_t) i] - ir[(size_t) i]));
+                    for (int i = irLen; i < total; ++i) tail   = std::max (tail,   (double) std::abs (stream[(size_t) i]));
+                    check (maxErr < 1e-4, "partitioned impulse != IR (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + "), err=" + std::to_string (maxErr));
+                    check (tail < 1e-4, "partitioned energy past IR length (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + ")");
+                }
+
+                // Random signal vs independent naive convolution across block sizes.
+                for (int B : { 1, 7, 64, 512 })
+                {
+                    factory_core::PartitionedConvolver conv; conv.prepare (maxBlock, 6000);
+                    factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+                    const int total = 3000;
+                    const auto input = randomSignal (rng, total, 0.7f);
+                    std::vector<float> stream = input;
+                    for (int p = 0; p < total; p += B)
+                        conv.process (stream.data() + p, std::min (B, total - p), K);
+                    const auto ref = naiveConv (input, ir, total);
+                    double err = 0.0, pk = 0.0;
+                    for (int i = 0; i < total; ++i)
+                    { err = std::max (err, (double) std::abs (stream[(size_t) i] - ref[(size_t) i])); pk = std::max (pk, (double) std::abs (ref[(size_t) i])); }
+                    check (err < 1e-3 * std::max (1.0, pk), "partitioned vs naive (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + " B=" + std::to_string (B) + "), err=" + std::to_string (err));
+                }
+            }
+
+        // Empty kernel => passthrough.
+        {
+            factory_core::PartitionedConvolver conv; conv.prepare (128, 6000);
+            factory_core::PartitionedConvolver::Kernel K;                 // empty head
+            const auto input = randomSignal (rng, 300, 0.5f);
+            std::vector<float> stream = input;
+            for (int p = 0; p < 300; p += 128) conv.process (stream.data() + p, std::min (128, 300 - p), K);
+            check (maxAbsDiff (stream, input) == 0.0, "partitioned empty kernel not passthrough");
+        }
+
+        // Rate invariance: an IR specified as a DURATION (0.05 s) has the same effective
+        // length in seconds at every sample rate — its response is contained within
+        // round(0.05*fs) samples and silent after (the time-based IR-cap semantics).
+        for (double fs : factory_core::testing::kStandardSampleRates())
+        {
+            const int L = (int) std::lround (0.05 * fs);
+            const auto ir = randomSignal (rng, L, 1.0f);
+            factory_core::PartitionedConvolver conv; conv.prepare (256, (int) std::lround (0.17 * fs));
+            factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), L, K);
+            const int total = L + 500;
+            std::vector<float> stream ((size_t) total, 0.0f); stream[0] = 1.0f;
+            for (int p = 0; p < total; p += 256) conv.process (stream.data() + p, std::min (256, total - p), K);
+            double tail = 0.0;
+            for (int i = L; i < total; ++i) tail = std::max (tail, (double) std::abs (stream[(size_t) i]));
+            check (tail < 1e-4, "partitioned IR duration not rate-invariant at Fs=" + std::to_string ((int) fs));
+        }
+    }
+
     // ---- Streaming resampler: exact 1:1 delay + amplitude/rate preservation ------
     void resamplerTests()
     {
@@ -643,6 +725,7 @@ namespace
 int main (int argc, char** argv)
 {
     convolutionTests();
+    partitionedConvolverTests();
     resamplerTests();
     polyphaseResamplerTests();
     latencyTests();
