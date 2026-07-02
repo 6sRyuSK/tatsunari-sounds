@@ -7,10 +7,30 @@ name: CI
 # Builds use the Ninja generator + a compiler cache (ccache, or sccache for
 # MSVC) persisted across runs, so unchanged JUCE modules are not recompiled.
 
+# Path-scoped: this gate only builds/tests/validates the plugins, so it runs only
+# when a build-affecting source changes. core/ ui/ cmake/ and the root
+# CMakeLists.txt are included (not just plugins/**) because a change there affects
+# every plugin — CLAUDE.md requires the full suite to run for any core/ change.
+# Installer- or docs-only PRs skip it. main is unprotected, so a skipped run does
+# not block merges. Keep the two `paths` lists identical (push == pull_request).
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'plugins/**'
+      - 'core/**'
+      - 'ui/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci.yml'
   pull_request:
+    paths:
+      - 'plugins/**'
+      - 'core/**'
+      - 'ui/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 concurrency:
