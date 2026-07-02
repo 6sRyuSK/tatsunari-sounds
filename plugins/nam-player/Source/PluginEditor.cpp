@@ -78,9 +78,20 @@ NamPlayerAudioProcessorEditor::NamPlayerAudioProcessorEditor (NamPlayerAudioProc
     addAndMakeVisible (bypass);
     buttonAtts.push_back (std::make_unique<BA> (processor.apvts, "bypass", bypass));
 
+    mergeHeader.setText ("MERGE", juce::dontSendNotification);
+    mergeHeader.setFont (juce::Font (juce::FontOptions (14.0f, juce::Font::bold)));
+    mergeHeader.setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
+    addAndMakeVisible (mergeHeader);
+
+    reampButton.onClick = [this] { startReamp(); };
+    addAndMakeVisible (reampButton);
+
+    reampIrTone.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
+    addAndMakeVisible (reampIrTone);
+
     refreshNames();
     startTimerHz (4);   // refresh names after async (state-restore) loads
-    setSize (780, 600);
+    setSize (780, 648);
 }
 
 NamPlayerAudioProcessorEditor::~NamPlayerAudioProcessorEditor()
@@ -120,6 +131,58 @@ void NamPlayerAudioProcessorEditor::openIrChooser()
             const auto f = fc.getResult();
             if (f.existsAsFile()) { processor.loadIr (f); refreshNames(); }
         });
+}
+
+void NamPlayerAudioProcessorEditor::startReamp()
+{
+    chooser = std::make_unique<juce::FileChooser> ("リアンプ入力 WAV を選択 (48 kHz)", juce::File(), "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this] (const juce::FileChooser& fc)
+        {
+            const auto f = fc.getResult();
+            if (f.existsAsFile()) chooseReampOutput (f);
+        });
+}
+
+void NamPlayerAudioProcessorEditor::chooseReampOutput (const juce::File& inputFile)
+{
+    const auto def = inputFile.getParentDirectory()
+                        .getChildFile (inputFile.getFileNameWithoutExtension() + "_reamp.wav");
+    chooser = std::make_unique<juce::FileChooser> ("リアンプ出力 WAV を保存", def, "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                          | juce::FileBrowserComponent::warnAboutOverwriting,
+        [this, inputFile] (const juce::FileChooser& fc)
+        {
+            const auto out = fc.getResult();
+            if (out != juce::File()) runReampJob (inputFile, out);
+        });
+}
+
+void NamPlayerAudioProcessorEditor::runReampJob (const juce::File& in, const juce::File& out)
+{
+    reampButton.setEnabled (false);
+    reampButton.setButtonText ("Rendering...");
+
+    const bool inclIrTone = reampIrTone.getToggleState();
+    auto* proc = &processor;
+    juce::Component::SafePointer<NamPlayerAudioProcessorEditor> safe (this);
+
+    // Fire-and-forget background render; UI is touched only via the message thread.
+    juce::Thread::launch ([proc, safe, in, out, inclIrTone]
+    {
+        const auto result = proc->renderReampToFile (in, out, inclIrTone, nullptr);
+        juce::MessageManager::callAsync ([safe, result]
+        {
+            if (auto* ed = safe.getComponent())
+            {
+                ed->reampButton.setEnabled (true);
+                ed->reampButton.setButtonText ("Reamp Export...");
+                juce::NativeMessageBox::showMessageBoxAsync (
+                    result.ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
+                    result.ok ? "MERGE" : "MERGE — 失敗", result.message, ed);
+            }
+        });
+    });
 }
 
 void NamPlayerAudioProcessorEditor::refreshNames()
@@ -179,6 +242,14 @@ void NamPlayerAudioProcessorEditor::resized()
     }
 
     auto g = r;
+
+    // MERGE row reserved from the bottom so the knobs above don't consume it.
+    auto mergeRow = g.removeFromBottom (30);
+    g.removeFromBottom (8);
+    mergeHeader.setBounds (mergeRow.removeFromLeft (70));
+    reampButton.setBounds (mergeRow.removeFromLeft (150).reduced (2));
+    reampIrTone.setBounds (mergeRow.reduced (6, 2));
+
     auto irRow = g.removeFromTop (24);
     irHeader.setBounds (irRow.removeFromLeft (70));
     irClear.setBounds (irRow.removeFromRight (30).reduced (2));

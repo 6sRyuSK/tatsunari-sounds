@@ -10,9 +10,16 @@
 //
 #include "factory_core/NamRoutingEngine.h"
 #include "factory_core/FftConvolver.h"
+#include "factory_core/PartitionedConvolver.h"
 #include "factory_core/Resampler.h"
+#include "factory_core/PolyphaseResampler.h"
 #include "factory_core/ResamplerLatency.h"
+#include "factory_core/RateBracket.h"
+#include "factory_core/Biquad.h"
+#include "factory_core/Filters.h"
 #include "factory_core/testing/DspInvariants.h"
+
+#include "../Source/OfflineReamp.h"
 
 #include <array>
 #include <cmath>
@@ -352,6 +359,87 @@ namespace
         }
     }
 
+    // ---- Partitioned convolver: zero-latency identity + independent naive oracle -
+    //
+    // The plugin's cab IR now uses the zero-latency uniform-partitioned convolver
+    // (it caps the FFT size at high rates). Same independent time-domain oracle as
+    // the single-partition convolver, exercised across block sizes and IR lengths
+    // spanning many partitions, plus a rate-invariance check (a time-specified IR
+    // has the same effective length in seconds at every sample rate).
+    void partitionedConvolverTests()
+    {
+        std::printf ("Partitioned convolver\n");
+        std::mt19937 rng (20260702u);
+
+        for (int maxBlock : { 64, 128, 256, 512 })
+            for (int irLen : { 50, 200, 1000, 5000 })
+            {
+                const auto ir = randomSignal (rng, irLen, 1.0f);
+
+                // Impulse identity + zero latency + no energy past the IR length.
+                {
+                    factory_core::PartitionedConvolver conv; conv.prepare (maxBlock, 6000);
+                    factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+                    const int total = irLen + 300;
+                    std::vector<float> stream ((size_t) total, 0.0f); stream[0] = 1.0f;
+                    for (int p = 0; p < total; p += maxBlock)
+                        conv.process (stream.data() + p, std::min (maxBlock, total - p), K);
+                    double maxErr = 0.0, tail = 0.0;
+                    for (int i = 0; i < irLen; ++i)     maxErr = std::max (maxErr, (double) std::abs (stream[(size_t) i] - ir[(size_t) i]));
+                    for (int i = irLen; i < total; ++i) tail   = std::max (tail,   (double) std::abs (stream[(size_t) i]));
+                    check (maxErr < 1e-4, "partitioned impulse != IR (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + "), err=" + std::to_string (maxErr));
+                    check (tail < 1e-4, "partitioned energy past IR length (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + ")");
+                }
+
+                // Random signal vs independent naive convolution across block sizes.
+                for (int B : { 1, 7, 64, 512 })
+                {
+                    factory_core::PartitionedConvolver conv; conv.prepare (maxBlock, 6000);
+                    factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+                    const int total = 3000;
+                    const auto input = randomSignal (rng, total, 0.7f);
+                    std::vector<float> stream = input;
+                    for (int p = 0; p < total; p += B)
+                        conv.process (stream.data() + p, std::min (B, total - p), K);
+                    const auto ref = naiveConv (input, ir, total);
+                    double err = 0.0, pk = 0.0;
+                    for (int i = 0; i < total; ++i)
+                    { err = std::max (err, (double) std::abs (stream[(size_t) i] - ref[(size_t) i])); pk = std::max (pk, (double) std::abs (ref[(size_t) i])); }
+                    check (err < 1e-3 * std::max (1.0, pk), "partitioned vs naive (mB=" + std::to_string (maxBlock)
+                           + " L=" + std::to_string (irLen) + " B=" + std::to_string (B) + "), err=" + std::to_string (err));
+                }
+            }
+
+        // Empty kernel => passthrough.
+        {
+            factory_core::PartitionedConvolver conv; conv.prepare (128, 6000);
+            factory_core::PartitionedConvolver::Kernel K;                 // empty head
+            const auto input = randomSignal (rng, 300, 0.5f);
+            std::vector<float> stream = input;
+            for (int p = 0; p < 300; p += 128) conv.process (stream.data() + p, std::min (128, 300 - p), K);
+            check (maxAbsDiff (stream, input) == 0.0, "partitioned empty kernel not passthrough");
+        }
+
+        // Rate invariance: an IR specified as a DURATION (0.05 s) has the same effective
+        // length in seconds at every sample rate — its response is contained within
+        // round(0.05*fs) samples and silent after (the time-based IR-cap semantics).
+        for (double fs : factory_core::testing::kStandardSampleRates())
+        {
+            const int L = (int) std::lround (0.05 * fs);
+            const auto ir = randomSignal (rng, L, 1.0f);
+            factory_core::PartitionedConvolver conv; conv.prepare (256, (int) std::lround (0.17 * fs));
+            factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), L, K);
+            const int total = L + 500;
+            std::vector<float> stream ((size_t) total, 0.0f); stream[0] = 1.0f;
+            for (int p = 0; p < total; p += 256) conv.process (stream.data() + p, std::min (256, total - p), K);
+            double tail = 0.0;
+            for (int i = L; i < total; ++i) tail = std::max (tail, (double) std::abs (stream[(size_t) i]));
+            check (tail < 1e-4, "partitioned IR duration not rate-invariant at Fs=" + std::to_string ((int) fs));
+        }
+    }
+
     // ---- Streaming resampler: exact 1:1 delay + amplitude/rate preservation ------
     void resamplerTests()
     {
@@ -418,17 +506,300 @@ namespace
             prev = l;
         }
     }
+
+    // ---- PolyphaseResampler: band-limiting (alias/image) suppression -------------
+    //
+    // Independent spectral oracle: a windowed single-bin DFT (a separate code path
+    // from the resampler) measures the amplitude of a sinusoid at a target frequency.
+    // The Catmull-Rom Resampler folds near-Nyquist tones back at ~0 dB; the
+    // band-limited PolyphaseResampler must keep every alias/image bin <= -70 dB
+    // (designed for 80 dB). Passband tones must be preserved (±0.5 dB).
+    constexpr double kPi = 3.14159265358979323846;
+
+    double toneAmplitude (const std::vector<float>& x, int start, int len, double f, double fs)
+    {
+        double re = 0.0, im = 0.0, wsum = 0.0;
+        for (int i = 0; i < len; ++i)
+        {
+            const double w  = 0.5 - 0.5 * std::cos (2.0 * kPi * i / (len - 1));   // Hann
+            const double ph = 2.0 * kPi * f * (start + i) / fs;
+            re += w * x[(size_t) (start + i)] * std::cos (ph);
+            im -= w * x[(size_t) (start + i)] * std::sin (ph);
+            wsum += w;
+        }
+        return 2.0 * std::sqrt (re * re + im * im) / wsum;                        // sinusoid amplitude
+    }
+    double toneDb (const std::vector<float>& x, int start, int len, double f, double fs)
+    {
+        return 20.0 * std::log10 (toneAmplitude (x, start, len, f, fs) + 1e-20);
+    }
+
+    std::vector<float> polyResample (double inR, double outR, const std::vector<float>& in)
+    {
+        factory_core::PolyphaseResampler rs; rs.prepare (inR, outR);
+        const int cap = (int) (in.size() * outR / inR) + 64;
+        std::vector<float> out ((size_t) std::max (1, cap), 0.0f);
+        const int m = rs.process (in.data(), (int) in.size(), out.data(), cap);
+        out.resize ((size_t) std::max (0, m));
+        return out;
+    }
+
+    std::vector<float> sineAt (double fs, double f, int n, float amp = 1.0f)
+    {
+        std::vector<float> v ((size_t) n);
+        for (int i = 0; i < n; ++i) v[(size_t) i] = amp * (float) std::sin (2.0 * kPi * f * i / fs);
+        return v;
+    }
+
+    // Frequency a tone `f` (above outNyq) folds to when sampled at outRate.
+    double foldFreq (double f, double outRate)
+    {
+        const double k = std::round (f / outRate);
+        return std::abs (f - k * outRate);
+    }
+
+    void polyphaseResamplerTests()
+    {
+        std::printf ("PolyphaseResampler alias/image suppression\n");
+        const double gate = -70.0;
+
+        // 1:1 group delay = D input samples, and a low-frequency tone passes at unity.
+        {
+            factory_core::PolyphaseResampler rs; rs.prepare (48000.0, 48000.0);
+            const int D = rs.groupDelayInputSamples();
+            const int N = 400; std::vector<float> in ((size_t) N, 0.0f); in[50] = 1.0f;
+            std::vector<float> out ((size_t) (N + 8), 0.0f);
+            const int m = rs.process (in.data(), N, out.data(), (int) out.size());
+            int peak = 0; double pv = 0.0;
+            for (int i = 0; i < m; ++i) if (std::abs (out[(size_t) i]) > pv) { pv = std::abs (out[(size_t) i]); peak = i; }
+            check (peak == 50 + D, "PolyphaseResampler 1:1 impulse peak at " + std::to_string (peak)
+                   + " != 50+D=" + std::to_string (50 + D));
+        }
+
+        // Aliasing on decimation host->48k: tones past the stop-band edge must fold
+        // back below the gate (0.1.0 folded these at ~0 dB).
+        struct DownCase { double in, tone; };
+        for (const DownCase& c : std::vector<DownCase> {
+                 { 88200.0, 30000.0 }, { 88200.0, 40000.0 }, { 88200.0, 0.9 * 44100.0 },
+                 { 96000.0, 30000.0 }, { 96000.0, 40000.0 }, { 96000.0, 0.9 * 48000.0 },
+                 { 176400.0, 30000.0 }, { 176400.0, 40000.0 }, { 176400.0, 0.9 * 88200.0 },
+                 { 192000.0, 30000.0 }, { 192000.0, 40000.0 }, { 192000.0, 0.9 * 96000.0 } })
+        {
+            const auto in  = sineAt (c.in, c.tone, (int) (c.in * 0.2));
+            const auto out = polyResample (c.in, 48000.0, in);
+            const double aliasHz = foldFreq (c.tone, 48000.0);
+            const double db = toneDb (out, (int) out.size() / 4, (int) out.size() / 2, aliasHz, 48000.0);
+            check (db <= gate, "alias " + std::to_string ((int) c.in) + "->48k tone "
+                   + std::to_string ((int) c.tone) + " folds to " + std::to_string ((int) aliasHz)
+                   + " at " + std::to_string (db) + " dB (> " + std::to_string (gate) + ")");
+        }
+
+        // Aliasing on the near-unity decimation 48->44.1k (0.1.0: -5.4 dB).
+        {
+            const auto in  = sineAt (48000.0, 23000.0, (int) (48000.0 * 0.2));
+            const auto out = polyResample (48000.0, 44100.0, in);
+            const double db = toneDb (out, (int) out.size() / 4, (int) out.size() / 2, 21100.0, 44100.0);
+            check (db <= gate, "alias 48->44.1k 23k->21.1k at " + std::to_string (db) + " dB");
+        }
+
+        // Imaging on interpolation 48k->host (0.1.0: -11 dB): the 48k-18k image bin.
+        for (double host : { 88200.0, 96000.0, 176400.0, 192000.0 })
+        {
+            const auto in  = sineAt (48000.0, 18000.0, (int) (48000.0 * 0.2));
+            const auto out = polyResample (48000.0, host, in);
+            const double img = 48000.0 - 18000.0;   // 30 kHz image
+            const double db  = toneDb (out, (int) out.size() / 4, (int) out.size() / 2, img, host);
+            check (db <= gate, "image 48k->" + std::to_string ((int) host) + " 18k image@30k at "
+                   + std::to_string (db) + " dB");
+        }
+
+        // Passband amplitude preservation (±0.5 dB) at 300 Hz and 0.3*min — both
+        // directions of every standard pair. (0.4*min is the transition edge for the
+        // 4x decimation case, which 63 taps cannot hold flat by design; 0.3*min is
+        // inside the flat band for every ratio.)
+        for (double host : factory_core::testing::kStandardSampleRates())
+        {
+            if (std::abs (host - 48000.0) < 1.0) continue;
+            for (int dir = 0; dir < 2; ++dir)
+            {
+                const double a = dir == 0 ? host : 48000.0;
+                const double b = dir == 0 ? 48000.0 : host;
+                for (double f : { 300.0, 0.3 * std::min (a, b) })
+                {
+                    const auto in  = sineAt (a, f, (int) (a * 0.25), 0.5f);
+                    const auto out = polyResample (a, b, in);
+                    const double db = toneDb (out, (int) out.size() / 4, (int) out.size() / 2, f, b)
+                                    - 20.0 * std::log10 (0.5);
+                    check (std::abs (db) <= 0.5, "passband " + std::to_string ((int) a) + "->"
+                           + std::to_string ((int) b) + " @" + std::to_string ((int) f) + "Hz off by "
+                           + std::to_string (db) + " dB");
+                }
+            }
+        }
+    }
+
+    // ---- OfflineReamp: reamp-pair render matches independent oracles --------------
+    //
+    // The MERGE export renders the wet chain offline. OfflineReamp composes the real
+    // factory_core blocks, so it is verified against INDEPENDENT oracles: the routing
+    // matches routeOracle (mono, Balance centred), the IR path matches an independent
+    // naive convolution, and the tone is applied in the right place. Reamp is always
+    // 48 kHz (the trainer-calibration rate), so this runs once.
+    void offlineReampTests()
+    {
+        std::printf ("OfflineReamp\n");
+        const double fs = 48000.0;
+        const int chunk = 512, N = 4000;
+        std::mt19937 rng (0x0FF11Eu);
+        const auto input = randomSignal (rng, N, 0.6f);
+
+        const std::array<SlotCfg, 3> s { {
+            { true, Mode::Series,   1.5f, 0.9f, 0.0f, 3.0f, true },
+            { true, Mode::Parallel, 1.2f, 0.7f, 0.0f, 4.0f, true },
+            { true, Mode::Series,   1.0f, 1.0f, 0.0f, 2.0f, true } } };
+
+        // Wiring: engine-only render == independent routeOracle mono (Balance 0).
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            auto out = OfflineReamp::render (eng, chunk, input, false, nullptr, nullptr, 1.0f, nullptr, nullptr);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            check ((int) out.size() == N, "reamp output length wrong");
+            check (maxAbsDiff (out, refL) < 2e-5, "reamp engine wiring != oracle, diff="
+                   + std::to_string (maxAbsDiff (out, refL)));
+        }
+
+        // IR path: engine output -> independent naive convolution -> IR level.
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            const int irLen = 300; const auto ir = randomSignal (rng, irLen, 0.5f);
+            factory_core::PartitionedConvolver conv; conv.prepare (chunk, 512);
+            factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+            const float irLevel = 1.3f;
+            auto out = OfflineReamp::render (eng, chunk, input, true, &conv, &K, irLevel, nullptr, nullptr);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            auto conved = naiveConv (refL, ir, N);
+            for (auto& v : conved) v *= irLevel;
+            double d = 0.0; for (int i = 0; i < N; ++i) d = std::max (d, (double) std::abs (out[(size_t) i] - conved[(size_t) i]));
+            check (d < 1e-3, "reamp IR path != engine->naiveConv->level, diff=" + std::to_string (d));
+        }
+
+        // Tone applied after the engine (Lo/Hi-Cut in the right place, offset 0).
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            const auto lc = factory_core::designFilter (factory_core::BandType::HighPass, 120.0,  0.0, 0.70710678, fs);
+            const auto hc = factory_core::designFilter (factory_core::BandType::LowPass,  6000.0, 0.0, 0.70710678, fs);
+            auto out = OfflineReamp::render (eng, chunk, input, true, nullptr, nullptr, 1.0f, &lc, &hc);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            factory_core::Biquad rlc, rhc; rlc.setCoeffs (lc); rhc.setCoeffs (hc);
+            rlc.process (refL.data(), N); rhc.process (refL.data(), N);
+            check (maxAbsDiff (out, refL) < 1e-4, "reamp tone not applied after engine (offset 0)");
+        }
+    }
+
+    // ---- RateBracket end-to-end wet/dry alignment (the real production path) ------
+    //
+    // RateBracket is the exact code the plugin runs (host<->48k resampling bracket +
+    // output FIFO), so testing it headless tests the production alignment, not a
+    // re-implementation. With an identity section the wet output must lag the input
+    // by EXACTLY latencySamples() — the integer that the dry path is delayed by —
+    // with high correlation (no FIFO underrun / zero-insertion). This fails against
+    // the 0.1.0 double-counted prefill (wet lagged the report by the round-trip g).
+    void rateBracketTests (double fs)
+    {
+        std::printf ("RateBracket E2E @ Fs=%.0f\n", fs);
+        std::mt19937 rng (0x0B1A5u ^ (unsigned) (long long) fs);
+
+        for (int blk : { 64, 480, 512, 2048 })   // 480 is a deliberate non-power-of-two
+        {
+            factory_core::RateBracket<> br;
+            br.prepare (fs, 48000.0, blk);
+            const int lat = br.latencySamples();
+
+            // Band-limited input at the host rate: white noise through a 3-pole
+            // low-pass well inside the resampler passband so the identity round-trip
+            // stays > 0.99 correlated, with a single sharp autocorrelation peak.
+            const int total = blk * 300;
+            std::vector<float> in ((size_t) total);
+            {
+                std::uniform_real_distribution<float> d (-1.0f, 1.0f);
+                for (int i = 0; i < total; ++i) in[(size_t) i] = d (rng);
+                const double fc = 0.10 * std::min (fs, 48000.0);
+                const auto c = factory_core::designFilter (factory_core::BandType::LowPass, fc, 0.0, 0.70710678, fs);
+                factory_core::Biquad lp[3];
+                for (auto& b : lp) { b.setCoeffs (c); b.process (in.data(), total); }
+                double pk = 0.0; for (float v : in) pk = std::max (pk, (double) std::abs (v));
+                if (pk > 0.0) for (auto& v : in) v = (float) (v / pk * 0.7);
+            }
+
+            std::vector<float> out ((size_t) total, 0.0f);
+            std::vector<float> ob0 ((size_t) blk), ob1 ((size_t) blk);
+            for (int p = 0; p < total; p += blk)
+            {
+                const int m = std::min (blk, total - p);
+                br.process (in.data() + p, in.data() + p, ob0.data(), ob1.data(), m,
+                            [] (float*, float*, int) noexcept { /* identity section */ });
+                for (int i = 0; i < m; ++i) out[(size_t) (p + i)] = ob0[(size_t) i];
+            }
+
+            if (fs == 48000.0)   // resampler bypassed: zero latency, bit-exact passthrough
+            {
+                check (lat == 0, "RateBracket latency at model rate != 0 (blk=" + std::to_string (blk) + ")");
+                check (maxAbsDiff (out, in) == 0.0, "RateBracket 48k not bit-exact passthrough (blk=" + std::to_string (blk) + ")");
+                continue;
+            }
+
+            // Find the integer lag maximizing normalized cross-correlation of out vs in,
+            // over a steady-state window. Search a range covering every rate's latency
+            // AND the buggy (round-trip-shifted) value, so the alignment fix is gated.
+            const int W = std::min (8192, total / 4);
+            const int s = total / 2;
+            double outEnergy = 0.0;
+            for (int i = 0; i < W; ++i) { const double o = out[(size_t) (s + i)]; outEnergy += o * o; }
+            int    bestLag  = -1;
+            double bestCorr = -1.0;
+            for (int L = 0; L <= 300; ++L)
+            {
+                double cc = 0.0, ie = 0.0;
+                for (int i = 0; i < W; ++i)
+                {
+                    const double o = out[(size_t) (s + i)];
+                    const double x = in[(size_t) (s + i - L)];
+                    cc += o * x; ie += x * x;
+                }
+                const double corr = cc / std::sqrt (std::max (1e-300, outEnergy * ie));
+                if (corr > bestCorr) { bestCorr = corr; bestLag = L; }
+            }
+            // Integer-lag equality is the strong alignment gate. The correlation gate
+            // is a FIFO-underrun detector (a zero-insertion collapses it well below
+            // 0.9); 0.98 tolerates the sub-sample round-trip residual (<= 0.5 sample,
+            // e.g. 0.48 at 44.1k) the plan permits, which only nicks the top of the band.
+            check (bestLag == lat, "RateBracket wet lag " + std::to_string (bestLag)
+                   + " != reported latency " + std::to_string (lat) + " (Fs=" + std::to_string ((int) fs)
+                   + ", blk=" + std::to_string (blk) + ")");
+            check (bestCorr > 0.98, "RateBracket wet/dry correlation too low: " + std::to_string (bestCorr)
+                   + " (Fs=" + std::to_string ((int) fs) + ", blk=" + std::to_string (blk) + ")");
+        }
+    }
 }
 
 int main (int argc, char** argv)
 {
     convolutionTests();
+    partitionedConvolverTests();
     resamplerTests();
+    polyphaseResamplerTests();
     latencyTests();
+    offlineReampTests();
 
     const auto rates = factory_core::testing::sampleRatesFromArgs (argc, argv);
     for (double fs : rates)
+    {
         routingTests (fs);
+        rateBracketTests (fs);
+    }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

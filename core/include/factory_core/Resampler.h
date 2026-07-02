@@ -10,6 +10,13 @@
 // group delay of 2 input samples — deterministic, which lets the wrapper report an
 // exact latency and align the dry path.
 //
+// BAND LIMITING: none. Catmull-Rom is a smooth interpolant, not an anti-alias /
+// anti-image low-pass, so a full-scale tone near Nyquist folds back essentially
+// unattenuated (e.g. 96->48 kHz: a 30 kHz tone aliases to 18 kHz at ~0 dB). Do NOT
+// use this on a rate-conversion path that wraps a NON-LINEAR stage whose output has
+// energy above the lower Nyquist — use factory_core::PolyphaseResampler there. This
+// class is fine for smooth/oversampled control signals and linear, band-limited data.
+//
 #include <cstddef>
 
 namespace factory_core
