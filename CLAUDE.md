@@ -38,8 +38,8 @@ delivers the built plugins to end users.
   `plugin.toml`) and `NamCore.cmake` (builds NeuralAmpModelerCore for NAM Player;
   see External dependencies).
 - `tools/gen_catalog.py` — regenerates the README catalog from manifests; also
-  `--emit-json` for the installer's `catalog.json`. `tools/set_release_links.py`
-  updates README download links. `tools/installer/` — the Go/Charm TUI installer.
+  `--emit-json` for the installer's `catalog.json`. `tools/installer/` — the
+  Go/Charm TUI installer.
 - `docs/regression-policy.md` — the catalogued bug classes and the invariant each
   new plugin/`core` change is gated on.
 - `roadmap.toml` — planned plugins not yet started (rendered into the README's

@@ -2,7 +2,7 @@
 name      = "Dynamic Tatsunari EQ"
 slug      = "dynamic-eq"
 category  = "EQ"
-status    = "in-progress"
+status    = "shipped"
 version   = "1.0.0"
 formats   = ["VST3", "AU"]
 reference = "FabFilter Pro-Q 4"

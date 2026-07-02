@@ -1,26 +1,27 @@
 # Plugin Factory
 
-Autonomous audio-plugin factory built with JUCE 8 + CMake.
-See `CLAUDE.md` for the conventions every change must follow.
+JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファクトリーです。
+すべての変更が従うべき規約は `CLAUDE.md` を参照してください。
 
-## Plugin catalog
+## プラグインカタログ
 
 <!-- BEGIN:CATALOG -->
 
-### Shipped (0)
+### Shipped (2)
 
-_None yet._
+| Plugin | Category | Version | Formats | Reference |
+| --- | --- | --- | --- | --- |
+| Dynamic Tatsunari EQ | EQ | 1.0.0 | VST3, AU | FabFilter Pro-Q 4 |
+| Resonance TatSuppressor | EQ | 1.0.0 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (8)
+### In progress (6)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
 | Tatsunari Bus Compressor | Dynamics | SSL G-series bus comp |
-| Dynamic Tatsunari EQ | EQ | FabFilter Pro-Q 4 |
 | Tatsunular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
 | Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
-| Resonance TatSuppressor | EQ | oeksound soothe2 |
 | Taturator | Saturation | Analog tape / tube soft-clip |
 | Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
 | Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
@@ -32,91 +33,30 @@ _None yet._
 
 <!-- END:CATALOG -->
 
-## Install
+## インストール
 
 <!-- BEGIN:BOOTSTRAP -->
-### TUI インストーラー（推奨 / recommended）
+### TUI インストーラー（推奨）
 
-A cross-platform terminal installer (`tatsunari`) that lets you pick individual
-plugins and formats (VST3 / AU), installs them into the right folders, and
-updates in place. It runs **unelevated** and asks the **OS** for a password /
-UAC prompt only when you choose a system-wide install — the app never handles
-your password itself. Choose "just me" for a no-password, per-user install.
+プラグインとフォーマット（VST3 / AU）を個別に選んで適切なフォルダにインストールし、
+その場で更新できるクロスプラットフォームのターミナルインストーラー（`tatsunari`）です。
+**管理者権限なし**で動作し、システム全体へのインストールを選んだときだけ **OS** に
+パスワード / UAC プロンプトを要求します（アプリ自身がパスワードを扱うことはありません）。
+パスワード不要のユーザー単位インストールには「自分だけ（just me）」を選んでください。
 
-**macOS** (Terminal):
+**macOS**（ターミナル）:
 
     curl -fsSL https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.sh | bash
 
-**Windows** (PowerShell):
+**Windows**（PowerShell）:
 
     irm https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.ps1 | iex
 
-The UI is bilingual (Japanese / English, following your OS locale). Source and
-build notes live in [`tools/installer/`](tools/installer/README.md).
+UI は日本語 / 英語のバイリンガルで、OS のロケールに従います。ソースとビルド手順は
+[`tools/installer/`](tools/installer/README.md) にあります。
 <!-- END:BOOTSTRAP -->
 
-### Manual install
-
-Each GitHub Release is a single consolidated build of the whole factory, tagged
-`<year>.<n>` (e.g. `2026.1`). Grab either the everything bundle for your OS
-(`tatsunari-sounds-<tag>-macOS.zip` / `-Windows.zip`) or an individual
-plugin zip (`<plugin>-<version>-macOS.zip` / `-Windows.zip`), then copy the
-bundles into your plugin folders:
-
-- **AU** (`.component`) → `~/Library/Audio/Plug-Ins/Components/` (or `/Library/...` for all users)
-- **VST3** (`.vst3`) → `~/Library/Audio/Plug-Ins/VST3/` (or `/Library/...`)
-
-<!-- BEGIN:INSTALL -->
-### curl でインストール
-
-The commands below install the **everything bundle** (all plugins) for **all
-users**. Asset filenames embed the release version, so replace `2026.2` /
-`v2026_2` with the tag you want from the
-[Releases page](https://github.com/6sRyuSK/tatsunari-sounds/releases).
-Downloading with `curl` also skips the `com.apple.quarantine` flag a browser
-attaches, so the macOS "damaged" prompt below does **not** appear. Restart your
-DAW and rescan afterwards.
-
-#### macOS — AU (`.component`)
-
-    curl -fL https://github.com/6sRyuSK/tatsunari-sounds/releases/download/2026.2/tatsunari-sounds-v2026_2-macOS-AU.zip -o /tmp/tp-au.zip
-    sudo unzip -o /tmp/tp-au.zip -d /Library/Audio/Plug-Ins/Components
-    rm -f /tmp/tp-au.zip
-
-#### macOS — VST3 (`.vst3`)
-
-    curl -fL https://github.com/6sRyuSK/tatsunari-sounds/releases/download/2026.2/tatsunari-sounds-v2026_2-macOS-VST3.zip -o /tmp/tp-vst3.zip
-    sudo unzip -o /tmp/tp-vst3.zip -d /Library/Audio/Plug-Ins/VST3
-    rm -f /tmp/tp-vst3.zip
-
-#### Windows — VST3 (`.vst3`, PowerShell as Administrator)
-
-    Invoke-WebRequest https://github.com/6sRyuSK/tatsunari-sounds/releases/download/2026.2/tatsunari-sounds-v2026_2-Windows.zip -OutFile tp-win.zip
-    Expand-Archive tp-win.zip -DestinationPath "C:\Program Files\Common Files\VST3" -Force
-    Remove-Item tp-win.zip
-
-The bundles are **not code-signed or notarized**, but each release ships a
-build-provenance attestation (`gh attestation verify`) and `SHA256SUMS.txt` — see
-the release notes to verify a download before trusting it.
-<!-- END:INSTALL -->
-
-### macOS: "「…」は壊れているため開けません" / "…is damaged and can't be opened"
-
-The release binaries are **not code-signed or notarized**, and macOS attaches a
-quarantine flag (`com.apple.quarantine`) to anything downloaded via a browser.
-Gatekeeper then reports the unsigned bundle as *damaged* — the plugin is fine,
-it is just quarantined. Strip the flag after installing:
-
-    # Adjust the names/paths to what you installed (use ~/Library if you installed per-user).
-    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Resonance Suppressor.component"
-    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Resonance Suppressor.vst3"
-    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/Dynamic Parametric EQ.component"
-    sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/Dynamic Parametric EQ.vst3"
-
-Then restart your DAW and rescan (for AU you may also need
-`killall -9 AudioComponentRegistrar`).
-
-## Build
+## ビルド
 
     cmake -B build -DCMAKE_BUILD_TYPE=Release
     cmake --build build
