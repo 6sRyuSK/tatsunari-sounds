@@ -193,10 +193,13 @@ a narrower sample-rate set). The non-negotiables:
   from the JUCE gate.
 
 ## CI gate (a PR is NOT done until)
-- **JUCE/plugins** (`.github/workflows/ci.yml`): it builds on the Linux/macOS/
-  Windows matrix (Ninja + ccache/sccache), unit tests pass (CTest across the
-  full rate matrix), and **pluginval strictness 5, headless** passes for every
-  built format (VST3 on every OS, AU on macOS).
+- **JUCE/plugins** (`.github/workflows/ci.yml`): it builds on the macOS/Windows
+  matrix (Ninja + ccache/sccache), unit tests pass (CTest across the full rate
+  matrix), and **pluginval strictness 5, headless** passes for every built format
+  (VST3 on every OS, AU on macOS). Linux is not a supported target yet, so it is
+  not in the matrix. The workflow is also path-scoped: it runs only when a
+  build-affecting source changes (`plugins/ core/ ui/ cmake/ CMakeLists.txt
+  ci.yml`), so installer/docs-only PRs skip it.
 - **Installer** (`.github/workflows/installer-ci.yml`): `go test` / `go vet`,
   triggered only when `tools/installer/**` changes.
 
