@@ -1,8 +1,8 @@
 [plugin]
-name      = "Shimmer Reverb"
+name      = "Tammer Reverb"
 slug      = "shimmer-reverb"
 category  = "Reverb"
 status    = "in-progress"
-version   = "0.1.3"
+version   = "0.1.4"
 formats   = ["VST3", "AU"]
 reference = "FDN shimmer (octave-up feedback)"

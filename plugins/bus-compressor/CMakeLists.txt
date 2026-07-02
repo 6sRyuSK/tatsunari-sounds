@@ -10,7 +10,7 @@ endif()
 
 juce_add_plugin(BusCompressor
   VERSION                     ${BC_VERSION}
-  PRODUCT_NAME                "Bus Compressor"
+  PRODUCT_NAME                "Tatsunari Bus Compressor"
   COMPANY_NAME                "Tatsunari Sounds"
   PLUGIN_MANUFACTURER_CODE    Ttsn
   PLUGIN_CODE                 Bcmp

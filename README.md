@@ -12,19 +12,18 @@ See `CLAUDE.md` for the conventions every change must follow.
 _None yet._
 
 
-### In progress (9)
+### In progress (8)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
-| Bus Compressor | Dynamics | SSL G-series bus comp |
-| Dynamic Parametric EQ | EQ | FabFilter Pro-Q 4 |
-| Granular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
-| NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
-| Resonance Suppressor | EQ | oeksound soothe2 |
-| Saturator | Saturation | Analog tape / tube soft-clip |
-| Shimmer Reverb | Reverb | FDN shimmer (octave-up feedback) |
-| Single-Band EQ | EQ | RBJ Audio EQ Cookbook — peaking EQ |
-| Vocal MB Comp | Dynamics | Vocal-tuned 3-band compressor |
+| Tatsunari Bus Compressor | Dynamics | SSL G-series bus comp |
+| Dynamic Tatsunari EQ | EQ | FabFilter Pro-Q 4 |
+| Tatsunular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
+| Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
+| Resonance TatSuppressor | EQ | oeksound soothe2 |
+| Taturator | Saturation | Analog tape / tube soft-clip |
+| Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
+| Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
 
 
 ### Planned (0)

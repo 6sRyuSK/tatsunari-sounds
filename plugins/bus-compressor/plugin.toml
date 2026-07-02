@@ -1,8 +1,8 @@
 [plugin]
-name      = "Bus Compressor"
+name      = "Tatsunari Bus Compressor"
 slug      = "bus-compressor"
 category  = "Dynamics"
 status    = "in-progress"
-version   = "0.1.3"
+version   = "0.1.4"
 formats   = ["VST3", "AU"]
 reference = "SSL G-series bus comp"

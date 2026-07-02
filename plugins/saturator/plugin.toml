@@ -1,8 +1,8 @@
 [plugin]
-name      = "Saturator"
+name      = "Taturator"
 slug      = "saturator"
 category  = "Saturation"
 status    = "in-progress"
-version   = "0.1.3"
+version   = "0.1.4"
 formats   = ["VST3", "AU"]
 reference = "Analog tape / tube soft-clip"

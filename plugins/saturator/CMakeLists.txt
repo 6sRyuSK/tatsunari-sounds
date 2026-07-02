@@ -11,7 +11,7 @@ endif()
 
 juce_add_plugin(Saturator
   VERSION                     ${SAT_VERSION}
-  PRODUCT_NAME                "Saturator"
+  PRODUCT_NAME                "Taturator"
   COMPANY_NAME                "Tatsunari Sounds"
   PLUGIN_MANUFACTURER_CODE    Ttsn
   PLUGIN_CODE                 Sat1

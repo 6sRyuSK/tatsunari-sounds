@@ -10,7 +10,7 @@ endif()
 
 juce_add_plugin(GranularDelay
   VERSION                     ${GD_VERSION}
-  PRODUCT_NAME                "Granular Delay"
+  PRODUCT_NAME                "Tatsunular Delay"
   COMPANY_NAME                "Tatsunari Sounds"
   PLUGIN_MANUFACTURER_CODE    Ttsn
   PLUGIN_CODE                 Grnd

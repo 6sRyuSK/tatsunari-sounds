@@ -63,7 +63,7 @@ public:
 
     juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
 
-    const juce::String getName() const override { return "NAM Player"; }
+    const juce::String getName() const override { return "Super Tatsunari NAM Player"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }

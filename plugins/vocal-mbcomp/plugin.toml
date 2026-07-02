@@ -1,8 +1,8 @@
 [plugin]
-name      = "Vocal MB Comp"
+name      = "Multi Tatsunari Comp"
 slug      = "vocal-mbcomp"
 category  = "Dynamics"
 status    = "in-progress"
-version   = "0.1.3"
+version   = "0.1.4"
 formats   = ["VST3", "AU"]
 reference = "Vocal-tuned 3-band compressor"

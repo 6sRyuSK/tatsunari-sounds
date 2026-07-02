@@ -10,7 +10,7 @@ endif()
 
 juce_add_plugin(DynamicEq
   VERSION                     ${DEQ_VERSION}
-  PRODUCT_NAME                "Dynamic Parametric EQ"
+  PRODUCT_NAME                "Dynamic Tatsunari EQ"
   COMPANY_NAME                "Tatsunari Sounds"
   PLUGIN_MANUFACTURER_CODE    Ttsn
   PLUGIN_CODE                 Dyeq

@@ -31,7 +31,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "Dynamic Parametric EQ"; }
+    const juce::String getName() const override { return "Dynamic Tatsunari EQ"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }

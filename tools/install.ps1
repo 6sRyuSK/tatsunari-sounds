@@ -23,8 +23,8 @@
     Installs every Release bundle currently in build/.
 
 .EXAMPLE
-    powershell -File tools\install.ps1 -Name "Shimmer Reverb"
-    Installs only the Shimmer Reverb bundle.
+    powershell -File tools\install.ps1 -Name "Tammer Reverb"
+    Installs only the Tammer Reverb bundle.
 #>
 [CmdletBinding()]
 param(

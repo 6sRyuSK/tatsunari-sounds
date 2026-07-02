@@ -1,8 +1,8 @@
 [plugin]
-name      = "Dynamic Parametric EQ"
+name      = "Dynamic Tatsunari EQ"
 slug      = "dynamic-eq"
 category  = "EQ"
 status    = "in-progress"
-version   = "0.4.0"
+version   = "0.4.1"
 formats   = ["VST3", "AU"]
 reference = "FabFilter Pro-Q 4"

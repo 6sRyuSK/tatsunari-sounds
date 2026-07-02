@@ -1,8 +1,8 @@
 [plugin]
-name      = "Granular Delay"
+name      = "Tatsunular Delay"
 slug      = "granular-delay"
 category  = "Delay"
 status    = "in-progress"
-version   = "0.1.3"
+version   = "0.1.4"
 formats   = ["VST3", "AU"]
 reference = "Granular cloud delay (pitch + tempo-sync)"

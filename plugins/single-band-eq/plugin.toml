@@ -1,8 +1,0 @@
-[plugin]
-name      = "Single-Band EQ"
-slug      = "single-band-eq"
-category  = "EQ"
-status    = "in-progress"
-version   = "0.1.2"
-formats   = ["VST3", "AU"]
-reference = "RBJ Audio EQ Cookbook — peaking EQ"

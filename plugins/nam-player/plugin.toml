@@ -1,8 +1,8 @@
 [plugin]
-name      = "NAM Player"
+name      = "Super Tatsunari NAM Player"
 slug      = "nam-player"
 category  = "Amp Sim"
 status    = "in-progress"
-version   = "0.2.0"
+version   = "0.2.1"
 formats   = ["VST3", "AU", "Standalone"]
 reference = "Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4)"

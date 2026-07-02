@@ -10,7 +10,7 @@ endif()
 
 juce_add_plugin(ShimmerReverb
   VERSION                     ${SR_VERSION}
-  PRODUCT_NAME                "Shimmer Reverb"
+  PRODUCT_NAME                "Tammer Reverb"
   COMPANY_NAME                "Tatsunari Sounds"
   PLUGIN_MANUFACTURER_CODE    Ttsn
   PLUGIN_CODE                 Shmr
