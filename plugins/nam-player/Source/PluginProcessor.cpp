@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "OfflineReamp.h"
 
 #include "factory_core/PolyphaseResampler.h"
 
@@ -487,6 +488,107 @@ void NamPlayerAudioProcessor::buildAndPublishIrKernels()
             irConv[0].buildKernel (rs.data(), (int) rs.size(), kernel->k);   // same geometry for both channels
         irHandoff[(size_t) ch].publish (std::move (kernel));
     }
+}
+
+NamPlayerAudioProcessor::ReampResult
+NamPlayerAudioProcessor::renderReampToFile (const juce::File& inWav, const juce::File& outWav,
+                                            bool includeIrTone, const std::function<void (float)>& onProgress)
+{
+    using Mode = factory_core::NamRoutingEngine::Mode;
+
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (inWav));
+    if (reader == nullptr)
+        return { false, "入力 WAV を読み込めませんでした。" };
+    if (std::abs (reader->sampleRate - kNamRate) > 1.0)
+        return { false, "48 kHz の WAV を指定してください（トレーナー較正互換のためリサンプルしません）。" };
+
+    const int N = (int) reader->lengthInSamples;
+    if (N <= 0)
+        return { false, "入力が空です。" };
+
+    juce::AudioBuffer<float> inbuf ((int) juce::jmax ((unsigned int) 1, reader->numChannels), N);
+    reader->read (&inbuf, 0, N, 0, true, reader->numChannels > 1);
+    std::vector<float> input ((size_t) N);
+    std::copy (inbuf.getReadPointer (0), inbuf.getReadPointer (0) + N, input.begin());   // ch0
+
+    // Fresh models (the L-channel path) + a fresh engine set from the current params,
+    // Balance forced centre. Never touch the live audio objects.
+    const int chunk = 512;
+    factory_core::NamRoutingEngine reEngine;
+    reEngine.prepare (kNamRate, chunk);
+    std::vector<std::unique_ptr<NamModel>> models ((size_t) kNumSlots);
+    auto ft = filesTree();
+    bool anyParallelOffCentre = false;
+    for (int k = 0; k < kNumSlots; ++k)
+    {
+        const juce::String path = ft.getProperty (juce::Identifier (slotPid (k, "path"))).toString();
+        const juce::File f (path);
+        factory_core::MonoProcessor* mp = nullptr;
+        if (path.isNotEmpty() && f.existsAsFile())
+        {
+            auto mm = std::make_unique<NamModel>(); std::string err;
+            if (mm->load (path.toStdString(), kNamRate, chunk, err)) { mp = mm.get(); models[(size_t) k] = std::move (mm); }
+        }
+        reEngine.setModel (k, 0, mp);
+        reEngine.setModel (k, 1, mp);
+
+        const bool  en  = slot[(size_t) k].enable->load()  > 0.5f;
+        const Mode  md  = slot[(size_t) k].mode->load()    > 0.5f ? Mode::Parallel : Mode::Series;
+        const float ing = juce::Decibels::decibelsToGain (slot[(size_t) k].ingain->load());
+        const float og  = juce::Decibels::decibelsToGain (slot[(size_t) k].out->load());
+        if (en && md == Mode::Parallel && std::abs (slot[(size_t) k].balance->load()) > 0.001f)
+            anyParallelOffCentre = true;
+        reEngine.setSlot (k, en, md, ing, og, 0.0f);        // Balance centred for capture
+    }
+
+    // Optional cab IR + tone, all built fresh at 48 kHz.
+    std::unique_ptr<factory_core::PartitionedConvolver> reIr;
+    factory_core::PartitionedConvolver::Kernel reKernel;
+    float irLevelLin = 1.0f;
+    factory_core::BiquadCoeffs lc {}, hc {};
+    bool haveLo = false, haveHi = false;
+    if (includeIrTone)
+    {
+        if (irEnableParam->load() > 0.5f && irLoaded)
+        {
+            const int maxIr48 = std::max (1, (int) std::lround (kMaxIrSeconds * kNamRate));
+            reIr = std::make_unique<factory_core::PartitionedConvolver>();
+            reIr->prepare (chunk, maxIr48);
+            auto rs = resampleIr (irRaw[0].data(), (int) irRaw[0].size(), irRawRate, kNamRate, maxIr48);
+            if (! rs.empty())
+                reIr->buildKernel (rs.data(), (int) rs.size(), reKernel);
+            irLevelLin = juce::Decibels::decibelsToGain (irLevelParam->load());
+        }
+        lc = factory_core::designFilter (factory_core::BandType::HighPass, loCutParam->load(), 0.0, 0.70710678, kNamRate);
+        hc = factory_core::designFilter (factory_core::BandType::LowPass,  hiCutParam->load(), 0.0, 0.70710678, kNamRate);
+        haveLo = haveHi = true;
+    }
+
+    auto out = OfflineReamp::render (reEngine, chunk, input, includeIrTone,
+                                     reIr.get(), reKernel.head.empty() ? nullptr : &reKernel, irLevelLin,
+                                     haveLo ? &lc : nullptr, haveHi ? &hc : nullptr, onProgress);
+
+    // Write 48 kHz / mono / 32-bit float.
+    outWav.deleteFile();
+    std::unique_ptr<juce::FileOutputStream> os (outWav.createOutputStream());
+    if (os == nullptr)
+        return { false, "出力ファイルを作成できませんでした。" };
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer (
+        wav.createWriterFor (os.get(), kNamRate, 1, 32, {}, 0));
+    if (writer == nullptr)
+        return { false, "WAV ライターを作成できませんでした。" };
+    os.release();                                            // writer owns the stream now
+    juce::AudioBuffer<float> outbuf (1, (int) out.size());
+    std::copy (out.begin(), out.end(), outbuf.getWritePointer (0));
+    writer->writeFromAudioSampleBuffer (outbuf, 0, (int) out.size());
+    writer.reset();
+
+    juce::String msg = "リアンプ WAV を書き出しました: " + outWav.getFileName();
+    if (anyParallelOffCentre)
+        msg += "\n（Balance は中央としてキャプチャされます）";
+    return { true, msg };
 }
 
 juce::String NamPlayerAudioProcessor::slotName (int slotIndex) const

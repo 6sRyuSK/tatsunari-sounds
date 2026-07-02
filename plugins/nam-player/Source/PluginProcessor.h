@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <complex>
+#include <functional>
 #include <vector>
 
 //
@@ -87,6 +88,14 @@ public:
 
     juce::String slotName (int slot) const;
     juce::String irName() const;
+
+    // Offline "reamp pair" export (MERGE): render `inWav` (must be 48 kHz) through the
+    // captured chain to `outWav` (48 kHz mono float). Heavy + does file I/O — call off
+    // the audio/message thread (the editor runs it on a background thread). Uses freshly
+    // loaded models / a freshly built IR kernel, never the live audio objects.
+    struct ReampResult { bool ok = false; juce::String message; };
+    ReampResult renderReampToFile (const juce::File& inWav, const juce::File& outWav,
+                                   bool includeIrTone, const std::function<void (float)>& onProgress);
 
     static juce::String slotPid (int slot, const char* suffix);
 

@@ -32,6 +32,12 @@ private:
     void refreshNames();
     void timerCallback() override;
 
+    // MERGE: pick a 48 kHz input WAV, then an output path, then render the reamp pair
+    // on a background thread (never the message/audio thread).
+    void startReamp();
+    void chooseReampOutput (const juce::File& inputFile);
+    void runReampJob (const juce::File& in, const juce::File& out);
+
     NamPlayerAudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
@@ -50,6 +56,10 @@ private:
     juce::Slider inTrim, irLevel, outGain, mix, loCut, hiCut;
     juce::Label  inTrimL, irLevelL, outGainL, mixL, loCutL, hiCutL;
     juce::ToggleButton irEnable { "IR" }, bypass { "Bypass" };
+
+    juce::Label        mergeHeader;
+    juce::TextButton   reampButton  { "Reamp Export..." };
+    juce::ToggleButton reampIrTone  { "Include Cab IR + Tone" };
 
     std::unique_ptr<juce::FileChooser> chooser;
 

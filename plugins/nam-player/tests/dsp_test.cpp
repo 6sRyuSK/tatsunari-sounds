@@ -19,6 +19,8 @@
 #include "factory_core/Filters.h"
 #include "factory_core/testing/DspInvariants.h"
 
+#include "../Source/OfflineReamp.h"
+
 #include <array>
 #include <cmath>
 #include <complex>
@@ -636,6 +638,67 @@ namespace
         }
     }
 
+    // ---- OfflineReamp: reamp-pair render matches independent oracles --------------
+    //
+    // The MERGE export renders the wet chain offline. OfflineReamp composes the real
+    // factory_core blocks, so it is verified against INDEPENDENT oracles: the routing
+    // matches routeOracle (mono, Balance centred), the IR path matches an independent
+    // naive convolution, and the tone is applied in the right place. Reamp is always
+    // 48 kHz (the trainer-calibration rate), so this runs once.
+    void offlineReampTests()
+    {
+        std::printf ("OfflineReamp\n");
+        const double fs = 48000.0;
+        const int chunk = 512, N = 4000;
+        std::mt19937 rng (0x0FF11Eu);
+        const auto input = randomSignal (rng, N, 0.6f);
+
+        const std::array<SlotCfg, 3> s { {
+            { true, Mode::Series,   1.5f, 0.9f, 0.0f, 3.0f, true },
+            { true, Mode::Parallel, 1.2f, 0.7f, 0.0f, 4.0f, true },
+            { true, Mode::Series,   1.0f, 1.0f, 0.0f, 2.0f, true } } };
+
+        // Wiring: engine-only render == independent routeOracle mono (Balance 0).
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            auto out = OfflineReamp::render (eng, chunk, input, false, nullptr, nullptr, 1.0f, nullptr, nullptr);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            check ((int) out.size() == N, "reamp output length wrong");
+            check (maxAbsDiff (out, refL) < 2e-5, "reamp engine wiring != oracle, diff="
+                   + std::to_string (maxAbsDiff (out, refL)));
+        }
+
+        // IR path: engine output -> independent naive convolution -> IR level.
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            const int irLen = 300; const auto ir = randomSignal (rng, irLen, 0.5f);
+            factory_core::PartitionedConvolver conv; conv.prepare (chunk, 512);
+            factory_core::PartitionedConvolver::Kernel K; conv.buildKernel (ir.data(), irLen, K);
+            const float irLevel = 1.3f;
+            auto out = OfflineReamp::render (eng, chunk, input, true, &conv, &K, irLevel, nullptr, nullptr);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            auto conved = naiveConv (refL, ir, N);
+            for (auto& v : conved) v *= irLevel;
+            double d = 0.0; for (int i = 0; i < N; ++i) d = std::max (d, (double) std::abs (out[(size_t) i] - conved[(size_t) i]));
+            check (d < 1e-3, "reamp IR path != engine->naiveConv->level, diff=" + std::to_string (d));
+        }
+
+        // Tone applied after the engine (Lo/Hi-Cut in the right place, offset 0).
+        {
+            factory_core::NamRoutingEngine eng; std::array<TanhModel, 3> models;
+            configEngine (eng, s, models, fs, chunk);
+            const auto lc = factory_core::designFilter (factory_core::BandType::HighPass, 120.0,  0.0, 0.70710678, fs);
+            const auto hc = factory_core::designFilter (factory_core::BandType::LowPass,  6000.0, 0.0, 0.70710678, fs);
+            auto out = OfflineReamp::render (eng, chunk, input, true, nullptr, nullptr, 1.0f, &lc, &hc);
+            std::vector<float> refL, refR; routeOracle (s, input, input, refL, refR);
+            factory_core::Biquad rlc, rhc; rlc.setCoeffs (lc); rhc.setCoeffs (hc);
+            rlc.process (refL.data(), N); rhc.process (refL.data(), N);
+            check (maxAbsDiff (out, refL) < 1e-4, "reamp tone not applied after engine (offset 0)");
+        }
+    }
+
     // ---- RateBracket end-to-end wet/dry alignment (the real production path) ------
     //
     // RateBracket is the exact code the plugin runs (host<->48k resampling bracket +
@@ -729,6 +792,7 @@ int main (int argc, char** argv)
     resamplerTests();
     polyphaseResamplerTests();
     latencyTests();
+    offlineReampTests();
 
     const auto rates = factory_core::testing::sampleRatesFromArgs (argc, argv);
     for (double fs : rates)
