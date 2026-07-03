@@ -15,11 +15,12 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Resonance TatSuppressor | EQ | 1.0.0 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (6)
+### In progress (7)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
 | Tatsunari Bus Compressor | Dynamics | SSL G-series bus comp |
+| Fuzznari | Fuzz | ZVEX Fuzz Factory / Fuzz Face / Big Muff |
 | Tatsunular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
 | Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
 | Taturator | Saturation | Analog tape / tube soft-clip |
