@@ -42,6 +42,9 @@ SaturatorAudioProcessor::SaturatorAudioProcessor()
     mixParam    = apvts.getRawParameterValue ("mix");
     outputParam = apvts.getRawParameterValue ("output");
     bypassParam = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, saturator_presets::bank,
+                        saturator_presets::kExclude, saturator_presets::kNumExclude);
 }
 
 factory_core::Waveshaper SaturatorAudioProcessor::makeDisplayShaper() const
@@ -127,14 +130,22 @@ juce::AudioProcessorEditor* SaturatorAudioProcessor::createEditor()
 void SaturatorAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void SaturatorAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
