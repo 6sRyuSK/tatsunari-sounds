@@ -33,6 +33,8 @@ private:
     using ComboAtt  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void refreshPresetSelector();
+    // Linear-phase crossover is HQ-only: grey the phase selector out in Zero-Latency.
+    void updatePhaseEnablement();
 
     // AudioProcessorListener — follow host-driven program changes.
     void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
@@ -47,13 +49,13 @@ private:
 
     juce::Rectangle<int> controlCard, bandCard;
 
-    juce::ComboBox qualityBox;
-    juce::Label    qualityLabel;
+    juce::ComboBox qualityBox, phaseBox;
+    juce::Label    qualityLabel, phaseLabel;
     juce::Slider   mixKnob, outputKnob;
     juce::Label    mixLabel, outputLabel;
     juce::ToggleButton deltaButton { "Delta Listen" }, bypassButton { "Bypass" };
 
-    std::unique_ptr<ComboAtt>  qualityAtt;
+    std::unique_ptr<ComboAtt>  qualityAtt, phaseAtt;
     std::unique_ptr<SliderAtt> mixAtt, outputAtt;
     std::unique_ptr<ButtonAtt> deltaAtt, bypassAtt;
 

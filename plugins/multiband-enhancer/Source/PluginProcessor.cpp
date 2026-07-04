@@ -51,6 +51,11 @@ MultibandEnhancerAudioProcessor::createParameterLayout()
 
     layout.add (std::make_unique<C> (juce::ParameterID { "quality", 1 }, "Quality",
         juce::StringArray { "HQ", "Zero Latency" }, 0));
+    // Crossover phase response. Standard = allpass-compensated LR4 (min latency);
+    // Linear = linear-phase FIR split (~43 ms latency, mastering). HQ-only — has no
+    // effect in Zero-Latency (the editor greys it out there).
+    layout.add (std::make_unique<C> (juce::ParameterID { "phase", 1 }, "Xover Phase",
+        juce::StringArray { "Standard", "Linear" }, 0));
     layout.add (std::make_unique<B> (juce::ParameterID { "delta", 1 }, "Delta Listen", false));
     layout.add (std::make_unique<B> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
 
@@ -74,6 +79,7 @@ MultibandEnhancerAudioProcessor::MultibandEnhancerAudioProcessor()
     mixP     = apvts.getRawParameterValue ("mix");
     outputP  = apvts.getRawParameterValue ("output");
     qualityP = apvts.getRawParameterValue ("quality");
+    phaseP   = apvts.getRawParameterValue ("phase");
     deltaP   = apvts.getRawParameterValue ("delta");
     bypassP  = apvts.getRawParameterValue ("bypass");
     bypassParamPtr = apvts.getParameter ("bypass");
@@ -147,6 +153,28 @@ void MultibandEnhancerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     engine.setOutputDb ((double) outputP->load());
     engine.setQuality  (qualityP->load() > 0.5f ? ME::Quality::ZeroLatency : ME::Quality::HQ);
     engine.setDeltaListen (deltaP->load() > 0.5f);
+
+    // Linear-phase crossover: push the phase mode, and when a crossover is dragged
+    // (linear mode) request an off-audio-thread FIR redesign — the design is heavy
+    // (windowed-sinc + partition FFTs, allocates), so it runs on the message thread
+    // and is handed to the engine lock-free (handleAsyncUpdate -> engine.redesignFir).
+    const bool linearPhase = phaseP->load() > 0.5f;
+    engine.setPhaseMode (linearPhase ? ME::Phase::Linear : ME::Phase::Standard);
+    if (linearPhase)
+    {
+        const double xf[4] = { (double) xovP[0]->load(), (double) xovP[1]->load(),
+                               (double) xovP[2]->load(), (double) xovP[3]->load() };
+        if (xf[0] != firLastHz[0] || xf[1] != firLastHz[1] || xf[2] != firLastHz[2] || xf[3] != firLastHz[3])
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                firLastHz[i] = xf[i];
+                firReqHz[(size_t) i].store (xf[i], std::memory_order_relaxed);
+            }
+            firRedesignPending.store (true, std::memory_order_release);
+            triggerAsyncUpdate();
+        }
+    }
 
     // Latency captured before processing (a Quality change applies its new
     // latency next callback), so every chunk of an over-sized block aligns the
@@ -229,6 +257,15 @@ void MultibandEnhancerAudioProcessor::processChunk (float* L, float* Rin, int m,
 
 void MultibandEnhancerAudioProcessor::handleAsyncUpdate()
 {
+    // Rebuild the linear-phase FIR kernels off the audio thread (draggable crossover)
+    // before republishing latency. redesignFir allocates + does the design FFTs here
+    // on the message thread and hands the result to the audio thread lock-free.
+    if (firRedesignPending.exchange (false, std::memory_order_acquire))
+        engine.redesignFir (firReqHz[0].load (std::memory_order_relaxed),
+                            firReqHz[1].load (std::memory_order_relaxed),
+                            firReqHz[2].load (std::memory_order_relaxed),
+                            firReqHz[3].load (std::memory_order_relaxed));
+
     setLatencySamples (reportedLatency.load (std::memory_order_relaxed));
     updateHostDisplay();
 }
