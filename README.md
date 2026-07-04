@@ -11,9 +11,9 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
-| Dynamic Tatsunari EQ | EQ | 1.1.0 | VST3, AU | FabFilter Pro-Q 4 |
-| Tatsumin Enhancer | Enhancer | 0.2.1 | VST3, AU | Waves Vitamin (multiband parallel harmonic enhancer) |
-| Resonance TatSuppressor | EQ | 1.1.0 | VST3, AU | oeksound soothe2 |
+| Dynamic Tatsunari EQ | EQ | 1.2.0 | VST3, AU | FabFilter Pro-Q 4 |
+| Tatsumin Enhancer | Enhancer | 0.3.0 | VST3, AU | Waves Vitamin (multiband parallel harmonic enhancer) |
+| Resonance TatSuppressor | EQ | 1.2.0 | VST3, AU | oeksound soothe2 |
 
 
 ### In progress (7)

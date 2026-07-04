@@ -51,6 +51,7 @@ VocalMbCompAudioProcessor::VocalMbCompAudioProcessor()
     lowFreqParam  = apvts.getRawParameterValue ("lowfreq");
     highFreqParam = apvts.getRawParameterValue ("highfreq");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, vocal_mbcomp_presets::bank,
                         vocal_mbcomp_presets::kExclude, vocal_mbcomp_presets::kNumExclude);

@@ -133,6 +133,7 @@ DynamicEqAudioProcessor::DynamicEqAudioProcessor()
         params[(size_t) b].knee  = apvts.getRawParameterValue (pid (b, "knee"));
     }
     bypassParam = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, dynamic_eq_presets::bank,
                         dynamic_eq_presets::kExclude, dynamic_eq_presets::kNumExclude);

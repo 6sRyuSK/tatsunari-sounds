@@ -129,6 +129,7 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     deltaParam  = apvts.getRawParameterValue ("delta");
     linkParam   = apvts.getRawParameterValue ("link");
     bypassParam = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
     modeParam   = apvts.getRawParameterValue ("mode");
 
     for (int w = 0; w < 2; ++w)

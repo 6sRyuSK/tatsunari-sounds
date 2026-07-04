@@ -32,6 +32,8 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
+
     const juce::String getName() const override { return "Multi Tatsunari Comp"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -62,6 +64,7 @@ private:
     std::atomic<float>* lowFreqParam = nullptr;
     std::atomic<float>* highFreqParam = nullptr;
     std::atomic<float>* bypassParam = nullptr;
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
 
