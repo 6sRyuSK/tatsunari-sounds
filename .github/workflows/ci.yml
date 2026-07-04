@@ -15,6 +15,10 @@ name: CI
 # every plugin — CLAUDE.md requires the full suite to run for any core/ change.
 # Installer- or docs-only PRs skip it. main is unprotected, so a skipped run does
 # not block merges. Keep the two `paths` lists identical (push == pull_request).
+#
+# Within a triggered PR run, the "Select plugins to build" step narrows the
+# build further: plugin-only PRs configure (and test/validate) just the touched
+# plugins via -DFACTORY_PLUGINS; shared-code changes still build everything.
 on:
   push:
     branches: [ main ]
@@ -86,11 +90,40 @@ jobs:
           path: build/_deps
           key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
 
+      # Decide which plugins can have changed binaries. Shared code (core/ ui/
+      # cmake/ the root CMakeLists.txt, this workflow) affects every plugin ->
+      # build everything. Otherwise only the plugins the PR touches can change,
+      # so configure just those — their test exes and pluginval bundles follow
+      # automatically. push-to-main and workflow_dispatch always build all, so
+      # main stays fully verified and its caches stay warm. Keep the shared-code
+      # regex in sync with the `paths` trigger lists above.
+      - name: Select plugins to build
+        id: select
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          scope=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet --depth=1 origin "$BASE_SHA"
+            changed=$(git diff --name-only "$BASE_SHA" HEAD)
+            if ! echo "$changed" | grep -qE '^(core/|ui/|cmake/|CMakeLists\.txt$|\.github/workflows/ci\.yml$)'; then
+              # Keep only slugs that still exist (a deleted plugin has nothing
+              # to build; if the PR is deletion-only, fall back to build-all).
+              for s in $(echo "$changed" | grep -E '^plugins/[^/]+/' | cut -d/ -f2 | sort -u); do
+                [ -d "plugins/$s" ] && scope="${scope:+$scope,}$s"
+              done
+            fi
+          fi
+          echo "plugins=$scope" >> "$GITHUB_OUTPUT"
+          if [ -n "$scope" ]; then echo "Building subset: $scope"; else echo "Building all plugins"; fi
+
       - name: Configure
         run: >
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER_LAUNCHER=${{ matrix.ccache }}
           -DCMAKE_CXX_COMPILER_LAUNCHER=${{ matrix.ccache }}
+          -DFACTORY_PLUGINS="${{ steps.select.outputs.plugins }}"
 
       # Ninja self-limits to the core count, so peak memory stays in check.
       - name: Build
@@ -98,8 +131,11 @@ jobs:
 
       # Test cases (one exe run per plugin × sample rate) are independent
       # headless processes — run them in parallel across the runner's cores.
+      # --no-tests=error: every configured plugin registers tests, so an empty
+      # test set means the plugin selection went wrong — fail loudly instead of
+      # letting the gate pass on a build that contains nothing.
       - name: Unit tests (CTest)
-        run: ctest --test-dir build --output-on-failure --parallel 4
+        run: ctest --test-dir build --output-on-failure --parallel 4 --no-tests=error
 
       # ---- pluginval ----------------------------------------------------------
       - name: Validate plugins (macOS)

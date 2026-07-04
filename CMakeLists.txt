@@ -38,9 +38,20 @@ target_compile_features(factory_ui INTERFACE cxx_std_20)
 enable_testing()
 
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---
+# FACTORY_PLUGINS narrows the build to a subset of slugs (comma- or
+# semicolon-separated). Empty (the default) configures everything. CI passes
+# the plugins a PR touches so unaffected binaries are not rebuilt; anything
+# that could affect all plugins (core/ ui/ cmake/ this file) keeps it empty.
+set(FACTORY_PLUGINS "" CACHE STRING "Plugin slugs to configure, comma/semicolon separated (empty = all)")
+string(REPLACE "," ";" _factory_plugins "${FACTORY_PLUGINS}")
+
 file(GLOB _plugin_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/plugins/*)
 foreach(_dir ${_plugin_dirs})
   if(IS_DIRECTORY ${_dir} AND EXISTS ${_dir}/CMakeLists.txt)
+    get_filename_component(_slug ${_dir} NAME)
+    if(_factory_plugins AND NOT _slug IN_LIST _factory_plugins)
+      continue()
+    endif()
     add_subdirectory(${_dir})
   endif()
 endforeach()
