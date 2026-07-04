@@ -191,6 +191,10 @@ namespace
     // ==========================================================================
     // G2 — latency exact
     // ==========================================================================
+    // HQ oversamples at EVERY supported rate (M = 4 below 50 kHz, else 2; #70), and
+    // both ratios round-trip to exactly 51 host samples (2H/M), so HQ latency is a
+    // uniform 51; only M=1 (Zero-Latency) is 0. The M->latency map is independently
+    // re-verified by the impulse bracket below (sub-test ii).
     int expectedLatency (double fs) { return (ME::hqFactor (fs) == 1) ? 0 : 51; }
 
     void g2_latency (double fs)
@@ -205,6 +209,12 @@ namespace
             const int exp = expectedLatency (fs);
             if (g_verbose) std::printf ("   HQ report=%d expect=%d\n", rep, exp);
             if (rep != exp) fail ("G2 HQ latency report " + std::to_string (rep) + " != " + std::to_string (exp));
+
+            // Regression (#70): at 176.4/192 kHz HQ now oversamples (M=2) too, so it
+            // must publish 51 there as well — NOT the old 0 (M=1). Assert against the
+            // hardcoded constant (independent of hqFactor) at the high rates.
+            if (fs >= 100000.0 && rep != 51)
+                fail ("G2 #70 high-rate HQ latency " + std::to_string (rep) + " != 51");
 
             ME z; z.prepare (fs, 256); configFlat (z); z.setQuality (ME::Quality::ZeroLatency); tick (z);
             if (z.latencySamples() != 0) fail ("G2 ZL latency report != 0");
@@ -322,21 +332,22 @@ namespace
         const int Nfft = 1 << order;
         factory_core::FFT fft; fft.prepare (order);
 
-        // At >=176.4 kHz HQ runs at native rate (M=1) with ADAA only — i.e. it IS
-        // the Zero-Latency path — so its oversampling-regime gates (-78 / -60) do
-        // not apply; gate it at the ADAA level (-45) and skip the a=1.0 abuse case,
-        // which exists to stress the oversampler (absent at M=1).
-        const int M = ME::hqFactor (fs);
-        const bool osRegime = (M >= 2);
-        struct Case { ME::Quality q; double a; double ffrac; double tol; const char* name; bool run; };
+        // HQ oversamples at EVERY supported rate now (M = 4 below 50 kHz, else 2;
+        // #70): the fundamental's ultrasonic harmonics are pushed above the host
+        // Nyquist and removed by the decimation FIR before they can fold, so the
+        // audible-band aliasing holds the OS grade (-78 dBFS) at ALL rates — incl.
+        // 176.4/192 kHz, which previously ran M=1 ADAA-only and folded a ~-38 dBFS
+        // 3rd-harmonic image near 19 kHz (this gate used to be relaxed to -45 dB
+        // there). The a=1.0 abuse case stresses the oversampler at full scale and
+        // now runs at every rate too.
+        struct Case { ME::Quality q; double a; double ffrac; double tol; const char* name; };
         const Case cases[] = {
-            { ME::Quality::HQ,          0.5, 0.30, osRegime ? -78.0 : -45.0, "HQ",       true },
-            { ME::Quality::ZeroLatency, 0.5, 0.15, -45.0,                     "ZL",       true },
-            { ME::Quality::HQ,          1.0, 0.30, -60.0,                     "HQ-abuse", osRegime },
+            { ME::Quality::HQ,          0.5, 0.30, -78.0, "HQ" },
+            { ME::Quality::ZeroLatency, 0.5, 0.15, -45.0, "ZL" },
+            { ME::Quality::HQ,          1.0, 0.30, -60.0, "HQ-abuse" },
         };
         for (const auto& c : cases)
         {
-            if (! c.run) continue;
             const int k0 = binOf (c.ffrac * fs, fs, order);
             const double f0 = freqOfBin (k0, fs, order);
             ME eng; eng.prepare (fs, 256);
