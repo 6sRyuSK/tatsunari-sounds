@@ -73,6 +73,9 @@ MultibandEnhancerAudioProcessor::MultibandEnhancerAudioProcessor()
     qualityP = apvts.getRawParameterValue ("quality");
     deltaP   = apvts.getRawParameterValue ("delta");
     bypassP  = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, multiband_enhancer_presets::bank,
+                        multiband_enhancer_presets::kExclude, multiband_enhancer_presets::kNumExclude);
 }
 
 void MultibandEnhancerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -226,14 +229,22 @@ juce::AudioProcessorEditor* MultibandEnhancerAudioProcessor::createEditor()
 void MultibandEnhancerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void MultibandEnhancerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
