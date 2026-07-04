@@ -13,6 +13,9 @@
 #include "NamModel.h"
 #include "ModelHandoff.h"
 
+#include "factory_presets/ProgramAdapter.h"
+#include "FactoryPresets.h"
+
 #include <array>
 #include <atomic>
 #include <complex>
@@ -69,11 +72,14 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
+    // Program API rides factory_presets::ProgramAdapter (Init + factory bank).
+    // Presets never reference the "files" child tree (model / IR paths), so the
+    // loaded models survive a program change.
+    int getNumPrograms() override { return programs.getNumPrograms(); }
+    int getCurrentProgram() override { return programs.getCurrentProgram(); }
+    void setCurrentProgram (int index) override { programs.setCurrentProgram (index); }
+    const juce::String getProgramName (int index) override { return programs.getProgramName (index); }
+    void changeProgramName (int, const juce::String&) override {} // factory presets are immutable
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
@@ -131,6 +137,8 @@ private:
     std::atomic<float>* hiCutParam    = nullptr;
     std::atomic<float>* bypassParam   = nullptr;
     juce::AudioProcessorParameter* bypassParamPtr = nullptr;   // for getBypassParameter()
+
+    factory_presets::ProgramAdapter programs;
 
     factory_core::NamRoutingEngine                    engine;
     std::array<factory_core::PartitionedConvolver, 2> irConv;
