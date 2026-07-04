@@ -41,6 +41,7 @@ target_link_libraries(Fuzznari
   PRIVATE
     factory_core
     factory_ui
+    factory_presets
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags
@@ -55,3 +56,29 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
   add_test(NAME fuzznari_dsp_${_fs}
            COMMAND fuzznari_dsp_test ${_fs})
 endforeach()
+
+# ------------------------------------------------------------ preset wiring test
+# JUCE-linked console app: builds the processor headless and checks the factory
+# preset table against the live parameter layout (IDs exist, values in range,
+# Init == defaults, presetIndex round-trips). Rate-independent, one case.
+juce_add_console_app(fuzznari_preset_test PRODUCT_NAME "fuzznari_preset_test")
+target_sources(fuzznari_preset_test PRIVATE
+  tests/preset_test.cpp
+  Source/PluginProcessor.cpp
+  Source/PluginEditor.cpp)
+target_include_directories(fuzznari_preset_test PRIVATE Source)
+target_compile_features(fuzznari_preset_test PRIVATE cxx_std_20)
+target_compile_definitions(fuzznari_preset_test PUBLIC
+  JUCE_WEB_BROWSER=0
+  JUCE_USE_CURL=0)
+target_link_libraries(fuzznari_preset_test
+  PRIVATE
+    factory_core
+    factory_ui
+    factory_presets
+    juce::juce_audio_utils
+  PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME fuzznari_preset COMMAND fuzznari_preset_test)

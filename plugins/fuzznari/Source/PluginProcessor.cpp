@@ -68,6 +68,9 @@ FuzznariAudioProcessor::FuzznariAudioProcessor()
     levelParam  = apvts.getRawParameterValue ("level");
     mixParam    = apvts.getRawParameterValue ("mix");
     bypassParam = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, fuzznari_presets::bank,
+                        fuzznari_presets::kExclude, fuzznari_presets::kNumExclude);
 }
 
 void FuzznariAudioProcessor::pushParamsToEngine() noexcept
@@ -152,14 +155,22 @@ juce::AudioProcessorEditor* FuzznariAudioProcessor::createEditor()
 void FuzznariAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void FuzznariAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

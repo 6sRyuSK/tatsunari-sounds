@@ -5,8 +5,10 @@
 #include "PluginProcessor.h"
 #include "FuzzCurveComponent.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/PresetSelector.h"
 
-class FuzznariAudioProcessorEditor final : public juce::AudioProcessorEditor
+class FuzznariAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                           private juce::AudioProcessorListener
 {
 public:
     explicit FuzznariAudioProcessorEditor (FuzznariAudioProcessor&);
@@ -20,6 +22,11 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     void configureKnob (juce::Slider&, juce::Label&, const juce::String& name, const juce::String& suffix);
+    void refreshPresetSelector();
+
+    // AudioProcessorListener — follow host-driven program changes.
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     FuzznariAudioProcessor& processor;
     FactoryLookAndFeel lnf;
@@ -28,6 +35,7 @@ private:
     juce::Label  driveLabel, biasLabel, gateLabel, stabLabel, toneLabel, levelLabel, mixLabel, titleLabel;
     juce::ToggleButton squealButton { "Squeal" };
     juce::ToggleButton bypassButton { "Bypass" };
+    factory_ui::PresetSelector presetSelector;
     FuzzCurveComponent curve;
 
     std::unique_ptr<SliderAttachment> driveAtt, biasAtt, gateAtt, stabAtt, toneAtt, levelAtt, mixAtt;
