@@ -15,6 +15,19 @@ VocalMbCompAudioProcessorEditor::VocalMbCompAudioProcessorEditor (VocalMbCompAud
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+    };
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     auto setupBandName = [this] (juce::Label& l, const juce::String& t) {
         l.setText (t, juce::dontSendNotification);
         l.setJustificationType (juce::Justification::centred);
@@ -62,6 +75,7 @@ VocalMbCompAudioProcessorEditor::VocalMbCompAudioProcessorEditor (VocalMbCompAud
 
 VocalMbCompAudioProcessorEditor::~VocalMbCompAudioProcessorEditor()
 {
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
 }
 
@@ -79,6 +93,30 @@ VocalMbCompAudioProcessorEditor::attach (const juce::String& id, juce::Slider& s
     return std::make_unique<SliderAttachment> (processor.apvts, id, s);
 }
 
+void VocalMbCompAudioProcessorEditor::refreshPresetSelector()
+{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void VocalMbCompAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                             const ChangeDetails& details)
+{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<VocalMbCompAudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    });
+}
+
 void VocalMbCompAudioProcessorEditor::paint (juce::Graphics& g)
 {
     factory_ui::paintBackground (g, getLocalBounds());
@@ -92,7 +130,9 @@ void VocalMbCompAudioProcessorEditor::resized()
 
     auto top = r.removeFromTop (26);
     bypassButton.setBounds (top.removeFromRight (96));
-    titleLabel.setBounds (top);
+    titleLabel.setBounds (top.removeFromLeft (160));
+    top.removeFromLeft (8);
+    presetSelector.setBounds (top);
 
     r.removeFromTop (10);
 

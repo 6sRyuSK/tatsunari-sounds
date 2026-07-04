@@ -3,6 +3,6 @@ name      = "Multi Tatsunari Comp"
 slug      = "vocal-mbcomp"
 category  = "Dynamics"
 status    = "in-progress"
-version   = "0.1.4"
+version   = "0.2.0"
 formats   = ["VST3", "AU"]
 reference = "Vocal-tuned 3-band compressor"

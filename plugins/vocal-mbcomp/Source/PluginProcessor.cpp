@@ -51,6 +51,9 @@ VocalMbCompAudioProcessor::VocalMbCompAudioProcessor()
     lowFreqParam  = apvts.getRawParameterValue ("lowfreq");
     highFreqParam = apvts.getRawParameterValue ("highfreq");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, vocal_mbcomp_presets::bank,
+                        vocal_mbcomp_presets::kExclude, vocal_mbcomp_presets::kNumExclude);
 }
 
 void VocalMbCompAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
@@ -171,14 +174,22 @@ juce::AudioProcessorEditor* VocalMbCompAudioProcessor::createEditor()
 void VocalMbCompAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void VocalMbCompAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
