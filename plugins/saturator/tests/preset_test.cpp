@@ -22,6 +22,7 @@
 #include "FactoryPresets.h"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 namespace
@@ -137,21 +138,22 @@ namespace
         juce::MemoryBlock state;
         p.getStateInformation (state);
 
-        SaturatorAudioProcessor restored;
-        restored.setStateInformation (state.getData(), (int) state.getSize());
-        if (restored.getCurrentProgram() != idx)
+        // Heap-allocate: keeps large processors off the 1 MB Windows main-thread stack.
+        auto restored = std::make_unique<SaturatorAudioProcessor>();
+        restored->setStateInformation (state.getData(), (int) state.getSize());
+        if (restored->getCurrentProgram() != idx)
             fail ("presetIndex did not survive state round-trip (got "
-                  + std::to_string (restored.getCurrentProgram()) + ", expected "
+                  + std::to_string (restored->getCurrentProgram()) + ", expected "
                   + std::to_string (idx) + ")");
 
         // A default/legacy state (no presetIndex attribute) must read back as 0.
-        SaturatorAudioProcessor legacy;
+        auto legacy = std::make_unique<SaturatorAudioProcessor>();
         juce::MemoryBlock legacyState;
-        if (auto xml = legacy.apvts.copyState().createXml())
-            legacy.copyXmlToBinary (*xml, legacyState); // deliberately no presetIndex
-        SaturatorAudioProcessor legacyRestored;
-        legacyRestored.setStateInformation (legacyState.getData(), (int) legacyState.getSize());
-        if (legacyRestored.getCurrentProgram() != 0)
+        if (auto xml = legacy->apvts.copyState().createXml())
+            legacy->copyXmlToBinary (*xml, legacyState); // deliberately no presetIndex
+        auto legacyRestored = std::make_unique<SaturatorAudioProcessor>();
+        legacyRestored->setStateInformation (legacyState.getData(), (int) legacyState.getSize());
+        if (legacyRestored->getCurrentProgram() != 0)
             fail ("legacy state without presetIndex did not default to program 0");
     }
 }
@@ -160,7 +162,8 @@ int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager for async param updates
 
-    SaturatorAudioProcessor processor;
+    auto processorPtr = std::make_unique<SaturatorAudioProcessor>();
+    auto& processor = *processorPtr;
 
     std::printf ("saturator preset wiring (%d programs)\n", processor.getNumPrograms());
 

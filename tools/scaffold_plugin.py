@@ -585,6 +585,7 @@ PRESET_TEST = """\
 #include "FactoryPresets.h"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 namespace
@@ -689,19 +690,21 @@ namespace
         juce::MemoryBlock state;
         p.getStateInformation (state);
 
-        {camel}AudioProcessor restored;
-        restored.setStateInformation (state.getData(), (int) state.getSize());
-        if (restored.getCurrentProgram() != idx)
+        // Heap-allocate: an AudioProcessor can carry large inline buffers, so
+        // stacking several instances overflows the 1 MB Windows main-thread stack.
+        auto restored = std::make_unique<{camel}AudioProcessor>();
+        restored->setStateInformation (state.getData(), (int) state.getSize());
+        if (restored->getCurrentProgram() != idx)
             fail ("presetIndex did not survive state round-trip");
 
         // A legacy state without the presetIndex attribute must default to 0.
-        {camel}AudioProcessor legacy;
+        auto legacy = std::make_unique<{camel}AudioProcessor>();
         juce::MemoryBlock legacyState;
-        if (auto xml = legacy.apvts.copyState().createXml())
-            legacy.copyXmlToBinary (*xml, legacyState);
-        {camel}AudioProcessor legacyRestored;
-        legacyRestored.setStateInformation (legacyState.getData(), (int) legacyState.getSize());
-        if (legacyRestored.getCurrentProgram() != 0)
+        if (auto xml = legacy->apvts.copyState().createXml())
+            legacy->copyXmlToBinary (*xml, legacyState);
+        auto legacyRestored = std::make_unique<{camel}AudioProcessor>();
+        legacyRestored->setStateInformation (legacyState.getData(), (int) legacyState.getSize());
+        if (legacyRestored->getCurrentProgram() != 0)
             fail ("legacy state without presetIndex did not default to program 0");
     }}
 }}
@@ -710,7 +713,9 @@ int main()
 {{
     juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager for async param updates
 
-    {camel}AudioProcessor processor;
+    // Heap-allocate (see check5): keeps large processors off the Windows stack.
+    auto processorPtr = std::make_unique<{camel}AudioProcessor>();
+    auto& processor = *processorPtr;
     std::printf ("{slug} preset wiring (%d programs)\\n", processor.getNumPrograms());
 
     if (processor.getNumPrograms() != 1 + {snake}_presets::bank.numPresets)
