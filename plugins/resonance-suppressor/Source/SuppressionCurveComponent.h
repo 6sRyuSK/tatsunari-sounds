@@ -6,6 +6,7 @@
 #include "NodePanel.h"
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
+#include "factory_ui/SpectrumDisplay.h"
 
 #include <array>
 #include <cmath>
@@ -170,26 +171,16 @@ private:
         const int bins = processor.binsForDisplay();
         const double sr = processor.getSampleRateForDisplay();
         const int N = 2 * (bins - 1);
-        juce::Path fill;
-        bool started = false;
+        factory_ui::SpectrumTrace trace;
+        trace.begin (plot.getBottom(), plot.getRight());
         for (int k = 1; k < bins; ++k)
         {
             const float f = (float) ((double) k * sr / N);
             if (f < 20.0f || f > 20000.0f) continue;
-            const float x = freqToX (f);
-            const float y = dbToY (processor.displayMagDb (k));
-            if (! started) { fill.startNewSubPath (x, plot.getBottom()); fill.lineTo (x, y); started = true; }
-            else fill.lineTo (x, y);
+            trace.addPoint (freqToX (f), dbToY (processor.displayMagDb (k)));
         }
-        if (started)
-        {
-            fill.lineTo (plot.getRight(), plot.getBottom());
-            fill.closeSubPath();
-            juce::ColourGradient grad (FactoryLookAndFeel::accent().withAlpha (0.28f), 0.0f, plot.getY(),
-                                       FactoryLookAndFeel::accent().withAlpha (0.02f), 0.0f, plot.getBottom(), false);
-            g.setGradientFill (grad);
-            g.fillPath (fill);
-        }
+        if (! trace.isEmpty())
+            factory_ui::fillSpectrumArea (g, trace.area(), FactoryLookAndFeel::accent(), plot, 0.28f, 0.02f);
     }
 
     // Live gain reduction hanging from the 0 dB line — the suppressor at work.
@@ -199,22 +190,18 @@ private:
         const double sr = processor.getSampleRateForDisplay();
         const int N = 2 * (bins - 1);
         const float top = dbToY (0.0f);
-        juce::Path fill;
-        bool started = false;
+        factory_ui::SpectrumTrace trace;
+        trace.begin (top, plot.getRight()); // reduction hangs from the 0 dB line
         for (int k = 1; k < bins; ++k)
         {
             const float f = (float) ((double) k * sr / N);
             if (f < 20.0f || f > 20000.0f) continue;
-            const float x = freqToX (f);
             const float red = juce::jlimit (-60.0f, 0.0f, processor.displayRedDb (k));
-            const float y = dbToY (red); // red <= 0 -> below the top line
-            if (! started) { fill.startNewSubPath (x, top); fill.lineTo (x, y); started = true; }
-            else fill.lineTo (x, y);
+            trace.addPoint (freqToX (f), dbToY (red)); // red <= 0 -> below the top line
         }
-        if (started)
+        if (! trace.isEmpty())
         {
-            fill.lineTo (plot.getRight(), top);
-            fill.closeSubPath();
+            const auto fill = trace.area();
             g.setColour (kTeal.withAlpha (0.28f));
             g.fillPath (fill);
             g.setColour (kTeal.withAlpha (0.8f));

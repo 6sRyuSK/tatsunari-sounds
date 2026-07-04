@@ -1,13 +1,12 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <juce_dsp/juce_dsp.h>
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/SpectrumAnalyzerModel.h"
+#include "factory_ui/SpectrumDisplay.h"
 
-#include <array>
-#include <memory>
 #include <vector>
 
 //
@@ -92,37 +91,20 @@ private:
     void timerCallback() override
     {
         const int o = processor.displayFftOrder();
-        if (o != fftOrder) rebuild (o);
+        if (o != model.order()) rebuild (o);
         repaint();
     }
 
     void rebuild (int order)
     {
-        fftOrder = order;
-        N = 1 << order;
-        fft = std::make_unique<juce::dsp::FFT> (order);
-        window.resize ((size_t) N);
-        juce::dsp::WindowingFunction<float>::fillWindowingTables (
-            window.data(), (size_t) N, juce::dsp::WindowingFunction<float>::hann, false);
-        scratch.assign ((size_t) (N * 2), 0.0f);
-        for (int s = 0; s < 3; ++s) { smooth[s].assign ((size_t) (N / 2), -120.0f); peak[s].assign ((size_t) (N / 2), -120.0f); }
+        model.setup (3, order);
+        scratch.assign ((size_t) (model.size() * 2), 0.0f);
     }
 
-    // ---- mappings ----
-    float freqToX (float f) const
-    {
-        const float t = std::log (juce::jlimit (20.0f, 20000.0f, f) / 20.0f) / std::log (1000.0f);
-        return plot.getX() + t * plot.getWidth();
-    }
-    float xToFreq (float x) const
-    {
-        const float t = (x - plot.getX()) / juce::jmax (1.0f, plot.getWidth());
-        return 20.0f * std::pow (1000.0f, t);
-    }
-    float dbToY (float db) const
-    {
-        return juce::jmap (juce::jlimit (-96.0f, 0.0f, db), -96.0f, 0.0f, plot.getBottom(), plot.getY());
-    }
+    // ---- mappings (shared factory_ui axes: standard 20 Hz–20 kHz log x, −96..0 dB y) ----
+    float freqToX (float f)  const { return factory_ui::LogFreqAxis { plot }.freqToX (f); }
+    float xToFreq (float x)  const { return factory_ui::LogFreqAxis { plot }.xToFreq (x); }
+    float dbToY   (float db) const { return factory_ui::VerticalAxis { plot, 0.0f, -96.0f }.toY (db); }
 
     float xoverParam (int i) const
     {
@@ -173,51 +155,33 @@ private:
 
     void drawSpectrum (juce::Graphics& g, int source, juce::Colour colour, bool filled, float lineW)
     {
-        if (fft == nullptr) return;
+        const int N = model.size();
+        if (N <= 0) return;
         processor.copyRing (scratch.data(), N, source);
-        for (int i = 0; i < N; ++i) scratch[(size_t) i] *= window[(size_t) i];
-        for (int i = N; i < N * 2; ++i) scratch[(size_t) i] = 0.0f;
-        fft->performFrequencyOnlyForwardTransform (scratch.data());
+        model.process (source, scratch.data(), processor.getSampleRateForDisplay());
 
         const double sr = processor.getSampleRateForDisplay();
-        auto& sm = smooth[source];
-        auto& pk = peak[source];
-
-        juce::Path path;
-        bool started = false;
+        factory_ui::SpectrumTrace trace;
+        trace.begin (plot.getBottom(), plot.getRight());
         for (int bin = 1; bin < N / 2; ++bin)
         {
-            const float freq = (float) (bin * sr / N);
+            const float freq = factory_ui::SpectrumAnalyzerModel::binFrequency (bin, sr, N);
             if (freq < 20.0f || freq > 20000.0f) continue;
-            const float mag  = scratch[(size_t) bin] / (float) (N * 0.5);
-            const float inst = juce::Decibels::gainToDecibels (mag, -120.0f);
-            float& s = sm[(size_t) bin];
-            s = (inst > s) ? inst : s + (inst - s) * 0.25f;
-            float& p = pk[(size_t) bin];
-            p = (s > p) ? s : juce::jmax (s, p - 0.6f);
-
-            const float x = freqToX (freq);
-            const float y = dbToY (s);
-            if (! started) { if (filled) { path.startNewSubPath (x, plot.getBottom()); path.lineTo (x, y); } else path.startNewSubPath (x, y); started = true; }
-            else path.lineTo (x, y);
+            trace.addPoint (freqToX (freq), dbToY (model.smoothedDb (source, bin)));
         }
-        if (! started) return;
+        if (trace.isEmpty()) return;
 
         if (filled)
         {
-            path.lineTo (plot.getRight(), plot.getBottom());
-            path.closeSubPath();
-            juce::ColourGradient grad (colour.withAlpha (0.30f), 0.0f, plot.getY(),
-                                       colour.withAlpha (0.02f), 0.0f, plot.getBottom(), false);
-            g.setGradientFill (grad);
-            g.fillPath (path);
+            const auto area = trace.area();
+            factory_ui::fillSpectrumArea (g, area, colour, plot, 0.30f, 0.02f);
             g.setColour (colour.withAlpha (0.7f));
-            g.strokePath (path, juce::PathStrokeType (lineW));
+            g.strokePath (area, juce::PathStrokeType (lineW));
         }
         else
         {
             g.setColour (colour.withAlpha (0.8f));
-            g.strokePath (path, juce::PathStrokeType (lineW));
+            g.strokePath (trace.line(), juce::PathStrokeType (lineW));
         }
     }
 
@@ -260,10 +224,10 @@ private:
     MultibandEnhancerAudioProcessor& processor;
     juce::Rectangle<float> plot;
 
-    int fftOrder = 13, N = 8192;
-    std::unique_ptr<juce::dsp::FFT> fft;
-    std::vector<float> window, scratch;
-    std::array<std::vector<float>, 3> smooth, peak;
+    // Three overlaid spectra (pre / post / delta) share one windowed FFT; the
+    // display order tracks the sample rate via rebuild().
+    factory_ui::SpectrumAnalyzerModel model;
+    std::vector<float> scratch; // 2*N FFT work buffer, refilled from the ring each frame
 
     int dragHandle = -1, hoverHandle = -1;
 

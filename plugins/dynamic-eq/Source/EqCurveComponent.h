@@ -1,10 +1,11 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <juce_dsp/juce_dsp.h>
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/SpectrumAnalyzerModel.h"
+#include "factory_ui/SpectrumDisplay.h"
 #include "factory_core/Biquad.h"
 #include "factory_core/Filters.h"
 
@@ -29,8 +30,7 @@ public:
     EqCurveComponent (DynamicEqAudioProcessor& p, juce::AudioProcessorValueTreeState& s)
         : processor (p), apvts (s)
     {
-        smoothDbPre.fill (-120.0f);  peakDbPre.fill (-120.0f);
-        smoothDbPost.fill (-120.0f); peakDbPost.fill (-120.0f);
+        model.setup (2, kFftOrder); // channel 0 = pre, 1 = post
 
         auto initToggle = [this] (juce::ToggleButton& b, juce::Colour c, bool on)
         {
@@ -181,16 +181,10 @@ private:
     void timerCallback() override { repaint(); }
 
     // ---- mappings ----
-    float freqToX (float f) const
-    {
-        const float t = std::log (juce::jlimit (20.0f, 20000.0f, f) / 20.0f) / std::log (1000.0f);
-        return plot.getX() + t * plot.getWidth();
-    }
-    float xToFreq (float x) const
-    {
-        const float t = (x - plot.getX()) / plot.getWidth();
-        return 20.0f * std::pow (1000.0f, t);
-    }
+    // Standard 20 Hz–20 kHz log frequency axis (shared factory_ui helper); the
+    // gain axis below is the ±kMaxGain EQ curve axis, distinct from the analyser dB.
+    float freqToX (float f) const { return factory_ui::LogFreqAxis { plot }.freqToX (f); }
+    float xToFreq (float x) const { return factory_ui::LogFreqAxis { plot }.xToFreq (x); }
     float gainToY (float gdb) const
     {
         return plot.getY() + ((kMaxGain - gdb) / (2.0f * kMaxGain)) * plot.getHeight();
@@ -288,69 +282,37 @@ private:
     // once, each with its own smoothing/peak state and colour.
     void drawAnalyzer (juce::Graphics& g)
     {
-        if (showPre)  drawSpectrum (g, false, FactoryLookAndFeel::accent(), smoothDbPre,  peakDbPre);
-        if (showPost) drawSpectrum (g, true,  kPostColour,                  smoothDbPost, peakDbPost);
+        if (showPre)  drawSpectrum (g, 0, false, FactoryLookAndFeel::accent());
+        if (showPost) drawSpectrum (g, 1, true,  kPostColour);
     }
 
-    void drawSpectrum (juce::Graphics& g, bool post, juce::Colour colour,
-                       std::array<float, kFftSize / 2>& smoothDb,
-                       std::array<float, kFftSize / 2>& peakDb)
+    void drawSpectrum (juce::Graphics& g, int ch, bool post, juce::Colour colour)
     {
-        std::array<float, kFftSize * 2> fftData {};
-        processor.copyAnalyzerSamples (fftData.data(), kFftSize, post);
-        for (int i = 0; i < kFftSize; ++i)
-            fftData[(size_t) i] *= window[(size_t) i];
-        fft.performFrequencyOnlyForwardTransform (fftData.data());
+        processor.copyAnalyzerSamples (scratch.data(), kFftSize, post);
+        factory_ui::SpectrumAnalyzerModel::Options opt;
+        opt.tiltDbPerOct = 3.0f; // flatten pink-ish spectra for display
+        model.process (ch, scratch.data(), processor.getSampleRateForDisplay(), opt);
 
         const double sr = processor.getSampleRateForDisplay();
-        constexpr float tiltPerOct = 3.0f; // flatten pink-ish spectra for display
-
-        auto tiltedDb = [tiltPerOct] (float db, float freq)
-        {
-            return db + tiltPerOct * std::log2 (juce::jmax (1.0f, freq) / 1000.0f);
-        };
-
-        juce::Path fill, peak;
-        bool startedFill = false, startedPeak = false;
+        const factory_ui::VerticalAxis yAxis { plot, 0.0f, -100.0f };
+        factory_ui::SpectrumTrace fillTrace, peakTrace;
+        fillTrace.begin (plot.getBottom(), plot.getRight());
+        peakTrace.begin (plot.getBottom(), plot.getRight());
         for (int bin = 1; bin < kFftSize / 2; ++bin)
         {
-            const float freq = (float) (bin * sr / kFftSize);
+            const float freq = factory_ui::SpectrumAnalyzerModel::binFrequency (bin, sr, kFftSize);
             if (freq < 20.0f || freq > 20000.0f) continue;
-
-            const float mag  = fftData[(size_t) bin] / (kFftSize * 0.5f);
-            const float inst = tiltedDb (juce::Decibels::gainToDecibels (mag, -120.0f), freq);
-
-            float& sm = smoothDb[(size_t) bin];
-            sm = (inst > sm) ? inst : sm + (inst - sm) * 0.25f; // fast up, slow down
-            float& pk = peakDb[(size_t) bin];
-            pk = (sm > pk) ? sm : juce::jmax (sm, pk - 0.6f);    // hold then fall
-
-            const float x  = freqToX (freq);
-            const float ys = juce::jmap (juce::jlimit (-100.0f, 0.0f, sm), -100.0f, 0.0f,
-                                         plot.getBottom(), plot.getY());
-            const float yp = juce::jmap (juce::jlimit (-100.0f, 0.0f, pk), -100.0f, 0.0f,
-                                         plot.getBottom(), plot.getY());
-
-            if (! startedFill) { fill.startNewSubPath (x, plot.getBottom()); fill.lineTo (x, ys); startedFill = true; }
-            else fill.lineTo (x, ys);
-
-            if (! startedPeak) { peak.startNewSubPath (x, yp); startedPeak = true; }
-            else peak.lineTo (x, yp);
+            const float x = freqToX (freq);
+            fillTrace.addPoint (x, yAxis.toY (model.smoothedDb (ch, bin)));
+            peakTrace.addPoint (x, yAxis.toY (model.peakDb (ch, bin)));
         }
 
-        if (startedFill)
-        {
-            fill.lineTo (plot.getRight(), plot.getBottom());
-            fill.closeSubPath();
-            juce::ColourGradient grad (colour.withAlpha (0.30f), 0.0f, plot.getY(),
-                                       colour.withAlpha (0.02f), 0.0f, plot.getBottom(), false);
-            g.setGradientFill (grad);
-            g.fillPath (fill);
-        }
-        if (startedPeak)
+        if (! fillTrace.isEmpty())
+            factory_ui::fillSpectrumArea (g, fillTrace.area(), colour, plot, 0.30f, 0.02f);
+        if (! peakTrace.isEmpty())
         {
             g.setColour (colour.withAlpha (0.6f));
-            g.strokePath (peak, juce::PathStrokeType (1.0f));
+            g.strokePath (peakTrace.line(), juce::PathStrokeType (1.0f));
         }
     }
 
@@ -607,17 +569,10 @@ private:
     juce::ToggleButton preButton { "Pre" }, postButton { "Post" };
     bool showPre = true, showPost = false;
 
-    juce::dsp::FFT fft { kFftOrder };
-    std::array<float, kFftSize / 2> smoothDbPre {};
-    std::array<float, kFftSize / 2> peakDbPre {};
-    std::array<float, kFftSize / 2> smoothDbPost {};
-    std::array<float, kFftSize / 2> peakDbPost {};
-    std::array<float, kFftSize> window = [] {
-        std::array<float, kFftSize> w {};
-        juce::dsp::WindowingFunction<float>::fillWindowingTables (
-            w.data(), kFftSize, juce::dsp::WindowingFunction<float>::hann, false);
-        return w;
-    }();
+    // Pre / Post spectra share one windowed FFT (channel 0 = pre, 1 = post),
+    // fixed at kFftOrder so low-frequency bins stay fine at high sample rates.
+    factory_ui::SpectrumAnalyzerModel model;
+    std::array<float, kFftSize * 2> scratch {}; // FFT work buffer, refilled from the ring each frame
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EqCurveComponent)
 };
