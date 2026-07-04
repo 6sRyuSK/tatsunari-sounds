@@ -83,6 +83,13 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void handleAsyncUpdate() override; // apply a latency change on the message thread
 
+    // Process a contiguous slice of m (<= prepared maxBlock) samples in place;
+    // processBlock loops this so an over-sized host block is chunked to the
+    // maxBlock-sized scratch (never dropped, no out-of-bounds writes). `lat` is
+    // the engine latency captured once per callback (stable across chunks, so
+    // the analyser rings / bypass crossfade stay sample-continuous).
+    void processChunk (float* L, float* Rin, int m, int lat) noexcept;
+
     factory_presets::ProgramAdapter programs;
 
     factory_core::MultibandEnhancer engine;

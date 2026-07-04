@@ -3,6 +3,6 @@ name      = "Fuzznari"
 slug      = "fuzznari"
 category  = "Fuzz"
 status    = "in-progress"
-version   = "0.2.0"
+version   = "0.2.1"
 formats   = ["VST3", "AU"]
 reference = "ZVEX Fuzz Factory / Fuzz Face / Big Muff"

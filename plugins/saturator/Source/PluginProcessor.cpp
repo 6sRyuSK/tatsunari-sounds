@@ -59,6 +59,7 @@ factory_core::Waveshaper SaturatorAudioProcessor::makeDisplayShaper() const
 void SaturatorAudioProcessor::prepareToPlay (double /*sampleRate*/, int samplesPerBlock)
 {
     const auto numCh = (size_t) juce::jmax (1, getTotalNumInputChannels());
+    maxBlock = juce::jmax (1, samplesPerBlock);
 
     oversampling = std::make_unique<juce::dsp::Oversampling<float>> (
         numCh, kOversampleFactorLog2,
@@ -66,7 +67,7 @@ void SaturatorAudioProcessor::prepareToPlay (double /*sampleRate*/, int samplesP
         true,   // maximum quality
         true);  // integer latency
 
-    oversampling->initProcessing ((size_t) samplesPerBlock);
+    oversampling->initProcessing ((size_t) maxBlock);
     oversampling->reset();
     setLatencySamples ((int) oversampling->getLatencyInSamples());
 }
@@ -111,15 +112,25 @@ void SaturatorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     juce::dsp::AudioBlock<float> block (buffer);
     auto sub = block.getSubsetChannelBlock (0, numCh);
 
-    auto osBlock = oversampling->processSamplesUp (sub);
-    for (size_t ch = 0; ch < osBlock.getNumChannels(); ++ch)
+    // A host block larger than the prepared size is processed in prepared-size
+    // chunks. juce::dsp::Oversampling is stateful and processes contiguous
+    // chunks correctly, so a single-chunk (compliant) callback is unchanged.
+    const int n = (int) sub.getNumSamples();
+    for (int off = 0; off < n; off += maxBlock)
     {
-        auto* d = osBlock.getChannelPointer (ch);
-        const int n = (int) osBlock.getNumSamples();
-        for (int i = 0; i < n; ++i)
-            d[i] = (float) shaper.processSample ((double) d[i]);
+        const int m = juce::jmin (maxBlock, n - off);
+        auto chunk = sub.getSubBlock ((size_t) off, (size_t) m);
+
+        auto osBlock = oversampling->processSamplesUp (chunk);
+        for (size_t ch = 0; ch < osBlock.getNumChannels(); ++ch)
+        {
+            auto* d = osBlock.getChannelPointer (ch);
+            const int up = (int) osBlock.getNumSamples();
+            for (int i = 0; i < up; ++i)
+                d[i] = (float) shaper.processSample ((double) d[i]);
+        }
+        oversampling->processSamplesDown (chunk);
     }
-    oversampling->processSamplesDown (sub);
 }
 
 juce::AudioProcessorEditor* SaturatorAudioProcessor::createEditor()
