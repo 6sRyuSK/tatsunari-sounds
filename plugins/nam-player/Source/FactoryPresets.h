@@ -17,16 +17,23 @@
 //
 // Scope (plan D4): presets carry TONE / TRIM / MIX only. They never touch the
 // loaded model / IR files (the "files" child tree is not an APVTS parameter, so
-// ProgramAdapter never iterates it) and never touch ir_enable / ir_level, which
-// are functional state tied to whatever IR the user has loaded.
+// ProgramAdapter never iterates it), never touch ir_enable / ir_level, and never
+// touch the per-slot routing/mix state (slotN_enable/mode/ingain/out/balance) —
+// all of these are functional state tied to the models / IR the user has loaded.
 //
 namespace nam_player_presets
 {
     // Parameters presets must never touch. "bypass" is excluded fleet-wide; the
-    // IR enable/level are excluded because they depend on the user-loaded IR
-    // (plan D4) — a tone preset must not switch a cabinet on/off or change its
-    // level out from under the user.
-    inline constexpr const char* kExclude[] = { "bypass", "ir_enable", "ir_level" };
+    // IR enable/level and the per-slot routing/mix params are excluded because
+    // they depend on the user-loaded models / IR (plan D4) — a tone preset must
+    // not switch a cabinet or a model slot on/off, re-route Series/Parallel, or
+    // change per-slot gains out from under the user. (kNumSlots == 3.)
+    inline constexpr const char* kExclude[] = {
+        "bypass", "ir_enable", "ir_level",
+        "slot0_enable", "slot0_mode", "slot0_ingain", "slot0_out", "slot0_balance",
+        "slot1_enable", "slot1_mode", "slot1_ingain", "slot1_out", "slot1_balance",
+        "slot2_enable", "slot2_mode", "slot2_ingain", "slot2_out", "slot2_balance"
+    };
     inline constexpr int kNumExclude = (int) (sizeof (kExclude) / sizeof (kExclude[0]));
 
     // ---- draft presets (pending audition) ----
