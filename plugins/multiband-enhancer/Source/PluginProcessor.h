@@ -77,6 +77,8 @@ public:
     // Parameter id helpers (shared with the editor).
     static juce::String enhId (int b)   { return "enh" + juce::String (b + 1); }
     static juce::String widthId (int b) { return "wid" + juce::String (b + 1); }
+    static juce::String modeId (int b)  { return "mode" + juce::String (b + 1); }
+    static juce::String soloId (int b)  { return "solo" + juce::String (b + 1); }
     static juce::String xoverId (int i) { return "xov" + juce::String (i + 1); }
 
     static constexpr const char* kBandNames[kBands] = { "LO", "LO-MID", "MID", "HI-MID", "HI" };
@@ -98,10 +100,10 @@ private:
 
     std::atomic<float>* enhP[kBands]   { };
     std::atomic<float>* widthP[kBands] { };
+    std::atomic<float>* modeP[kBands]  { };
+    std::atomic<float>* soloP[kBands]  { };
     std::atomic<float>* xovP[4]        { };
-    std::atomic<float>* modeP    = nullptr;
-    std::atomic<float>* directP  = nullptr;
-    std::atomic<float>* wetP     = nullptr;
+    std::atomic<float>* mixP     = nullptr;
     std::atomic<float>* outputP  = nullptr;
     std::atomic<float>* qualityP = nullptr;
     std::atomic<float>* deltaP   = nullptr;

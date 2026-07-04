@@ -12,15 +12,21 @@ MultibandEnhancerAudioProcessor::createParameterLayout()
     using A = juce::AudioParameterFloatAttributes;
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // Per-band Enhance (0..100 %, skewed toward the low end) and Width (0..200 %).
+    // Per-band Enhance (0..150 %, skewed toward the low end), Width (0..200 %),
+    // Mode (per-band harmonic curve) and Solo.
     for (int b = 0; b < kBands; ++b)
     {
-        juce::NormalisableRange<float> enhR { 0.0f, 100.0f, 0.1f }; enhR.setSkewForCentre (30.0f);
+        juce::NormalisableRange<float> enhR { 0.0f, 150.0f, 0.1f }; enhR.setSkewForCentre (30.0f);
         layout.add (std::make_unique<F> (juce::ParameterID { enhId (b), 1 },
             juce::String ("Enhance ") + kBandNames[b], enhR, 0.0f, A().withLabel (" %")));
         layout.add (std::make_unique<F> (juce::ParameterID { widthId (b), 1 },
             juce::String ("Width ") + kBandNames[b],
             juce::NormalisableRange<float> { 0.0f, 200.0f, 0.1f }, 100.0f, A().withLabel (" %")));
+        layout.add (std::make_unique<C> (juce::ParameterID { modeId (b), 1 },
+            juce::String ("Mode ") + kBandNames[b],
+            juce::StringArray { "Tube", "Tape", "Bright", "Clean", "Glue" }, 0));
+        layout.add (std::make_unique<B> (juce::ParameterID { soloId (b), 1 },
+            juce::String ("Solo ") + kBandNames[b], false));
     }
 
     // Crossovers (log ranges, defaults from the plan).
@@ -36,13 +42,10 @@ MultibandEnhancerAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<F> (juce::ParameterID { xoverId (3), 1 }, "Crossover 4",
         logRange (3000.0f, 18000.0f, 7500.0f), 7500.0f, A().withLabel (" Hz")));
 
-    layout.add (std::make_unique<C> (juce::ParameterID { "mode", 1 }, "Mode",
-        juce::StringArray { "Tube", "Tape", "Bright", "Clean", "Glue" }, 0));
-
-    layout.add (std::make_unique<F> (juce::ParameterID { "direct", 1 }, "Direct",
-        juce::NormalisableRange<float> { -60.0f, 6.0f, 0.01f }, 0.0f, A().withLabel (" dB")));
-    layout.add (std::make_unique<F> (juce::ParameterID { "wet", 1 }, "Enhanced",
-        juce::NormalisableRange<float> { -60.0f, 6.0f, 0.01f }, -12.0f, A().withLabel (" dB")));
+    // Dry/enhanced Mix (0..100 %). Default 20 % reproduces the old direct 0 dB +
+    // wet -12 dB balance under the constant-voltage (linear complementary) law.
+    layout.add (std::make_unique<F> (juce::ParameterID { "mix", 1 }, "Mix",
+        juce::NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 20.0f, A().withLabel (" %")));
     layout.add (std::make_unique<F> (juce::ParameterID { "output", 1 }, "Output",
         juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, 0.0f, A().withLabel (" dB")));
 
@@ -64,11 +67,11 @@ MultibandEnhancerAudioProcessor::MultibandEnhancerAudioProcessor()
     {
         enhP[b]   = apvts.getRawParameterValue (enhId (b));
         widthP[b] = apvts.getRawParameterValue (widthId (b));
+        modeP[b]  = apvts.getRawParameterValue (modeId (b));
+        soloP[b]  = apvts.getRawParameterValue (soloId (b));
     }
     for (int i = 0; i < 4; ++i) xovP[i] = apvts.getRawParameterValue (xoverId (i));
-    modeP    = apvts.getRawParameterValue ("mode");
-    directP  = apvts.getRawParameterValue ("direct");
-    wetP     = apvts.getRawParameterValue ("wet");
+    mixP     = apvts.getRawParameterValue ("mix");
     outputP  = apvts.getRawParameterValue ("output");
     qualityP = apvts.getRawParameterValue ("quality");
     deltaP   = apvts.getRawParameterValue ("delta");
@@ -135,12 +138,12 @@ void MultibandEnhancerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     {
         engine.setEnhance (b, (double) enhP[b]->load());
         engine.setWidth   (b, (double) widthP[b]->load());
+        engine.setMode    (b, (ME::Mode) (int) modeP[b]->load());
+        engine.setSolo    (b, soloP[b]->load() > 0.5f);
     }
     engine.setCrossovers ((double) xovP[0]->load(), (double) xovP[1]->load(),
                           (double) xovP[2]->load(), (double) xovP[3]->load());
-    engine.setMode    ((ME::Mode) (int) modeP->load());
-    engine.setDirectDb ((double) directP->load());
-    engine.setWetDb    ((double) wetP->load());
+    engine.setMix      ((double) mixP->load());
     engine.setOutputDb ((double) outputP->load());
     engine.setQuality  (qualityP->load() > 0.5f ? ME::Quality::ZeroLatency : ME::Quality::HQ);
     engine.setDeltaListen (deltaP->load() > 0.5f);

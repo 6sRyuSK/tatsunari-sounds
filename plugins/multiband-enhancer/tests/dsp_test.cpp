@@ -2,17 +2,24 @@
 // dsp_test.cpp — headless verification of the Tatsumin Enhancer DSP core
 // (factory_core::MultibandEnhancer and its new primitives). Links factory_core
 // only; runs the full sample-rate matrix. Every quantitative oracle is an
-// INDEPENDENT code path (closed-form Fourier series / fixed spec constants),
-// never derived from the implementation under test.
+// INDEPENDENT code path (closed-form Fourier series / fixed spec constants /
+// black-box superposition), never derived from the implementation under test.
 //
-// Gate map (see plugins/multiband-enhancer/plan §5, docs/regression-policy.md):
-//   G1  phase coherence / flatness (defect #1)      G8  finiteness + worst-case hold (Class C)
-//   G2  latency exact                               G9  state reset (Class E)
-//   G3  harmonic oracle, all modes x both quality   G10 no feedback (Class A)
-//   G4  aliasing                                    G11 resolution-follows-rate (Class G)
-//   G5  DC removal                                  G12 crossover order clamp
-//   G6  width oracle                                G13 clickless mode transition
-//   G7  Glue levelling                              G14 clickless quality switch (defect #69)
+// v1.0.0 model (issues #81 / #71): a single Mix (constant-voltage dry/enhanced
+// blend), per-band Enhance 0..150 %, per-band Mode and per-band Solo. The gates
+// below are re-derived at the NEW worst case (enh 150 %, mix 100 %, per-band mode
+// combinations); no tolerance/oracle is loosened.
+//
+// Gate map (see docs/regression-policy.md):
+//   G1  phase coherence / flatness (defect #1)      G9  state reset (Class E)
+//   G2  latency exact                               G10 no feedback (Class A)
+//   G3  harmonic oracle, all modes x both quality   G11 resolution-follows-rate (Class G)
+//   G4  aliasing                                    G12 crossover order clamp
+//   G5  DC removal                                  G13 clickless per-band mode transition
+//   G6  width oracle                                G14 clickless quality switch (defect #69)
+//   G7  Glue levelling                              G15 mix law (constant-voltage)
+//   G8  finiteness + worst-case hold (Class C)      G16 solo routing (superposition)
+//                                                   G17 per-band mode independence
 //
 #include "factory_core/MultibandEnhancer.h"
 #include "factory_core/Oversampler.h"
@@ -21,6 +28,7 @@
 #include "factory_core/testing/DspInvariants.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -91,12 +99,14 @@ namespace
     int binOf (double f, double fs, int order) { return (int) std::llround (f * (double) (1 << order) / fs); }
     double freqOfBin (int k, double fs, int order) { return (double) k * fs / (double) (1 << order); }
 
-    // ---- configuration helper -------------------------------------------------
-    void configFlat (ME& eng)  // neutral, enhance 0
+    // ---- configuration helpers ------------------------------------------------
+    void setAllMode (ME& eng, Mode m) { for (int b = 0; b < 5; ++b) eng.setMode (b, m); }
+
+    void configFlat (ME& eng)  // neutral, enhance 0 (mix set by the caller)
     {
         for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 0.0); eng.setWidth (b, 100.0); }
         eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
-        eng.setMode (Mode::Tube);
+        setAllMode (eng, Mode::Tube);
         eng.setOutputDb (0.0);
         eng.setDeltaListen (false);
     }
@@ -115,6 +125,12 @@ namespace
     // ==========================================================================
     // G1 — phase coherence / flatness (defect #1: comb filtering)
     // ==========================================================================
+    // With enhance 0 the residual bus is silent, so the enhanced bus's linear
+    // reconstruction is the pure band sum == allpass(x) == the direct bus. The
+    // constant-voltage blend out = (1-mix)*direct + mix*linWet is therefore FLAT
+    // at 0 dB for EVERY mix — a comb (any phase offset between direct and the
+    // reconstruction, defect #1) would ripple the magnitude, worst at mix 50 %
+    // where the two buses carry equal weight.
     void g1_flatness (double fs)
     {
         std::printf ("G1 flatness/phase-coherence @ %.0f\n", fs);
@@ -137,16 +153,13 @@ namespace
 
             for (const auto& xs : sets)
             {
-                // (a) direct 0 dB, wet muted -> flat 0 dB
-                // (b) direct 0 dB, wet 0 dB   -> flat +6.02 dB (comb shrink would fail)
-                for (int mode = 0; mode < 2; ++mode)
+                for (double mixPct : { 0.0, 50.0, 100.0 })
                 {
                     ME eng; eng.prepare (fs, 256);
                     configFlat (eng);
                     eng.setQuality (quality);
                     eng.setCrossovers (xs.f1, xs.f2, xs.f3, xs.f4);
-                    eng.setDirectDb (0.0);
-                    eng.setWetDb (mode == 0 ? -60.0 : 0.0);
+                    eng.setMix (mixPct);
                     warmup (eng, fs);
 
                     std::vector<double> in ((size_t) Nfft, 0.0), inR, oL, oR, dL, dR;
@@ -155,7 +168,7 @@ namespace
 
                     std::vector<double> magDb;
                     magSpectrum (oL, order, fft, magDb);
-                    const double target = (mode == 0) ? 0.0 : 6.0205999; // 20log10(2)
+                    const double target = 0.0; // constant-voltage + enh 0 => flat 0 dB at every mix
                     double maxDev = 0.0; double atWorst = 0.0;
                     for (int k = 1; k < Nfft / 2; ++k)
                     {
@@ -165,11 +178,10 @@ namespace
                         if (dev > maxDev) { maxDev = dev; atWorst = f; }
                     }
                     if (g_verbose)
-                        std::printf ("   [%s %s %s] maxDev=%.4f dB @ %.0f Hz (tol %.2f)\n",
-                                     zl ? "ZL" : "HQ", xs.name, mode == 0 ? "directOnly" : "direct+wet",
-                                     maxDev, atWorst, tolA);
+                        std::printf ("   [%s %s mix%.0f] maxDev=%.4f dB @ %.0f Hz (tol %.2f)\n",
+                                     zl ? "ZL" : "HQ", xs.name, mixPct, maxDev, atWorst, tolA);
                     if (maxDev > tolA)
-                        fail ("G1 " + std::string (zl ? "ZL " : "HQ ") + xs.name + (mode == 0 ? " directOnly" : " direct+wet")
+                        fail ("G1 " + std::string (zl ? "ZL " : "HQ ") + xs.name + " mix" + std::to_string ((int) mixPct)
                               + " dev " + std::to_string (maxDev) + " dB > " + std::to_string (tolA));
                 }
             }
@@ -221,7 +233,7 @@ namespace
     // ==========================================================================
     // G3 — harmonic oracle (all 5 modes x both quality), on the shaper unit.
     // Fourier closed form for u = a sin(theta), f(u) = u + sum c_k e u^k,
-    // independently re-derived here (see plan §5).
+    // independently re-derived here.
     // ==========================================================================
     struct HOracle { double H1, H2, H3, H4, H5; };
     HOracle harmonicOracle (const double c[4], double e, double a)
@@ -301,7 +313,7 @@ namespace
     }
 
     // ==========================================================================
-    // G4 — aliasing
+    // G4 — aliasing (worst case: enhance 150 %, mix 100 %, Bright)
     // ==========================================================================
     void g4_alias (double fs)
     {
@@ -328,11 +340,11 @@ namespace
             const int k0 = binOf (c.ffrac * fs, fs, order);
             const double f0 = freqOfBin (k0, fs, order);
             ME eng; eng.prepare (fs, 256);
-            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 100.0); }
             eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
-            eng.setMode (Mode::Bright);
+            setAllMode (eng, Mode::Bright);
             eng.setQuality (c.q);
-            eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
             warmup (eng, fs);
 
             const int settle = (int) (0.25 * fs); // let the 5 Hz DC blocker + crossover settle
@@ -371,7 +383,7 @@ namespace
     }
 
     // ==========================================================================
-    // G5 — DC removal
+    // G5 — DC removal (enhance 150 %, mix 100 %)
     // ==========================================================================
     void g5_dc (double fs)
     {
@@ -383,9 +395,9 @@ namespace
             const int k0 = binOf (1000.0, fs, order);
             const double f0 = freqOfBin (k0, fs, order);
             ME eng; eng.prepare (fs, 256);
-            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
-            eng.setMode (m);
-            eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 100.0); }
+            setAllMode (eng, m);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
             warmup (eng, fs);
             const int settle = (int) (0.3 * fs); // 5 Hz DC blocker needs ~0.16 s to settle
             std::vector<double> inL ((size_t) (settle + Nfft)), inR, oL, oR, dL, dR;
@@ -404,7 +416,7 @@ namespace
     }
 
     // ==========================================================================
-    // G6 — width oracle (M/S)
+    // G6 — width oracle (M/S), linear path isolated at enhance 0, mix 100 %
     // ==========================================================================
     void g6_width (double fs)
     {
@@ -416,16 +428,15 @@ namespace
 
         // The width M/S transform is exact only when every band shares the same
         // width (a single band at f0 does not carry the full signal — LR4 bands
-        // overlap). Uniform width => wet = w * sum(b_i) = w * S, so the S ratio is
-        // exactly w and M is untouched. Enhance 0, direct muted, wet 0 dB isolates
-        // the linear width path.
-        auto measS = [&] (double widthPct, bool sideSignal, int soloBand = -1) -> double
+        // overlap). Uniform width => enhanced = w * sum(b_i) = w * S, so the S
+        // ratio is exactly w and M is untouched. Enhance 0 + mix 100 % isolates the
+        // linear width path (out = linWet, no residual, no direct blend).
+        auto measS = [&] (double widthPct, bool sideSignal) -> double
         {
             ME eng; eng.prepare (fs, 256);
             configFlat (eng);
-            for (int j = 0; j < 5; ++j) eng.setWidth (j, soloBand < 0 ? widthPct : 100.0);
-            if (soloBand >= 0) eng.setWidth (soloBand, widthPct);
-            eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            for (int j = 0; j < 5; ++j) eng.setWidth (j, widthPct);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
             warmup (eng, fs);
             const int settle = 2048;
             std::vector<double> inL ((size_t) (settle + Nfft)), inR ((size_t) (settle + Nfft)), oL, oR, dL, dR;
@@ -471,7 +482,7 @@ namespace
                 configFlat (eng);
                 for (int j = 0; j < 5; ++j) eng.setWidth (j, 100.0);
                 if (solo >= 0) eng.setWidth (solo, 200.0);
-                eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+                eng.setMix (100.0); eng.setOutputDb (0.0);
                 warmup (eng, fs);
                 const int settle = 2048;
                 std::vector<double> inL ((size_t) (settle + Nfft)), inR ((size_t) (settle + Nfft)), oL, oR, dL, dR;
@@ -490,7 +501,7 @@ namespace
     }
 
     // ==========================================================================
-    // G7 — Glue levelling
+    // G7 — Glue levelling (mix 100 %, all bands Glue)
     // ==========================================================================
     void g7_glue (double fs)
     {
@@ -506,8 +517,8 @@ namespace
             ME eng; eng.prepare (fs, 256);
             for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
             eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
-            eng.setMode (mode);
-            eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            setAllMode (eng, mode);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
             eng.setQuality (ME::Quality::HQ);
             warmup (eng, fs, 0.5);
             const int settle = (int) (0.4 * fs);
@@ -534,7 +545,7 @@ namespace
             const double a = dbToLin (-80.0);
             ME eng; eng.prepare (fs, 256);
             for (int b = 0; b < 5; ++b) eng.setEnhance (b, 100.0);
-            eng.setMode (Mode::Glue); eng.setDirectDb (-60.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            setAllMode (eng, Mode::Glue); eng.setMix (100.0); eng.setOutputDb (0.0);
             warmup (eng, fs);
             const int N = (int) (0.5 * fs);
             std::vector<double> inL ((size_t) N), inR, oL, oR, dL, dR;
@@ -549,7 +560,7 @@ namespace
         {
             ME eng; eng.prepare (fs, 256);
             for (int b = 0; b < 5; ++b) eng.setEnhance (b, 100.0);
-            eng.setMode (Mode::Glue); eng.setDirectDb (-60.0); eng.setWetDb (0.0);
+            setAllMode (eng, Mode::Glue); eng.setMix (100.0);
             const int N = (int) (2.0 * fs);
             std::vector<double> z ((size_t) N, 0.0), oL, oR, dL, dR;
             runEngine (eng, z, z, oL, oR, dL, dR);
@@ -560,6 +571,7 @@ namespace
 
     // ==========================================================================
     // G8 — finiteness + worst-case hold + NaN self-heal (Class C)
+    // Worst case: enhance 150 %, width 200 %, Glue, mix 100 %, 0 dBFS square.
     // ==========================================================================
     void g8_finite (double fs)
     {
@@ -567,9 +579,9 @@ namespace
         auto worst = [&] (bool injectNaN, std::vector<double>& out)
         {
             ME eng; eng.prepare (fs, 256);
-            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 200.0); }
-            eng.setMode (Mode::Glue);
-            eng.setDirectDb (0.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 200.0); }
+            setAllMode (eng, Mode::Glue);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
             const int N = (int) (10.0 * fs);
             const int period = std::max (2, (int) (fs / 55.0));
             std::vector<double> inL ((size_t) N), inR, oL, oR, dL, dR;
@@ -607,8 +619,8 @@ namespace
             {
                 ME eng; eng.prepare (fs, 256);
                 for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 80.0); eng.setWidth (b, 120.0); }
-                eng.setMode (Mode::Tape); eng.setQuality (q);
-                eng.setDirectDb (0.0); eng.setWetDb (0.0);
+                setAllMode (eng, Mode::Tape); eng.setQuality (q);
+                eng.setMix (100.0);
                 eng.reset();                    // canonical state (both runs start identical)
                 if (dirty)
                 {
@@ -637,15 +649,14 @@ namespace
 
     // ==========================================================================
     // G10 — no feedback path (Class A): impulse response energy non-increasing.
+    // Worst case: enhance 150 %, width 200 %, Glue, mix 100 %.
     // ==========================================================================
     void g10_feedback (double fs)
     {
         std::printf ("G10 feedforward-only @ %.0f\n", fs);
-        // Worst case: max enhance + width, Glue, both buses hot. One-sample-in ->
-        // one-sample-out closure over the engine (mono).
         ME eng; eng.prepare (fs, 256);
-        for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 200.0); }
-        eng.setMode (Mode::Glue); eng.setDirectDb (0.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+        for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 200.0); }
+        setAllMode (eng, Mode::Glue); eng.setMix (100.0); eng.setOutputDb (0.0);
         warmup (eng, fs);
         auto proc = [&] (double x) -> double
         {
@@ -691,17 +702,20 @@ namespace
     }
 
     // ==========================================================================
-    // G13 — clickless mode transition
+    // G13 — clickless per-band mode transition
     // ==========================================================================
+    // Switch every band's mode mid-signal; the shaper's ~30 ms coefficient
+    // crossfade must keep the output step-free. Enhance 100 % (the shaper coeff
+    // morph is enhance-linear; 100 % keeps the empirical 0.08 step bound meaningful).
     void g13_click (double fs)
     {
-        std::printf ("G13 clickless mode switch @ %.0f\n", fs);
+        std::printf ("G13 clickless per-band mode switch @ %.0f\n", fs);
         const int k0order = 14;
         const int k0 = binOf (1000.0, fs, k0order);
         const double f0 = freqOfBin (k0, fs, k0order);
         ME eng; eng.prepare (fs, 256);
         for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
-        eng.setMode (Mode::Tube); eng.setDirectDb (0.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+        setAllMode (eng, Mode::Tube); eng.setMix (100.0); eng.setOutputDb (0.0);
         warmup (eng, fs);
 
         const int N = (int) (0.5 * fs);
@@ -715,7 +729,7 @@ namespace
         {
             const int n = std::min (256, N - s);
             for (int i = 0; i < n; ++i) { bL[(size_t) i] = (float) inL[(size_t) (s + i)]; bR[(size_t) i] = (float) inR[(size_t) (s + i)]; }
-            if (! switched && s > N / 3) { eng.setMode (Mode::Bright); switched = true; }
+            if (! switched && s > N / 3) { setAllMode (eng, Mode::Bright); switched = true; }
             eng.processBlock (bL.data(), bR.data(), n, bdL.data(), bdR.data());
             for (int i = 0; i < n; ++i)
             {
@@ -737,34 +751,32 @@ namespace
     // ==========================================================================
     // G14 — clickless quality switch (defect #69: HQ<->ZeroLatency crossfade)
     // ==========================================================================
-    // Drive a steady in-band sinusoid and toggle Quality back and forth many times
-    // (both directions, varied phases), spaced wider than the ~20 ms fade so fades
-    // never overlap. A hard path swap (the old bug) reset the incoming path to
-    // silence and dropped the outgoing one, producing a one-sample step ~ the
-    // output peak (~0.5). The equal-power crossfade keeps the output continuous.
+    // Drive a steady in-band sinusoid at mix 100 % and toggle Quality back and
+    // forth, spaced wider than the ~20 ms fade so fades never overlap. A hard path
+    // swap (the old bug) reset the incoming path to silence and dropped the
+    // outgoing one, producing a one-sample step ~ the output peak. The equal-power
+    // crossfade keeps the output continuous.
     //
     // Oracle is INDEPENDENT of the engine: the worst sample-to-sample step of a
     // click-free output is bounded by the max slew of its spectral content, using
-    // amplitudes taken from the gain SPEC + the closed-form HarmonicShaper series
-    // (never measured from the engine):
-    //   * fundamental amplitude <= (gDirect+gWet)*A*1.1  (documented unity linear
-    //     reconstruction, +10% for the H1 self-boost),
+    // amplitudes from the constant-voltage gain SPEC + the closed-form
+    // HarmonicShaper series (never measured from the engine). At mix 100 % the
+    // total linear gain on the fundamental is 1.0 (not 2.0):
+    //   * fundamental amplitude <= 1.0 * A * 1.1   (unity linear reconstruction,
+    //     +10% for the H1 self-boost),
     //   * harmonics 2..5 amplitude <= 5 bands * (0.5 A^2|c0| + 0.25 A^3|c1|) for the
-    //     driven mode (Tube),  each slewing at 2 sin(pi h f0 / fs).
-    // A real click (step ~0.5, independent of f0) blows past this bound; the fade's
-    // mixed-sinusoid slew stays comfortably under it at every rate.
+    //     driven mode (Tube), each slewing at 2 sin(pi h f0 / fs).
     void g14_quality_click (double fs)
     {
         std::printf ("G14 clickless quality switch @ %.0f\n", fs);
         const double f0 = 300.0;    // in band 1 (130..700 Hz), low enough that even
         const double A  = 0.25;     // the 5th harmonic (1.5 kHz) slews slowly
-        const double gDirect = 1.0, gWet = 1.0;           // both buses at 0 dB (set below)
 
         // Independent slew bound (spec + closed-form oracle, never the engine).
         const int    Hmax = 5;
         const double c0 = 0.35, c1 = 0.08;                // Tube coeffs (G3's independent table)
-        const double a1 = (gDirect + gWet) * A * 1.1;     // fundamental amplitude bound
-        const double aH = 5.0 * (0.5 * A * A * c0 + 0.25 * A * A * A * c1); // harmonic (2..5) bound
+        const double a1 = 1.0 * A * 1.1;                  // fundamental amplitude bound (mix 100 %: gain 1.0)
+        const double aH = 5.0 * (0.5 * A * A * c0 + 0.25 * A * A * A * c1); // harmonic (2..5) bound at mix 100 %
         const double slew1 = a1 * 2.0 * std::sin (kPi * f0 / fs);
         const double slewH = aH * 2.0 * std::sin (kPi * (double) Hmax * f0 / fs);
         const double kSafety = 2.0;
@@ -773,8 +785,8 @@ namespace
         ME eng; eng.prepare (fs, 256);
         for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
         eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
-        eng.setMode (Mode::Tube);
-        eng.setDirectDb (0.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+        setAllMode (eng, Mode::Tube);
+        eng.setMix (100.0); eng.setOutputDb (0.0);
         eng.setQuality (ME::Quality::HQ);
         warmup (eng, fs, 0.4);      // settle path + smoothers + DC blocker
 
@@ -809,10 +821,206 @@ namespace
         }
         if (g_verbose)
             std::printf ("   %d switches, worst step=%.4f (bound %.4f, click~%.2f)\n",
-                         nSwitch, worstStep, bound, (gDirect + gWet) * A);
+                         nSwitch, worstStep, bound, A);
         if (! finite) fail ("G14 non-finite output during quality switch");
         if (worstStep > bound)
             fail ("G14 quality-switch step " + std::to_string (worstStep) + " > bound " + std::to_string (bound));
+    }
+
+    // ==========================================================================
+    // G15 — mix law (constant-voltage / linear complementary)
+    // ==========================================================================
+    // (a) mix 0 % is the pure direct (dry) path: flat magnitude even at enhance
+    //     150 % and any mode — the residual bus is scaled by mix, so at 0 % no
+    //     harmonics reach the output.
+    // (b) The intermediate blend follows the SPEC's linear law:
+    //     out(50%) == 0.5*(out(0%) + out(100%)) sample-for-sample. This is the
+    //     independent oracle (the linear formula applied to the measured 0 %/100 %
+    //     endpoints) and distinguishes constant-voltage from an equal-power law
+    //     (which would give 0.707*(out0+out100) at the midpoint).
+    void g15_mix_law (double fs)
+    {
+        std::printf ("G15 mix law @ %.0f\n", fs);
+        const int order = 15, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+
+        // (a) mix 0 % -> pure dry, flat even at max enhance / any mode.
+        for (Mode m : { Mode::Tube, Mode::Bright })
+        {
+            for (auto q : { ME::Quality::HQ, ME::Quality::ZeroLatency })
+            {
+                const bool zl = (q == ME::Quality::ZeroLatency);
+                const double loHz = zl ? 10.0 : 20.0, hiFrac = zl ? 0.49 : 0.42, tolA = zl ? 0.10 : 0.25;
+                ME eng; eng.prepare (fs, 256);
+                configFlat (eng);
+                for (int b = 0; b < 5; ++b) eng.setEnhance (b, 150.0);
+                setAllMode (eng, m);
+                eng.setQuality (q);
+                eng.setMix (0.0);
+                warmup (eng, fs);
+                std::vector<double> in ((size_t) Nfft, 0.0), inR, oL, oR, dL, dR;
+                in[0] = 1.0; inR = in;
+                runEngine (eng, in, inR, oL, oR, dL, dR);
+                std::vector<double> magDb; magSpectrum (oL, order, fft, magDb);
+                double maxDev = 0.0;
+                for (int k = 1; k < Nfft / 2; ++k)
+                {
+                    const double f = freqOfBin (k, fs, order);
+                    if (f < loHz || f > hiFrac * fs) continue;
+                    maxDev = std::max (maxDev, std::abs (magDb[(size_t) k]));
+                }
+                if (g_verbose) std::printf ("   mix0 dry flatness mode=%d %s maxDev=%.4f dB (tol %.2f)\n",
+                                            (int) m, zl ? "ZL" : "HQ", maxDev, tolA);
+                if (maxDev > tolA) fail ("G15 mix0 not flat (mode " + std::to_string ((int) m) + ") dev "
+                                         + std::to_string (maxDev) + " > " + std::to_string (tolA));
+            }
+        }
+
+        // (b) linear complementary law on a real tone (enhance on so dry != wet).
+        {
+            const int torder = 14, Tfft = 1 << torder;
+            const int k0 = binOf (1000.0, fs, torder);
+            const double f0 = freqOfBin (k0, fs, torder);
+            const int settle = 2048, N = settle + Tfft;
+            auto atMix = [&] (double mixPct, std::vector<double>& oL) -> void
+            {
+                ME eng; eng.prepare (fs, 256);
+                for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
+                eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
+                setAllMode (eng, Mode::Tube);
+                eng.setMix (mixPct); eng.setOutputDb (0.0);
+                eng.setQuality (ME::Quality::HQ);
+                warmup (eng, fs, 0.4);
+                std::vector<double> inL ((size_t) N), inR, oR, dL, dR;
+                for (int i = 0; i < N; ++i) inL[(size_t) i] = 0.25 * std::sin (2.0 * kPi * f0 * i / fs);
+                inR = inL;
+                runEngine (eng, inL, inR, oL, oR, dL, dR);
+            };
+            std::vector<double> o0, o50, o100;
+            atMix (0.0, o0); atMix (50.0, o50); atMix (100.0, o100);
+            double maxDev = 0.0, maxAbs = 0.0;
+            for (int i = settle; i < N; ++i)
+            {
+                const double oracle = 0.5 * (o0[(size_t) i] + o100[(size_t) i]);
+                maxDev = std::max (maxDev, std::abs (o50[(size_t) i] - oracle));
+                maxAbs = std::max (maxAbs, std::abs (o50[(size_t) i]));
+            }
+            if (g_verbose) std::printf ("   linear-law: max|o50 - 0.5(o0+o100)|=%.2e (signal peak %.3f)\n", maxDev, maxAbs);
+            if (maxDev > 1e-5) fail ("G15 mix 50%% not the linear midpoint (dev " + std::to_string (maxDev) + ")");
+        }
+    }
+
+    // ==========================================================================
+    // G16 — solo routing (superposition oracle)
+    // ==========================================================================
+    // Bands are parallel and the residual DC-blocker is LTI, so the soloed-band
+    // output is exactly the sum of the single-band solos (settled segment), and
+    // soloing ALL bands is bit-identical to no solo. Same for the delta bus. This
+    // is a black-box superposition property, independent of the implementation.
+    void g16_solo (double fs)
+    {
+        std::printf ("G16 solo routing @ %.0f\n", fs);
+        const int N = (int) (0.6 * fs);
+        const int seg0 = (int) (0.3 * fs); // compare after the states have settled
+
+        // Broadband stereo input spanning several bands, with side content on the
+        // 1.5 kHz component so the width path participates.
+        std::vector<double> inL ((size_t) N), inR ((size_t) N);
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = (double) i / fs;
+            const double mid  = 0.30 * std::sin (2.0 * kPi * 180.0 * t) + 0.12 * std::sin (2.0 * kPi * 9000.0 * t);
+            const double side = 0.20 * std::sin (2.0 * kPi * 1500.0 * t);
+            inL[(size_t) i] = mid + side;
+            inR[(size_t) i] = mid - side;
+        }
+
+        auto run = [&] (const std::array<bool, 5>& solo, std::vector<double>& oL, std::vector<double>& dL)
+        {
+            ME eng; eng.prepare (fs, 256);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0 + 20.0 * b); }
+            eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
+            const Mode modes[5] = { Mode::Tube, Mode::Tape, Mode::Bright, Mode::Clean, Mode::Glue };
+            for (int b = 0; b < 5; ++b) eng.setMode (b, modes[b]);
+            eng.setMix (70.0); eng.setOutputDb (0.0);
+            for (int b = 0; b < 5; ++b) eng.setSolo (b, solo[(size_t) b]);
+            warmup (eng, fs, 0.4);
+            std::vector<double> oR, dR;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+        };
+
+        std::array<bool, 5> s1 { false, true, false, false, false };
+        std::array<bool, 5> s3 { false, false, false, true, false };
+        std::array<bool, 5> s13 { false, true, false, true, false };
+        std::array<bool, 5> sAll { true, true, true, true, true };
+        std::array<bool, 5> sNone { false, false, false, false, false };
+
+        std::vector<double> o1, d1, o3, d3, o13, d13, oAll, dAll, oNone, dNone;
+        run (s1, o1, d1); run (s3, o3, d3); run (s13, o13, d13);
+        run (sAll, oAll, dAll); run (sNone, oNone, dNone);
+
+        double outSup = 0.0, deltaSup = 0.0, allVsNone = 0.0, soloEnergy = 0.0;
+        for (int i = seg0; i < N; ++i)
+        {
+            outSup    = std::max (outSup,    std::abs (o13[(size_t) i] - (o1[(size_t) i] + o3[(size_t) i])));
+            deltaSup  = std::max (deltaSup,  std::abs (d13[(size_t) i] - (d1[(size_t) i] + d3[(size_t) i])));
+            allVsNone = std::max (allVsNone, std::abs (oAll[(size_t) i] - oNone[(size_t) i]));
+            soloEnergy += o1[(size_t) i] * o1[(size_t) i];
+        }
+        if (g_verbose)
+            std::printf ("   out superpos=%.2e, delta superpos=%.2e, all==none=%.2e\n", outSup, deltaSup, allVsNone);
+        if (outSup > 1e-5)    fail ("G16 output solo superposition broken (" + std::to_string (outSup) + ")");
+        if (deltaSup > 1e-5)  fail ("G16 delta solo superposition broken (" + std::to_string (deltaSup) + ")");
+        if (allVsNone > 1e-9) fail ("G16 solo-all != no-solo (" + std::to_string (allVsNone) + ")");
+        if (soloEnergy <= 0.0) fail ("G16 soloed band produced silence");
+    }
+
+    // ==========================================================================
+    // G17 — per-band mode independence
+    // ==========================================================================
+    // A 1 kHz tone sits in band 2 (700..2200); its 2nd harmonic (2 kHz) is
+    // generated by band 2's shaper and lives in band 2. Changing a FAR band's mode
+    // (band 4, HI > 7500) must leave that H2 unchanged (bands are independent),
+    // while changing band 2's OWN mode must move it (routing is live).
+    void g17_band_mode_independence (double fs)
+    {
+        std::printf ("G17 per-band mode independence @ %.0f\n", fs);
+        const int order = 14, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+        const int k0 = binOf (1000.0, fs, order);   // band 2 (700..2200)
+
+        auto measureH2 = [&] (const std::array<Mode, 5>& modes) -> double
+        {
+            ME eng; eng.prepare (fs, 256);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
+            eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
+            for (int b = 0; b < 5; ++b) eng.setMode (b, modes[(size_t) b]);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
+            eng.setQuality (ME::Quality::HQ);
+            warmup (eng, fs, 0.4);
+            const int settle = 2048;
+            const double f0 = freqOfBin (k0, fs, order);
+            std::vector<double> inL ((size_t) (settle + Nfft)), inR, oL, oR, dL, dR;
+            for (int i = 0; i < settle + Nfft; ++i) inL[(size_t) i] = 0.25 * std::sin (2.0 * kPi * f0 * i / fs);
+            inR = inL;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+            return binAmp (oL, (size_t) settle, order, 2 * k0, fft);
+        };
+
+        const std::array<Mode, 5> allTube   { Mode::Tube, Mode::Tube, Mode::Tube,  Mode::Tube, Mode::Tube };
+        const std::array<Mode, 5> farBright  { Mode::Tube, Mode::Tube, Mode::Tube,  Mode::Tube, Mode::Bright }; // band 4 changed
+        const std::array<Mode, 5> sigBright  { Mode::Tube, Mode::Tube, Mode::Bright, Mode::Tube, Mode::Tube };  // band 2 changed
+
+        const double base   = measureH2 (allTube);
+        const double farChg = measureH2 (farBright);
+        const double sigChg = measureH2 (sigBright);
+        const double farDev = std::abs (linToDb (farChg) - linToDb (base));
+        const double sigDev = std::abs (linToDb (sigChg) - linToDb (base));
+        if (g_verbose)
+            std::printf ("   base H2=%.2f dB, far-band change=%.4f dB, own-band change=%.2f dB\n",
+                         linToDb (base), farDev, sigDev);
+        if (farDev > 0.05) fail ("G17 far-band mode change moved band-2 H2 by " + std::to_string (farDev) + " dB");
+        if (sigDev < 3.0)  fail ("G17 own-band mode change left band-2 H2 unmoved (" + std::to_string (sigDev) + " dB)");
     }
 }
 
@@ -839,6 +1047,9 @@ int main (int argc, char** argv)
         g12_clamp (fs);
         g13_click (fs);
         g14_quality_click (fs);
+        g15_mix_law (fs);
+        g16_solo (fs);
+        g17_band_mode_independence (fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

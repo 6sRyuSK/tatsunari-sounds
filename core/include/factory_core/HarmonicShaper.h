@@ -7,11 +7,11 @@
 //
 // Curve family (all modes share the shape):
 //     f(u) = u + sum_{k=2..5} c_k(mode) * e * u^k        for |u| <= 1
-// with e = enhance in [0,1]. The LINEAR term is always 1 (the fundamental stays
+// with e = enhance in [0,1.5]. The LINEAR term is always 1 (the fundamental stays
 // ~unity — no "louder == better" illusion), and each harmonic level scales as
 // 20*log10(e), monotone and predictable. For |u| > 1 the curve continues with a
-// C1 soft saturation  f(1+t) = f(1) + f'(1)(1 - e^{-t})  (mirrored below -1);
-// f'(±1) >= 0 for every mode so the transfer stays monotone through the join.
+// C1 soft saturation  f(1+t) = f(1) + f'(1)(1 - e^{-t})  (mirrored below -1). The
+// output stays bounded and finite over the whole [0,1.5] enhance range.
 //
 // Anti-aliasing:
 //   * When wrapped by >=2x oversampling the caller evaluates the raw residual
@@ -57,7 +57,7 @@ namespace factory_core
         }
 
         void setMode (Mode m) noexcept { mode = m; glueOn = (m == Mode::Glue); }
-        void setEnhance (double e) noexcept { enh = std::clamp (e, 0.0, 1.0); }
+        void setEnhance (double e) noexcept { enh = std::clamp (e, 0.0, 1.5); }
         void setAdaa (bool on) noexcept { adaa = on; }
         void setEnvGain (double g) noexcept { envGain = std::clamp (g, 1.0e-3, 1.0e3); }
 
