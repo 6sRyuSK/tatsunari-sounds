@@ -63,3 +63,7 @@ ctest --test-dir build -R <slug_snake>_dsp --output-on-failure
   (headless)。pluginval の allocation チェックを抑制しない。
 - スコープ厳守: 頼まれていないバンド/フォーマット/機能を足さない。
 - 音の良し悪し・トレランス変更・リリースは **Ask a human**。
+
+scaffold は factory presets の配線(Init のみの空バンク `FactoryPresets.h`、
+ProgramAdapter 委譲、`PresetSelector`、`preset_test.cpp`)を標準装備で生成する。
+実際のプリセットを足すのは `add-preset` スキル(値は taste = Ask a human)。
