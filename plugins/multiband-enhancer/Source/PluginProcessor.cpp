@@ -128,10 +128,8 @@ void MultibandEnhancerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     float* L   = buffer.getWritePointer (0);
     float* Rin = numCh > 1 ? buffer.getWritePointer (1) : nullptr;
 
-    // Capture the dry input (preserved for the latency-matched bypass reference).
-    for (int i = 0; i < n; ++i) { dryL[(size_t) i] = L[i]; dryR[(size_t) i] = Rin ? Rin[i] : L[i]; }
-
-    // Push parameters to the engine (plain, lock-free stores).
+    // Push parameters to the engine (plain, lock-free stores). Done once per
+    // callback — the targets do not change within a host block.
     for (int b = 0; b < kBands; ++b)
     {
         engine.setEnhance (b, (double) enhP[b]->load());
@@ -146,17 +144,48 @@ void MultibandEnhancerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     engine.setQuality  (qualityP->load() > 0.5f ? ME::Quality::ZeroLatency : ME::Quality::HQ);
     engine.setDeltaListen (deltaP->load() > 0.5f);
 
+    // Latency captured before processing (a Quality change applies its new
+    // latency next callback), so every chunk of an over-sized block aligns the
+    // dry reference identically.
     const int lat = juce::jlimit (0, kMaxLatency - 1, engine.latencySamples());
-
-    // Engine processes in place; mono uses a scratch right channel.
-    float* Rwork = Rin ? Rin : rBuf.data();
-    if (! Rin) for (int i = 0; i < n; ++i) Rwork[i] = dryL[(size_t) i];
-    engine.processBlock (L, Rwork, n, deltaL.data(), deltaR.data());
 
     bypassMix.setTargetValue (bypassP->load() > 0.5f ? 1.0f : 0.0f);
 
+    // A host block larger than the prepared size is processed in chunks (never
+    // dropped): the maxBlock-sized scratch and the engine's maxBlock-derived
+    // oversampling buffers never see more than the prepared block size. The
+    // analyser rings, bypass crossfade and dry-reference history are all carried
+    // across chunks, so a single-chunk (compliant) callback is bit-identical.
+    const int maxBlock = (int) dryL.size();
+    for (int off = 0; off < n; off += maxBlock)
+        processChunk (L + off, Rin ? Rin + off : nullptr, juce::jmin (maxBlock, n - off), lat);
+
+    // Publish meters / effective crossovers (snapshot of the final chunk).
+    for (int b = 0; b < kBands; ++b)
+        bandRmsDb[(size_t) b].store ((float) engine.bandResidualRmsDb (b), std::memory_order_relaxed);
+    for (int i = 0; i < 4; ++i)
+        effXover[(size_t) i].store (engine.effectiveCrossoverHz (i), std::memory_order_relaxed);
+
+    // A Quality change moves the reported latency: apply it on the message thread.
+    if (engine.consumeLatencyDirty())
+    {
+        reportedLatency.store (engine.latencySamples(), std::memory_order_relaxed);
+        triggerAsyncUpdate();
+    }
+}
+
+void MultibandEnhancerAudioProcessor::processChunk (float* L, float* Rin, int m, int lat) noexcept
+{
+    // Capture the dry input (preserved for the latency-matched bypass reference).
+    for (int i = 0; i < m; ++i) { dryL[(size_t) i] = L[i]; dryR[(size_t) i] = Rin ? Rin[i] : L[i]; }
+
+    // Engine processes in place; mono uses a scratch right channel.
+    float* Rwork = Rin ? Rin : rBuf.data();
+    if (! Rin) for (int i = 0; i < m; ++i) Rwork[i] = dryL[(size_t) i];
+    engine.processBlock (L, Rwork, m, deltaL.data(), deltaR.data());
+
     int w = ringWrite.load (std::memory_order_relaxed);
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < m; ++i)
     {
         const float dld = (i >= lat) ? dryL[(size_t) (i - lat)] : dryHistL[(size_t) (kMaxLatency - lat + i)];
         const float drd = (i >= lat) ? dryR[(size_t) (i - lat)] : dryHistR[(size_t) (kMaxLatency - lat + i)];
@@ -177,31 +206,20 @@ void MultibandEnhancerAudioProcessor::processBlock (juce::AudioBuffer<float>& bu
     ringWrite.store (w, std::memory_order_release);
 
     // Slide the dry-reference history (keep the last kMaxLatency dry samples).
-    if (n >= kMaxLatency)
+    // Advancing it per chunk makes the aligned-dry lookup above sample-continuous
+    // across chunk boundaries, identical to processing the whole block at once.
+    if (m >= kMaxLatency)
     {
         for (int k = 0; k < kMaxLatency; ++k)
         {
-            dryHistL[(size_t) k] = dryL[(size_t) (n - kMaxLatency + k)];
-            dryHistR[(size_t) k] = dryR[(size_t) (n - kMaxLatency + k)];
+            dryHistL[(size_t) k] = dryL[(size_t) (m - kMaxLatency + k)];
+            dryHistR[(size_t) k] = dryR[(size_t) (m - kMaxLatency + k)];
         }
     }
     else
     {
-        for (int k = 0; k < kMaxLatency - n; ++k) { dryHistL[(size_t) k] = dryHistL[(size_t) (k + n)]; dryHistR[(size_t) k] = dryHistR[(size_t) (k + n)]; }
-        for (int k = 0; k < n; ++k) { dryHistL[(size_t) (kMaxLatency - n + k)] = dryL[(size_t) k]; dryHistR[(size_t) (kMaxLatency - n + k)] = dryR[(size_t) k]; }
-    }
-
-    // Publish meters / effective crossovers.
-    for (int b = 0; b < kBands; ++b)
-        bandRmsDb[(size_t) b].store ((float) engine.bandResidualRmsDb (b), std::memory_order_relaxed);
-    for (int i = 0; i < 4; ++i)
-        effXover[(size_t) i].store (engine.effectiveCrossoverHz (i), std::memory_order_relaxed);
-
-    // A Quality change moves the reported latency: apply it on the message thread.
-    if (engine.consumeLatencyDirty())
-    {
-        reportedLatency.store (engine.latencySamples(), std::memory_order_relaxed);
-        triggerAsyncUpdate();
+        for (int k = 0; k < kMaxLatency - m; ++k) { dryHistL[(size_t) k] = dryHistL[(size_t) (k + m)]; dryHistR[(size_t) k] = dryHistR[(size_t) (k + m)]; }
+        for (int k = 0; k < m; ++k) { dryHistL[(size_t) (kMaxLatency - m + k)] = dryL[(size_t) k]; dryHistR[(size_t) (kMaxLatency - m + k)] = dryR[(size_t) k]; }
     }
 }
 

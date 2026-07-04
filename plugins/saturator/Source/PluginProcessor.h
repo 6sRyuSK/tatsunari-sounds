@@ -66,5 +66,9 @@ private:
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
     factory_core::Waveshaper shaper;
 
+    // Prepared block size; an over-sized host block is processed in chunks of
+    // this many samples so the oversampler never exceeds its initProcessing cap.
+    int maxBlock = 1;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SaturatorAudioProcessor)
 };

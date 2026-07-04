@@ -123,8 +123,17 @@ void FuzznariAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
 
     if (stereo)
     {
+        // An over-sized host block is chunked to the prepared size (monoScratch
+        // is sized to maxBlock, matching the engine's oversampling scratch) so
+        // the capped resampler is never fed more than it was prepared for.
         float* right = buffer.getWritePointer (1);
-        engine.process (left, right, left, right, n);
+        int pos = 0;
+        while (pos < n)
+        {
+            const int m = juce::jmin (n - pos, (int) monoScratch.size());
+            engine.process (left + pos, right + pos, left + pos, right + pos, m);
+            pos += m;
+        }
     }
     else
     {

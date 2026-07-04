@@ -3,6 +3,6 @@ name      = "Tatsumin Enhancer"
 slug      = "multiband-enhancer"
 category  = "Enhancer"
 status    = "shipped"
-version   = "0.2.0"
+version   = "0.2.1"
 formats   = ["VST3", "AU"]
 reference = "Waves Vitamin (multiband parallel harmonic enhancer)"
