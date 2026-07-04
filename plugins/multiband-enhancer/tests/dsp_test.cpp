@@ -12,7 +12,7 @@
 //   G4  aliasing                                    G11 resolution-follows-rate (Class G)
 //   G5  DC removal                                  G12 crossover order clamp
 //   G6  width oracle                                G13 clickless mode transition
-//   G7  Glue levelling
+//   G7  Glue levelling                              G14 clickless quality switch (defect #69)
 //
 #include "factory_core/MultibandEnhancer.h"
 #include "factory_core/Oversampler.h"
@@ -733,6 +733,87 @@ namespace
         if (g_verbose) std::printf ("   base step=%.4f, during switch=%.4f\n", baseStep, switchStep);
         if (switchStep > 0.08) fail ("G13 switch step " + std::to_string (switchStep) + " > 0.08");
     }
+
+    // ==========================================================================
+    // G14 — clickless quality switch (defect #69: HQ<->ZeroLatency crossfade)
+    // ==========================================================================
+    // Drive a steady in-band sinusoid and toggle Quality back and forth many times
+    // (both directions, varied phases), spaced wider than the ~20 ms fade so fades
+    // never overlap. A hard path swap (the old bug) reset the incoming path to
+    // silence and dropped the outgoing one, producing a one-sample step ~ the
+    // output peak (~0.5). The equal-power crossfade keeps the output continuous.
+    //
+    // Oracle is INDEPENDENT of the engine: the worst sample-to-sample step of a
+    // click-free output is bounded by the max slew of its spectral content, using
+    // amplitudes taken from the gain SPEC + the closed-form HarmonicShaper series
+    // (never measured from the engine):
+    //   * fundamental amplitude <= (gDirect+gWet)*A*1.1  (documented unity linear
+    //     reconstruction, +10% for the H1 self-boost),
+    //   * harmonics 2..5 amplitude <= 5 bands * (0.5 A^2|c0| + 0.25 A^3|c1|) for the
+    //     driven mode (Tube),  each slewing at 2 sin(pi h f0 / fs).
+    // A real click (step ~0.5, independent of f0) blows past this bound; the fade's
+    // mixed-sinusoid slew stays comfortably under it at every rate.
+    void g14_quality_click (double fs)
+    {
+        std::printf ("G14 clickless quality switch @ %.0f\n", fs);
+        const double f0 = 300.0;    // in band 1 (130..700 Hz), low enough that even
+        const double A  = 0.25;     // the 5th harmonic (1.5 kHz) slews slowly
+        const double gDirect = 1.0, gWet = 1.0;           // both buses at 0 dB (set below)
+
+        // Independent slew bound (spec + closed-form oracle, never the engine).
+        const int    Hmax = 5;
+        const double c0 = 0.35, c1 = 0.08;                // Tube coeffs (G3's independent table)
+        const double a1 = (gDirect + gWet) * A * 1.1;     // fundamental amplitude bound
+        const double aH = 5.0 * (0.5 * A * A * c0 + 0.25 * A * A * A * c1); // harmonic (2..5) bound
+        const double slew1 = a1 * 2.0 * std::sin (kPi * f0 / fs);
+        const double slewH = aH * 2.0 * std::sin (kPi * (double) Hmax * f0 / fs);
+        const double kSafety = 2.0;
+        const double bound = kSafety * (slew1 + slewH);
+
+        ME eng; eng.prepare (fs, 256);
+        for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
+        eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
+        eng.setMode (Mode::Tube);
+        eng.setDirectDb (0.0); eng.setWetDb (0.0); eng.setOutputDb (0.0);
+        eng.setQuality (ME::Quality::HQ);
+        warmup (eng, fs, 0.4);      // settle path + smoothers + DC blocker
+
+        const int N = (int) (2.0 * fs);
+        const int toggleEvery = std::max (1, (int) std::lround (0.029 * fs)); // > 20 ms fade
+        std::vector<float> bL (256), bR (256), bdL (256), bdR (256);
+        double worstStep = 0.0, prev = 0.0;
+        bool have = false, finite = true, zl = false;
+        int nextToggle = toggleEvery, nSwitch = 0;
+        for (int s = 0; s < N; s += 256)
+        {
+            const int n = std::min (256, N - s);
+            for (int i = 0; i < n; ++i)
+            {
+                const double v = A * std::sin (2.0 * kPi * f0 * (double) (s + i) / fs);
+                bL[(size_t) i] = (float) v; bR[(size_t) i] = (float) v;
+            }
+            if (s >= nextToggle)
+            {
+                zl = ! zl;
+                eng.setQuality (zl ? ME::Quality::ZeroLatency : ME::Quality::HQ);
+                nextToggle += toggleEvery; ++nSwitch;
+            }
+            eng.processBlock (bL.data(), bR.data(), n, bdL.data(), bdR.data());
+            for (int i = 0; i < n; ++i)
+            {
+                const double y = bL[(size_t) i];
+                if (! std::isfinite (y)) finite = false;
+                if (have) worstStep = std::max (worstStep, std::abs (y - prev));
+                prev = y; have = true;
+            }
+        }
+        if (g_verbose)
+            std::printf ("   %d switches, worst step=%.4f (bound %.4f, click~%.2f)\n",
+                         nSwitch, worstStep, bound, (gDirect + gWet) * A);
+        if (! finite) fail ("G14 non-finite output during quality switch");
+        if (worstStep > bound)
+            fail ("G14 quality-switch step " + std::to_string (worstStep) + " > bound " + std::to_string (bound));
+    }
 }
 
 int main (int argc, char** argv)
@@ -757,6 +838,7 @@ int main (int argc, char** argv)
         g11_resolution (fs);
         g12_clamp (fs);
         g13_click (fs);
+        g14_quality_click (fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
