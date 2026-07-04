@@ -14,6 +14,19 @@ GranularDelayAudioProcessorEditor::GranularDelayAudioProcessorEditor (GranularDe
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+    };
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     addAndMakeVisible (cloud);
 
     // Order matters for layout. Decimals: % integer; ms / st(fine) / rate-Hz to
@@ -46,7 +59,32 @@ GranularDelayAudioProcessorEditor::GranularDelayAudioProcessorEditor (GranularDe
 
 GranularDelayAudioProcessorEditor::~GranularDelayAudioProcessorEditor()
 {
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
+}
+
+void GranularDelayAudioProcessorEditor::refreshPresetSelector()
+{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void GranularDelayAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                               const ChangeDetails& details)
+{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<GranularDelayAudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    });
 }
 
 void GranularDelayAudioProcessorEditor::addKnob (const char* id, const char* name, const char* suffix, int decimals)
@@ -80,7 +118,9 @@ void GranularDelayAudioProcessorEditor::resized()
 
     auto top = r.removeFromTop (26);
     bypassButton.setBounds (top.removeFromRight (96));
-    titleLabel.setBounds (top);
+    titleLabel.setBounds (top.removeFromLeft (170));
+    top.removeFromLeft (8);
+    presetSelector.setBounds (top);
 
     r.removeFromTop (10);
     cloud.setBounds (r.removeFromTop (188));

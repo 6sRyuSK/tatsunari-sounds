@@ -3,6 +3,6 @@ name      = "Tatsunular Delay"
 slug      = "granular-delay"
 category  = "Delay"
 status    = "in-progress"
-version   = "0.1.4"
+version   = "0.2.0"
 formats   = ["VST3", "AU"]
 reference = "Granular cloud delay (pitch + tempo-sync)"

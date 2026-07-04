@@ -4,6 +4,20 @@ MultibandEnhancerAudioProcessorEditor::MultibandEnhancerAudioProcessorEditor (Mu
     : AudioProcessorEditor (&p), processor (p), analyzer (p)
 {
     setLookAndFeel (&lnf);
+
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+    };
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     addAndMakeVisible (analyzer);
 
     for (int b = 0; b < 5; ++b)
@@ -54,7 +68,32 @@ MultibandEnhancerAudioProcessorEditor::MultibandEnhancerAudioProcessorEditor (Mu
 
 MultibandEnhancerAudioProcessorEditor::~MultibandEnhancerAudioProcessorEditor()
 {
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
+}
+
+void MultibandEnhancerAudioProcessorEditor::refreshPresetSelector()
+{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void MultibandEnhancerAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                                   const ChangeDetails& details)
+{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<MultibandEnhancerAudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    });
 }
 
 void MultibandEnhancerAudioProcessorEditor::styleFader (juce::Slider& s, juce::Label& l, const juce::String& name)
@@ -88,7 +127,12 @@ void MultibandEnhancerAudioProcessorEditor::paint (juce::Graphics& g)
 void MultibandEnhancerAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (34); // title
+
+    // Title band: the title text is painted top-left (see paint); drop the shared
+    // preset selector into the right of the same 34px band (house top-row style).
+    auto titleBand = r.removeFromTop (34).reduced (16, 6);
+    presetSelector.setBounds (titleBand.removeFromRight (juce::jmin (260, titleBand.getWidth() / 2)));
+
     r.reduce (10, 8);
 
     // Right control card.

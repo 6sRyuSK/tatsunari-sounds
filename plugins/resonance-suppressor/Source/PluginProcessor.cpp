@@ -145,6 +145,10 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
         bandParams[(size_t) b].type = apvts.getRawParameterValue (bandPid (b, "type"));
         bandParams[(size_t) b].sens = apvts.getRawParameterValue (bandPid (b, "sens"));
     }
+
+    programs.configure (apvts, resonance_suppressor_presets::bank,
+                        resonance_suppressor_presets::kExclude,
+                        resonance_suppressor_presets::kNumExclude);
 }
 
 factory_core::ReductionNodes ResonanceSuppressorAudioProcessor::currentNodes() const noexcept
@@ -267,14 +271,22 @@ juce::AudioProcessorEditor* ResonanceSuppressorAudioProcessor::createEditor()
 void ResonanceSuppressorAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void ResonanceSuppressorAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

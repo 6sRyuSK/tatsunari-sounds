@@ -10,7 +10,7 @@ name: CI
 # (both happen at configure time, outside the compiler cache) are skipped too.
 
 # Path-scoped: this gate only builds/tests/validates the plugins, so it runs only
-# when a build-affecting source changes. core/ ui/ cmake/ and the root
+# when a build-affecting source changes. core/ ui/ presets/ cmake/ and the root
 # CMakeLists.txt are included (not just plugins/**) because a change there affects
 # every plugin — CLAUDE.md requires the full suite to run for any core/ change.
 # Installer- or docs-only PRs skip it. main is unprotected, so a skipped run does
@@ -26,6 +26,7 @@ on:
       - 'plugins/**'
       - 'core/**'
       - 'ui/**'
+      - 'presets/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'
@@ -34,6 +35,7 @@ on:
       - 'plugins/**'
       - 'core/**'
       - 'ui/**'
+      - 'presets/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'
@@ -91,7 +93,7 @@ jobs:
           key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
 
       # Decide which plugins can have changed binaries. Shared code (core/ ui/
-      # cmake/ the root CMakeLists.txt, this workflow) affects every plugin ->
+      # presets/ cmake/ the root CMakeLists.txt, this workflow) affects every plugin ->
       # build everything. Otherwise only the plugins the PR touches can change,
       # so configure just those — their test exes and pluginval bundles follow
       # automatically. push-to-main and workflow_dispatch always build all, so
@@ -107,7 +109,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --quiet --depth=1 origin "$BASE_SHA"
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
-            if ! echo "$changed" | grep -qE '^(core/|ui/|cmake/|CMakeLists\.txt$|\.github/workflows/ci\.yml$)'; then
+            if ! echo "$changed" | grep -qE '^(core/|ui/|presets/|cmake/|CMakeLists\.txt$|\.github/workflows/ci\.yml$)'; then
               # Keep only slugs that still exist (a deleted plugin has nothing
               # to build; if the PR is deletion-only, fall back to build-all).
               for s in $(echo "$changed" | grep -E '^plugins/[^/]+/' | cut -d/ -f2 | sort -u); do

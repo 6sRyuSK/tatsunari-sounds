@@ -129,6 +129,9 @@ NamPlayerAudioProcessor::NamPlayerAudioProcessor()
     bypassParam   = apvts.getRawParameterValue ("bypass");
     bypassParamPtr = apvts.getParameter ("bypass");
 
+    programs.configure (apvts, nam_player_presets::bank,
+                        nam_player_presets::kExclude, nam_player_presets::kNumExclude);
+
     startTimerHz (20);   // message-thread retirement of handed-off models / kernels
 }
 
@@ -337,15 +340,24 @@ juce::AudioProcessorEditor* NamPlayerAudioProcessor::createEditor()
 
 void NamPlayerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // copyState() carries the "files" child tree (model / IR paths) intact; we
+    // only append the selected program index as a root attribute (append-only, so
+    // existing sessions without it read back as program 0 and stay compatible).
     if (auto xml = apvts.copyState().createXml())
+    {
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void NamPlayerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 
     // Re-load the referenced model / IR files (heavy) on the message thread.
     if (juce::MessageManager::getInstanceWithoutCreating() != nullptr

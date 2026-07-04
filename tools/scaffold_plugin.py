@@ -120,6 +120,7 @@ target_link_libraries({target}
   PRIVATE
     factory_core
     factory_ui
+    factory_presets
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC
@@ -135,6 +136,33 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
   add_test(NAME {snake}_dsp_${{_fs}}
            COMMAND {snake}_dsp_test ${{_fs}})
 endforeach()
+
+# ------------------------------------------------------------ preset wiring test
+# JUCE-linked console app: builds the processor headless and checks the factory
+# preset table against the live parameter layout (IDs exist, values in range,
+# Init == defaults, presetIndex round-trips). Rate-independent, one case.
+juce_add_console_app({snake}_preset_test PRODUCT_NAME "{snake}_preset_test")
+target_sources({snake}_preset_test PRIVATE
+  tests/preset_test.cpp
+  Source/PluginProcessor.cpp
+  Source/PluginEditor.cpp)
+target_include_directories({snake}_preset_test PRIVATE Source)
+target_compile_features({snake}_preset_test PRIVATE cxx_std_20)
+target_compile_definitions({snake}_preset_test PUBLIC
+  JUCE_WEB_BROWSER=0
+  JUCE_USE_CURL=0)
+target_link_libraries({snake}_preset_test
+  PRIVATE
+    factory_core
+    factory_ui
+    factory_presets
+    juce::juce_audio_utils
+    juce::juce_dsp
+  PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME {snake}_preset COMMAND {snake}_preset_test)
 """
 
 PROCESSOR_H = """\
@@ -142,6 +170,9 @@ PROCESSOR_H = """\
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
+
+#include "factory_presets/ProgramAdapter.h"
+#include "FactoryPresets.h"
 
 #include <atomic>
 
@@ -172,11 +203,12 @@ public:
     bool isMidiEffect() const override {{ return false; }}
     double getTailLengthSeconds() const override {{ return 0.0; }}
 
-    int getNumPrograms() override {{ return 1; }}
-    int getCurrentProgram() override {{ return 0; }}
-    void setCurrentProgram (int) override {{}}
-    const juce::String getProgramName (int) override {{ return {{}}; }}
-    void changeProgramName (int, const juce::String&) override {{}}
+    // Program API rides factory_presets::ProgramAdapter (Init + factory bank).
+    int getNumPrograms() override {{ return programs.getNumPrograms(); }}
+    int getCurrentProgram() override {{ return programs.getCurrentProgram(); }}
+    void setCurrentProgram (int index) override {{ programs.setCurrentProgram (index); }}
+    const juce::String getProgramName (int index) override {{ return programs.getProgramName (index); }}
+    void changeProgramName (int, const juce::String&) override {{}} // factory presets are immutable
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
@@ -185,6 +217,8 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    factory_presets::ProgramAdapter programs;
 
     // TODO(scaffold): add the plugin's real parameters here (atomic pointers via
     // apvts.getRawParameterValue) and the factory_core engine instance.
@@ -228,6 +262,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout
 {{
     outputParam = apvts.getRawParameterValue ("output");
     bypassParam = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, {snake}_presets::bank,
+                        {snake}_presets::kExclude, {snake}_presets::kNumExclude);
 }}
 
 void {camel}AudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
@@ -284,14 +321,22 @@ juce::AudioProcessorEditor* {camel}AudioProcessor::createEditor()
 void {camel}AudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {{
     if (auto xml = apvts.copyState().createXml())
+    {{
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }}
 }}
 
 void {camel}AudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {{
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {{
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }}
 }}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
@@ -307,8 +352,10 @@ EDITOR_H = """\
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/PresetSelector.h"
 
-class {camel}AudioProcessorEditor final : public juce::AudioProcessorEditor
+class {camel}AudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                          private juce::AudioProcessorListener
 {{
 public:
     explicit {camel}AudioProcessorEditor ({camel}AudioProcessor&);
@@ -321,12 +368,19 @@ private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
+    void refreshPresetSelector();
+
+    // AudioProcessorListener — follow host-driven program changes.
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {{}}
+
     {camel}AudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
     juce::Slider outputSlider;
     juce::Label  outputLabel, titleLabel;
     juce::ToggleButton bypassButton {{ "Bypass" }};
+    factory_ui::PresetSelector presetSelector;
 
     std::unique_ptr<SliderAttachment> outputAtt;
     std::unique_ptr<ButtonAttachment> bypassAtt;
@@ -356,6 +410,19 @@ EDITOR_CPP = """\
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {{
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{{}}.withProgramChanged (true));
+    }};
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     auto& s = processor.apvts;
     outputAtt = std::make_unique<SliderAttachment> (s, "output", outputSlider);
     bypassAtt = std::make_unique<ButtonAttachment> (s, "bypass", bypassButton);
@@ -369,7 +436,32 @@ EDITOR_CPP = """\
 
 {camel}AudioProcessorEditor::~{camel}AudioProcessorEditor()
 {{
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
+}}
+
+void {camel}AudioProcessorEditor::refreshPresetSelector()
+{{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}}
+
+void {camel}AudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                         const ChangeDetails& details)
+{{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<{camel}AudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {{
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    }});
 }}
 
 void {camel}AudioProcessorEditor::paint (juce::Graphics& g)
@@ -383,7 +475,9 @@ void {camel}AudioProcessorEditor::resized()
 
     auto top = r.removeFromTop (26);
     bypassButton.setBounds (top.removeFromRight (96));
-    titleLabel.setBounds (top);
+    titleLabel.setBounds (top.removeFromLeft (120));
+    top.removeFromLeft (8);
+    presetSelector.setBounds (top);
 
     r.removeFromTop (14);
     auto knob = r.removeFromTop (110).removeFromLeft (r.getWidth() / 3);
@@ -441,6 +535,204 @@ int main (int argc, char** argv)
 }}
 """
 
+FACTORY_PRESETS = """\
+#pragma once
+
+#include "factory_presets/PresetBank.h"
+
+//
+// Factory presets for {slug}.
+//
+// SCAFFOLD: this bank starts EMPTY (Init only). Program 0 ("Init") is synthesised
+// by ProgramAdapter (every parameter to its default) and is NOT listed here.
+//
+// To add a preset (see .claude/skills — the add-preset workflow):
+//   1. Declare a constexpr factory_presets::PresetParam array of (paramID, value)
+//      pairs. `value` is the parameter's REAL value in its own units (dB, %, Hz…),
+//      not the normalised 0..1 — ProgramAdapter normalises on apply.
+//   2. Add a factory_presets::Preset row to kPresets and grow `bank`.
+//   3. tests/preset_test.cpp verifies IDs exist and values are in range.
+// Preset VALUES/NAMES are taste — do not ship without a human audition sign-off.
+//
+namespace {snake}_presets
+{{
+    // Parameters presets must never touch. "bypass" is excluded fleet-wide so a
+    // preset never silences or un-silences the plugin. Add monitoring toggles
+    // (e.g. "delta", "listen") here as needed.
+    inline constexpr const char* kExclude[] = {{ "bypass" }};
+    inline constexpr int kNumExclude = (int) (sizeof (kExclude) / sizeof (kExclude[0]));
+
+    // TODO(scaffold): declare preset parameter arrays and list them in kPresets.
+    inline constexpr factory_presets::Preset* kPresets = nullptr;
+
+    // Init-only bank until curated presets are added.
+    inline constexpr factory_presets::PresetBank bank {{ kPresets, 0 }};
+}}
+"""
+
+PRESET_TEST = """\
+//
+// preset_test.cpp — wiring verification for {slug}'s factory presets.
+//
+// Preset typos (a paramID no parameter owns) and out-of-range values fail
+// silently at runtime, so this JUCE-linked console test builds the processor
+// headless and checks the table against the live APVTS layout. The independent
+// oracle is the parameter layout itself: a clamped value, or an ID with no
+// matching parameter, is a bug. This is the "wiring test" category — a complement
+// to tests/dsp_test.cpp (which links only factory_core), NOT a change to it.
+//
+#include "PluginProcessor.h"
+#include "FactoryPresets.h"
+
+#include <cstdio>
+#include <memory>
+#include <string>
+
+namespace
+{{
+    int g_failures = 0;
+    void fail (const std::string& m) {{ std::printf ("  FAIL: %s\\n", m.c_str()); ++g_failures; }}
+
+    bool isExcluded (const juce::String& id)
+    {{
+        for (int k = 0; k < {snake}_presets::kNumExclude; ++k)
+            if (id == {snake}_presets::kExclude[k])
+                return true;
+        return false;
+    }}
+
+    double readReal (juce::RangedAudioParameter* rp)
+    {{
+        return (double) rp->convertFrom0to1 (rp->getValue());
+    }}
+
+    void check1_names ({camel}AudioProcessor& p)
+    {{
+        std::printf ("1. program names non-empty + unique\\n");
+        juce::StringArray seen;
+        for (int i = 0; i < p.getNumPrograms(); ++i)
+        {{
+            const auto name = p.getProgramName (i);
+            if (name.trim().isEmpty())
+                fail ("program " + std::to_string (i) + " has an empty name");
+            if (seen.contains (name))
+                fail ("duplicate program name '" + name.toStdString() + "'");
+            seen.add (name);
+        }}
+    }}
+
+    void check2_ids_exist ({camel}AudioProcessor& p)
+    {{
+        std::printf ("2. every preset paramID exists in the layout\\n");
+        const auto& bank = {snake}_presets::bank;
+        for (int pr = 0; pr < bank.numPresets; ++pr)
+            for (int e = 0; e < bank.presets[pr].numParams; ++e)
+            {{
+                const char* id = bank.presets[pr].params[e].paramID;
+                if (p.apvts.getParameter (id) == nullptr)
+                    fail (std::string ("preset '") + bank.presets[pr].name + "' references unknown paramID '" + id + "'");
+                if (isExcluded (juce::String (id)))
+                    fail (std::string ("preset '") + bank.presets[pr].name + "' targets excluded paramID '" + id + "'");
+            }}
+    }}
+
+    void check3_values_in_range ({camel}AudioProcessor& p)
+    {{
+        std::printf ("3. every preset value applies without clamping\\n");
+        const auto& bank = {snake}_presets::bank;
+        for (int pr = 0; pr < bank.numPresets; ++pr)
+        {{
+            p.setCurrentProgram (pr + 1); // program 0 is Init; bank is 1-based
+            for (int e = 0; e < bank.presets[pr].numParams; ++e)
+            {{
+                const char* id = bank.presets[pr].params[e].paramID;
+                const double intended = (double) bank.presets[pr].params[e].value;
+                auto* rp = p.apvts.getParameter (id);
+                if (rp == nullptr) continue; // reported by check 2
+                const double got = readReal (rp);
+                const double span = std::abs ((double) rp->convertFrom0to1 (1.0f)
+                                              - (double) rp->convertFrom0to1 (0.0f));
+                const double tol = 1.0e-3 + 1.0e-4 * span;
+                if (std::abs (got - intended) > tol)
+                    fail (std::string ("preset '") + bank.presets[pr].name + "' param '" + id
+                          + "' applied as " + std::to_string (got) + " (intended "
+                          + std::to_string (intended) + ") — out of range / clamped");
+            }}
+        }}
+    }}
+
+    void check4_init_is_default ({camel}AudioProcessor& p)
+    {{
+        std::printf ("4. program 0 (Init) == all defaults\\n");
+        p.setCurrentProgram (p.getNumPrograms() - 1); // exercise a reset
+        p.setCurrentProgram (0);
+        for (auto* base : p.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (base))
+            {{
+                if (isExcluded (rp->getParameterID())) continue;
+                if (std::abs (rp->getValue() - rp->getDefaultValue()) > 1.0e-6f)
+                    fail ("Init leaves '" + rp->getParameterID().toStdString() + "' off its default");
+            }}
+    }}
+
+    void check5_index_roundtrip ({camel}AudioProcessor& p)
+    {{
+        std::printf ("5. setCurrentProgram/getCurrentProgram + presetIndex persistence\\n");
+        for (int i = 0; i < p.getNumPrograms(); ++i)
+        {{
+            p.setCurrentProgram (i);
+            if (p.getCurrentProgram() != i)
+                fail ("getCurrentProgram() != " + std::to_string (i));
+        }}
+
+        const int idx = p.getNumPrograms() - 1;
+        p.setCurrentProgram (idx);
+        juce::MemoryBlock state;
+        p.getStateInformation (state);
+
+        // Heap-allocate: an AudioProcessor can carry large inline buffers, so
+        // stacking several instances overflows the 1 MB Windows main-thread stack.
+        auto restored = std::make_unique<{camel}AudioProcessor>();
+        restored->setStateInformation (state.getData(), (int) state.getSize());
+        if (restored->getCurrentProgram() != idx)
+            fail ("presetIndex did not survive state round-trip");
+
+        // A legacy state without the presetIndex attribute must default to 0.
+        auto legacy = std::make_unique<{camel}AudioProcessor>();
+        juce::MemoryBlock legacyState;
+        if (auto xml = legacy->apvts.copyState().createXml())
+            legacy->copyXmlToBinary (*xml, legacyState);
+        auto legacyRestored = std::make_unique<{camel}AudioProcessor>();
+        legacyRestored->setStateInformation (legacyState.getData(), (int) legacyState.getSize());
+        if (legacyRestored->getCurrentProgram() != 0)
+            fail ("legacy state without presetIndex did not default to program 0");
+    }}
+}}
+
+int main()
+{{
+    juce::ScopedJuceInitialiser_GUI juceInit; // MessageManager for async param updates
+
+    // Heap-allocate (see check5): keeps large processors off the Windows stack.
+    auto processorPtr = std::make_unique<{camel}AudioProcessor>();
+    auto& processor = *processorPtr;
+    std::printf ("{slug} preset wiring (%d programs)\\n", processor.getNumPrograms());
+
+    if (processor.getNumPrograms() != 1 + {snake}_presets::bank.numPresets)
+        fail ("getNumPrograms() != 1 (Init) + bank size");
+
+    check1_names (processor);
+    check2_ids_exist (processor);
+    check3_values_in_range (processor);
+    check4_init_is_default (processor);
+    check5_index_roundtrip (processor);
+
+    if (g_failures == 0) {{ std::printf ("OK: all checks passed.\\n"); return 0; }}
+    std::printf ("FAILED: %d check(s).\\n", g_failures);
+    return 1;
+}}
+"""
+
 # --------------------------------------------------------------------------- main
 
 
@@ -489,7 +781,9 @@ def main() -> int:
         dest / "Source" / "PluginProcessor.cpp": PROCESSOR_CPP.format(**ctx),
         dest / "Source" / "PluginEditor.h": EDITOR_H.format(**ctx),
         dest / "Source" / "PluginEditor.cpp": EDITOR_CPP.format(**ctx),
+        dest / "Source" / "FactoryPresets.h": FACTORY_PRESETS.format(**ctx),
         dest / "tests" / "dsp_test.cpp": DSP_TEST.format(**ctx),
+        dest / "tests" / "preset_test.cpp": PRESET_TEST.format(**ctx),
     }
     for path, content in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)

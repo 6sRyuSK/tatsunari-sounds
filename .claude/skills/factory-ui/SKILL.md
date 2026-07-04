@@ -52,6 +52,12 @@ Editor を読み直す必要はない。
   message-thread 用の getter を生やすのが慣例、例: `makeDisplayShaper()`)。
 - カードに乗せるなら `paint()` 側で `dropShadowFor` → コンポーネント内で `paintCard`。
 
+## プリセットセレクタ
+
+`factory_ui::PresetSelector`(`ui/include/factory_ui/PresetSelector.h`、ComboBox +
+前/次矢印)を上段 26px 行のタイトルと Bypass の間に置くのが家スタイル。配色は
+本パレットのみ。ホスト↔コンボの双方向同期を含む配線は `add-preset` スキル。
+
 ## GUI 確認
 
 Standalone ターゲットが常に生成される(CMake の FORMATS に scaffold 済み)。

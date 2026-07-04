@@ -43,6 +43,7 @@ target_link_libraries(NamPlayer
   PRIVATE
     factory_core
     factory_ui
+    factory_presets
     nam_core
     juce::juce_audio_utils
     juce::juce_dsp
@@ -62,3 +63,33 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
   add_test(NAME nam_player_dsp_${_fs}
            COMMAND nam_player_dsp_test ${_fs})
 endforeach()
+
+# ------------------------------------------------------------ preset wiring test
+# JUCE-linked console app: builds the processor headless and checks the factory
+# preset table against the live parameter layout (IDs exist, values in range,
+# Init == defaults, presetIndex round-trips). Needs NamModel + nam_core because
+# the processor constructs the real NAM section. Rate-independent, one case.
+juce_add_console_app(nam_player_preset_test PRODUCT_NAME "nam_player_preset_test")
+target_sources(nam_player_preset_test PRIVATE
+  tests/preset_test.cpp
+  Source/PluginProcessor.cpp
+  Source/PluginEditor.cpp
+  Source/NamModel.cpp)
+target_include_directories(nam_player_preset_test PRIVATE Source)
+target_compile_features(nam_player_preset_test PRIVATE cxx_std_20)
+target_compile_definitions(nam_player_preset_test PUBLIC
+  JUCE_WEB_BROWSER=0
+  JUCE_USE_CURL=0)
+target_link_libraries(nam_player_preset_test
+  PRIVATE
+    factory_core
+    factory_ui
+    factory_presets
+    nam_core
+    juce::juce_audio_utils
+    juce::juce_dsp
+  PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME nam_player_preset COMMAND nam_player_preset_test)

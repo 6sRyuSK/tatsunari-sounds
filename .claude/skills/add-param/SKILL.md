@@ -71,3 +71,12 @@ factory_ui::setSliderDecimals (attackSlider, 2);   // 必ず attachment の後(#
 2. `python tools/gen_catalog.py`
 3. ビルド + 対象プラグインの ctest 全レート緑(core/ を触ったら全プラグイン)。
 4. コミット: `feat(<slug>): Attackパラメータを追加` の形式。
+
+## ファクトリープリセットとの関係
+
+そのプラグインが `Source/FactoryPresets.h` を持つ場合、新パラメータは Init(program
+0)で自動的にデフォルトへ戻る(ProgramAdapter が除外外の全 param を管理)。既存
+プリセットの意図が新パラメータのデフォルトで崩れないか確認し、必要なら各プリセットに
+値を足す(モニタ/ユーザー状態依存 param なら除外リストへ)。ID 改名時は
+`FactoryPresets.h` 内の参照も直す(古い ID は `preset_test` の「paramID 実在」検証で
+fail する)。詳細は `add-preset` スキル。

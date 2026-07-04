@@ -3,6 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "factory_core/GranularDelay.h"
+#include "factory_presets/ProgramAdapter.h"
+#include "FactoryPresets.h"
 
 #include <atomic>
 
@@ -33,11 +35,12 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 2.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
+    // Program API rides factory_presets::ProgramAdapter (Init + factory bank).
+    int getNumPrograms() override { return programs.getNumPrograms(); }
+    int getCurrentProgram() override { return programs.getCurrentProgram(); }
+    void setCurrentProgram (int index) override { programs.setCurrentProgram (index); }
+    const juce::String getProgramName (int index) override { return programs.getProgramName (index); }
+    void changeProgramName (int, const juce::String&) override {} // factory presets are immutable
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
@@ -66,6 +69,8 @@ private:
     std::atomic<float>* lfoRateParam  = nullptr;
     std::atomic<float>* lfoDepthParam = nullptr;
     std::atomic<float>* bypassParam   = nullptr;
+
+    factory_presets::ProgramAdapter programs;
 
     factory_core::GranularDelay engine;
     double currentSampleRate = 44100.0;

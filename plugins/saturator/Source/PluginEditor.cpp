@@ -18,6 +18,19 @@ SaturatorAudioProcessorEditor::SaturatorAudioProcessorEditor (SaturatorAudioProc
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+    };
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     addAndMakeVisible (curve);
 
     auto& s = processor.apvts;
@@ -38,6 +51,7 @@ SaturatorAudioProcessorEditor::SaturatorAudioProcessorEditor (SaturatorAudioProc
 
 SaturatorAudioProcessorEditor::~SaturatorAudioProcessorEditor()
 {
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
 }
 
@@ -47,6 +61,30 @@ void SaturatorAudioProcessorEditor::configureKnob (juce::Slider& slider, juce::L
     factory_ui::styleKnob (slider, label, name, suffix);
     addAndMakeVisible (slider);
     addAndMakeVisible (label);
+}
+
+void SaturatorAudioProcessorEditor::refreshPresetSelector()
+{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void SaturatorAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                           const ChangeDetails& details)
+{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<SaturatorAudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    });
 }
 
 void SaturatorAudioProcessorEditor::paint (juce::Graphics& g)
@@ -61,7 +99,9 @@ void SaturatorAudioProcessorEditor::resized()
 
     auto top = r.removeFromTop (26);
     bypassButton.setBounds (top.removeFromRight (96));
-    titleLabel.setBounds (top);
+    titleLabel.setBounds (top.removeFromLeft (120));
+    top.removeFromLeft (8);
+    presetSelector.setBounds (top);
 
     r.removeFromTop (10);
     curve.setBounds (r.removeFromTop (168));

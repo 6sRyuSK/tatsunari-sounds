@@ -6,6 +6,7 @@
 #include "AnalyzerComponent.h"
 #include "BandStripComponent.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/PresetSelector.h"
 
 #include <array>
 #include <memory>
@@ -15,7 +16,8 @@
 // five band strips, with a right-hand control card (Mode, Direct / Enhanced
 // faders, Output, Quality, Delta Listen, Bypass). Uses factory_ui throughout.
 //
-class MultibandEnhancerAudioProcessorEditor : public juce::AudioProcessorEditor
+class MultibandEnhancerAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                              private juce::AudioProcessorListener
 {
 public:
     explicit MultibandEnhancerAudioProcessorEditor (MultibandEnhancerAudioProcessor&);
@@ -30,10 +32,16 @@ private:
     using ComboAtt  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void styleFader (juce::Slider&, juce::Label&, const juce::String&);
+    void refreshPresetSelector();
+
+    // AudioProcessorListener — follow host-driven program changes.
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     MultibandEnhancerAudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
+    factory_ui::PresetSelector presetSelector;
     AnalyzerComponent analyzer;
     std::array<std::unique_ptr<BandStripComponent>, 5> strips;
 

@@ -22,6 +22,7 @@ The detailed conventions live in `.claude/skills/` — do not open other plugins
 sources (or re-read workflow files / ui headers) to copy patterns:
 - `new-plugin` — scaffold + full workflow for a new plugin.
 - `add-param` — end-to-end wiring for a new parameter on an existing plugin.
+- `add-preset` — end-to-end wiring for factory presets on an existing plugin.
 - `write-dsp-test` — test structure, `DspInvariants.h` API, oracle rules.
 - `factory-ui` — the design-system API and editor conventions.
 - `core-primitives` — catalog of `core/` primitives to compose from.
