@@ -26,7 +26,7 @@ MultibandEnhancerAudioProcessorEditor::MultibandEnhancerAudioProcessorEditor (Mu
         addAndMakeVisible (*strips[(size_t) b]);
     }
 
-    // Mode / Quality choice boxes.
+    // Quality choice box (Mode is now per-band on each strip).
     auto fillChoice = [this] (juce::ComboBox& box, juce::Label& label, const char* name, const juce::StringArray& items, const juce::String& pid, std::unique_ptr<ComboAtt>& att)
     {
         box.addItemList (items, 1);
@@ -37,15 +37,14 @@ MultibandEnhancerAudioProcessorEditor::MultibandEnhancerAudioProcessorEditor (Mu
         addAndMakeVisible (label);
         att = std::make_unique<ComboAtt> (processor.apvts, pid, box);
     };
-    fillChoice (modeBox,    modeLabel,    "Mode",    { "Tube", "Tape", "Bright", "Clean", "Glue" }, "mode",    modeAtt);
-    fillChoice (qualityBox, qualityLabel, "Quality", { "HQ", "Zero Latency" },                      "quality", qualityAtt);
+    fillChoice (qualityBox, qualityLabel, "Quality", { "HQ", "Zero Latency" }, "quality", qualityAtt);
 
-    styleFader (directFader,   directLabel,   "Direct");
-    styleFader (enhancedFader, enhancedLabel, "Enhanced");
-    directAtt   = std::make_unique<SliderAtt> (processor.apvts, "direct", directFader);
-    enhancedAtt = std::make_unique<SliderAtt> (processor.apvts, "wet",    enhancedFader);
-    factory_ui::setSliderDecimals (directFader, 1);
-    factory_ui::setSliderDecimals (enhancedFader, 1);
+    // Single Mix knob (dry/enhanced blend) replaces the Direct + Enhanced faders.
+    factory_ui::styleKnob (mixKnob, mixLabel, "Mix", " %");
+    addAndMakeVisible (mixKnob);
+    addAndMakeVisible (mixLabel);
+    mixAtt = std::make_unique<SliderAtt> (processor.apvts, "mix", mixKnob);
+    factory_ui::setSliderDecimals (mixKnob, 0);
 
     factory_ui::styleKnob (outputKnob, outputLabel, "Output", " dB");
     addAndMakeVisible (outputKnob);
@@ -96,20 +95,6 @@ void MultibandEnhancerAudioProcessorEditor::audioProcessorChanged (juce::AudioPr
     });
 }
 
-void MultibandEnhancerAudioProcessorEditor::styleFader (juce::Slider& s, juce::Label& l, const juce::String& name)
-{
-    s.setSliderStyle (juce::Slider::LinearVertical);
-    s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 62, 16);
-    s.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
-    s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    s.setTextValueSuffix (" dB");
-    addAndMakeVisible (s);
-    l.setText (name, juce::dontSendNotification);
-    l.setJustificationType (juce::Justification::centred);
-    l.setColour (juce::Label::textColourId, FactoryLookAndFeel::text());
-    addAndMakeVisible (l);
-}
-
 void MultibandEnhancerAudioProcessorEditor::paint (juce::Graphics& g)
 {
     factory_ui::paintBackground (g, getLocalBounds());
@@ -140,35 +125,30 @@ void MultibandEnhancerAudioProcessorEditor::resized()
     r.removeFromRight (8);
     {
         auto c = controlCard.reduced (10);
+        c.removeFromTop (4);
 
-        modeLabel.setBounds (c.removeFromTop (16));
-        modeBox.setBounds (c.removeFromTop (24));
+        auto mixArea = c.removeFromTop (94);
+        mixKnob.setBounds (mixArea.removeFromTop (76));
+        mixLabel.setBounds (mixArea);
         c.removeFromTop (10);
 
-        auto faders = c.removeFromTop (170);
-        auto fl = faders.removeFromLeft (faders.getWidth() / 2);
-        directLabel.setBounds (fl.removeFromTop (14));
-        directFader.setBounds (fl);
-        enhancedLabel.setBounds (faders.removeFromTop (14));
-        enhancedFader.setBounds (faders);
-        c.removeFromTop (8);
-
-        auto out = c.removeFromTop (74);
-        outputKnob.setBounds (out.removeFromTop (56));
+        auto out = c.removeFromTop (94);
+        outputKnob.setBounds (out.removeFromTop (76));
         outputLabel.setBounds (out);
-        c.removeFromTop (6);
+        c.removeFromTop (12);
 
         qualityLabel.setBounds (c.removeFromTop (16));
         qualityBox.setBounds (c.removeFromTop (24));
-        c.removeFromTop (10);
+        c.removeFromTop (14);
 
         deltaButton.setBounds (c.removeFromTop (22));
-        c.removeFromTop (4);
+        c.removeFromTop (6);
         bypassButton.setBounds (c.removeFromTop (22));
     }
 
-    // Left: analyser over the band strip row.
-    auto bandRow = r.removeFromBottom (188);
+    // Left: analyser over the band strip row (taller strips carry the per-band
+    // mode selector + solo toggle in addition to the Enhance / Width knobs).
+    auto bandRow = r.removeFromBottom (214);
     analyzer.setBounds (r);
 
     const int sw = bandRow.getWidth() / 5;

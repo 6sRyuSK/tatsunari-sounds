@@ -10,11 +10,15 @@
 #include <vector>
 
 //
-// The centrepiece: three overlaid spectra — pre (thin dim), post (line) and the
-// delta / added-harmonics bus (coral fill) — behind five band zones divided by
-// four draggable crossover handles. The display FFT order tracks the sample rate
-// (processor.displayFftOrder), so the analyser resolution stays constant in Hz.
-// GUI-thread only.
+// The centrepiece: three overlaid spectra — pre / dry (thin pale steel blue), post
+// (line) and the delta / added-harmonics bus (coral fill) — behind five band zones
+// divided by four draggable crossover handles. The display FFT order tracks the
+// sample rate (processor.displayFftOrder), so the analyser resolution stays
+// constant in Hz. GUI-thread only.
+//
+// The dry/pre trace uses a pale steel blue (colours are caller parameters of the
+// shared SpectrumDisplay API) so it reads as the untouched reference against the
+// warm-white card without competing with the coral post/delta traces.
 //
 class AnalyzerComponent : public juce::Component,
                           private juce::Timer
@@ -42,7 +46,7 @@ public:
 
         drawBandZones (g);
         drawGrid (g);
-        drawSpectrum (g, MultibandEnhancerAudioProcessor::RingPre,   FactoryLookAndFeel::textDim(), false, 1.0f);
+        drawSpectrum (g, MultibandEnhancerAudioProcessor::RingPre,   kDryColour,                    false, 1.0f);
         drawSpectrum (g, MultibandEnhancerAudioProcessor::RingPost,  FactoryLookAndFeel::text(),    false, 1.4f);
         drawSpectrum (g, MultibandEnhancerAudioProcessor::RingDelta, FactoryLookAndFeel::accent(),  true,  1.6f);
         drawCrossovers (g);
@@ -220,6 +224,11 @@ private:
         }
         return best;
     }
+
+    // Pale steel blue for the dry/pre spectrum — sits calmly on the warm-white
+    // card and stays distinct from the coral post/delta traces.
+    static constexpr juce::uint32 kDryColourARGB = 0xff7fa8c9;
+    inline static const juce::Colour kDryColour { kDryColourARGB };
 
     MultibandEnhancerAudioProcessor& processor;
     juce::Rectangle<float> plot;

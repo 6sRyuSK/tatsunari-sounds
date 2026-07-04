@@ -6,10 +6,13 @@
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
 
+#include <memory>
+
 //
-// One band strip of the enhancer: a coloured header (band name), a vertical
-// Enhance slider, a small Width knob and a live residual-RMS meter that shows how
-// much harmonic energy this band is currently adding. GUI-thread only.
+// One band strip of the enhancer: a coloured header (band name), a compact per-band
+// Mode selector, a Solo toggle, an Enhance knob (0..150 %), a Width knob and a live
+// residual-RMS meter that shows how much harmonic energy this band is currently
+// adding. GUI-thread only.
 //
 class BandStripComponent : public juce::Component,
                            private juce::Timer
@@ -18,21 +21,28 @@ public:
     BandStripComponent (MultibandEnhancerAudioProcessor& p, int bandIndex)
         : processor (p), band (bandIndex)
     {
-        enhance.setSliderStyle (juce::Slider::LinearVertical);
-        enhance.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
-        enhance.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
-        enhance.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        enhance.setTextValueSuffix (" %");
+        factory_ui::styleKnob (enhance, enhLabel, "Enhance", " %");
         addAndMakeVisible (enhance);
+        addAndMakeVisible (enhLabel);
 
         factory_ui::styleKnob (width, widthLabel, "Width", " %");
         addAndMakeVisible (width);
         addAndMakeVisible (widthLabel);
 
-        enhAtt   = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        modeBox.addItemList ({ "Tube", "Tape", "Bright", "Clean", "Glue" }, 1);
+        addAndMakeVisible (modeBox);
+
+        soloButton.setColour (juce::ToggleButton::tickColourId, FactoryLookAndFeel::bandColour (band));
+        addAndMakeVisible (soloButton);
+
+        enhAtt  = std::make_unique<SliderAtt> (
             processor.apvts, MultibandEnhancerAudioProcessor::enhId (band), enhance);
-        widthAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        widthAtt = std::make_unique<SliderAtt> (
             processor.apvts, MultibandEnhancerAudioProcessor::widthId (band), width);
+        modeAtt = std::make_unique<ComboAtt> (
+            processor.apvts, MultibandEnhancerAudioProcessor::modeId (band), modeBox);
+        soloAtt = std::make_unique<ButtonAtt> (
+            processor.apvts, MultibandEnhancerAudioProcessor::soloId (band), soloButton);
         factory_ui::setSliderDecimals (enhance, 0);
         factory_ui::setSliderDecimals (width, 0);
 
@@ -57,7 +67,7 @@ public:
         g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
         g.drawText (MultibandEnhancerAudioProcessor::kBandNames[band], header, juce::Justification::centredLeft);
 
-        // Residual meter (vertical bar to the right of the Enhance slider).
+        // Residual meter (thin vertical bar down the right of the knob column).
         const float db = processor.bandResidualRmsDb (band);
         const float norm = juce::jlimit (0.0f, 1.0f, (db + 90.0f) / 90.0f); // -90..0 dBFS
         auto m = meterArea;
@@ -71,28 +81,42 @@ public:
     void resized() override
     {
         auto r = getLocalBounds().reduced (6);
-        r.removeFromTop (24); // header
+        r.removeFromTop (22);                          // header (name painted)
+        modeBox.setBounds (r.removeFromTop (20));
+        r.removeFromTop (4);
+        soloButton.setBounds (r.removeFromTop (20));
+        r.removeFromTop (4);
 
-        auto bottom = r.removeFromBottom (72);
-        width.setBounds (bottom.removeFromTop (54));
-        widthLabel.setBounds (bottom);
+        // Thin residual meter down the right edge of the two knobs.
+        meterArea = r.removeFromRight (8).toFloat().reduced (0.0f, 4.0f);
+        r.removeFromRight (4);
 
-        auto body = r.reduced (2);
-        meterArea = body.removeFromRight (8).toFloat().reduced (0.0f, 4.0f);
-        body.removeFromRight (4);
-        enhance.setBounds (body);
+        auto enhArea = r.removeFromTop (r.getHeight() / 2);
+        enhLabel.setBounds (enhArea.removeFromBottom (14));
+        enhance.setBounds (enhArea);
+        widthLabel.setBounds (r.removeFromBottom (14));
+        width.setBounds (r);
     }
 
 private:
+    using SliderAtt = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ComboAtt  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    using ButtonAtt = juce::AudioProcessorValueTreeState::ButtonAttachment;
+
     void timerCallback() override { repaint(); }
 
     MultibandEnhancerAudioProcessor& processor;
     int band;
 
-    juce::Slider enhance, width;
-    juce::Label  widthLabel;
+    juce::Slider   enhance, width;
+    juce::Label    enhLabel, widthLabel;
+    juce::ComboBox modeBox;
+    juce::ToggleButton soloButton { "Solo" };
     juce::Rectangle<float> meterArea;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> enhAtt, widthAtt;
+
+    std::unique_ptr<SliderAtt> enhAtt, widthAtt;
+    std::unique_ptr<ComboAtt>  modeAtt;
+    std::unique_ptr<ButtonAtt> soloAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BandStripComponent)
 };

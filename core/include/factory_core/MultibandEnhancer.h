@@ -1,22 +1,34 @@
 #pragma once
 //
 // factory_core/MultibandEnhancer.h — the complete 5-band parallel harmonic
-// enhancer engine (Waves-Vitamin-style: direct + enhanced buses, per-band width).
-// Header-only, JUCE-independent, headless-testable; the plugin is a thin wrapper.
-// Nothing here allocates, locks, or makes syscalls in processBlock.
+// enhancer engine (Waves-Vitamin-style: a dry/enhanced Mix blend, per-band width,
+// per-band harmonic mode and per-band solo). Header-only, JUCE-independent,
+// headless-testable; the plugin is a thin wrapper. Nothing here allocates, locks,
+// or makes syscalls in processBlock.
 //
 // Signal flow (per channel), all inside one oversampling bracket so the direct
 // path and the harmonic path share the SAME phase and latency (no comb filtering
 // when they are mixed):
 //
 //   host in -> [sanitize NaN/Inf -> 0] -> Oversampler up (M) ---------------.
-//     direct = Crossover5::allpass(x)                                       |
-//     x -> Crossover5 -> b1..b5 -> per band: r_i = HarmonicShaper(b_i)      |
-//       linWet = sum width_i(b_i)        resWet = DCblock( sum width_i(r_i) )|
-//       wet = linWet + resWet            delta  = resWet * gWet             |
-//       outOS = direct*gDirect + wet*gWet                                   |
+//     x -> Crossover5 -> b1..b5 -> per band: r_i = HarmonicShaper_i(b_i)     |
+//       active_i = anySolo ? solo_i : true  (soloed bands, else all bands)   |
+//       direct = sum_active b_i   (== allpass(x) when all bands active)      |
+//       linWet = sum_active width_i(b_i) resWet = DCblock(sum_active w_i(r_i))|
+//       wet = linWet + resWet            delta  = resWet * mix               |
+//       outOS = direct*(1-mix) + wet*mix   (constant-voltage linear blend)   |
 //   Oversampler down (M): outOS -> out,  delta -> deltaHost <---------------'
 //   out = (deltaListen ? deltaHost : out) * gOutput
+//
+// Mix is a constant-voltage (linear complementary) crossfade, NOT equal-power:
+// the direct bus and the enhanced bus's linear reconstruction are the SAME allpass
+// (the sum of the phase-compensated bands == allpass(x) bit-for-bit), so they are
+// phase-coherent and their arithmetic blend stays flat at every mix — an equal-
+// power law would lift the level mid-blend. Each band carries its OWN shaper mode
+// (Tube/Tape/Bright/Clean/Glue); the shaper's ~30 ms coefficient crossfade keeps a
+// per-band mode change clickless. Solo mutes non-soloed bands from the buses while
+// every band's shaper/envelope keeps running (state stays hot -> un-solo is click-
+// free). Delta-listen + solo yields only the soloed bands' residual.
 //
 // Two full rate configurations are pre-built so Quality can switch with no
 // allocation: HQ (M = 4/2/1 by sample rate, raw shaper) and Zero-Latency
@@ -70,8 +82,8 @@ namespace factory_core
             const int mHq = hqFactor (fs);
             maxM     = mHq;
 
-            pathHQ.prepare (fs, mHq, maxN, modeParam);
-            pathZL.prepare (fs, 1,   maxN, modeParam);
+            pathHQ.prepare (fs, mHq, maxN, bandMode);
+            pathZL.prepare (fs, 1,   maxN, bandMode);
 
             const std::size_t osCap = (std::size_t) (maxN * maxM);
             osInL.assign (osCap, 0.0f);   osInR.assign (osCap, 0.0f);
@@ -94,8 +106,7 @@ namespace factory_core
                 widthSm[b].setRate (fs, 30.0); widthSm[b].snap (widthTarget[b]);
             }
             for (int j = 0; j < 4; ++j) { xoverSm[j].setRate (fs, 40.0); xoverSm[j].snap (std::log (xoverTargetHz[j])); }
-            gDirectSm.setRate (fs, 30.0); gDirectSm.snap (gDirectTarget);
-            gWetSm.setRate (fs, 30.0);    gWetSm.snap (gWetTarget);
+            mixSm.setRate (fs, 30.0);     mixSm.snap (mixTarget);
             gOutputSm.setRate (fs, 30.0); gOutputSm.snap (gOutputTarget);
 
             for (int j = 0; j < 4; ++j) lastXoverHz[j] = xoverTargetHz[j];
@@ -116,8 +127,7 @@ namespace factory_core
             // the same canonical state a freshly prepared engine would (Class E).
             for (int b = 0; b < kBands; ++b) { enhSm[b].snap (enhTarget[b]); widthSm[b].snap (widthTarget[b]); }
             for (int j = 0; j < 4; ++j) { xoverSm[j].snap (std::log (xoverTargetHz[j])); lastXoverHz[j] = xoverTargetHz[j]; }
-            gDirectSm.snap (gDirectTarget);
-            gWetSm.snap (gWetTarget);
+            mixSm.snap (mixTarget);
             gOutputSm.snap (gOutputTarget);
             xoverDecim = 0;
             // An explicit reset is a clean slate: drop any in-flight quality
@@ -134,22 +144,29 @@ namespace factory_core
         }
 
         // ---- parameters (plain setters; smoothed internally) ----------------
-        void setEnhance (int band, double pct) noexcept { enhTarget[band]   = std::clamp (pct, 0.0, 100.0) * 0.01; }
+        void setEnhance (int band, double pct) noexcept { enhTarget[band]   = std::clamp (pct, 0.0, 150.0) * 0.01; }
         void setWidth   (int band, double pct) noexcept { widthTarget[band] = std::clamp (pct, 0.0, 200.0) * 0.01; }
         void setCrossovers (double f1, double f2, double f3, double f4) noexcept
         {
             xoverTargetHz[0] = f1; xoverTargetHz[1] = f2; xoverTargetHz[2] = f3; xoverTargetHz[3] = f4;
         }
-        void setMode (Mode m) noexcept
+        // Per-band harmonic mode. Propagate immediately (both quality paths, both
+        // channels) so a reset() snaps the band's shaper coefficients to the right
+        // curve (the per-block push would otherwise leave them stale).
+        void setMode (int band, Mode m) noexcept
         {
-            modeParam = m;
-            // Propagate immediately so a reset() snaps the shaper coefficients to
-            // the correct mode (the per-block push would otherwise leave them stale).
-            for (int b = 0; b < kBands; ++b)
-                for (int c = 0; c < 2; ++c) { pathHQ.shaper[b][c].setMode (m); pathZL.shaper[b][c].setMode (m); }
+            bandMode[band] = m;
+            for (int c = 0; c < 2; ++c) { pathHQ.shaper[band][c].setMode (m); pathZL.shaper[band][c].setMode (m); }
         }
-        void setDirectDb (double db) noexcept { gDirectTarget = (db <= -59.5) ? 0.0 : dbToLin (db); }
-        void setWetDb    (double db) noexcept { gWetTarget    = (db <= -59.5) ? 0.0 : dbToLin (db); }
+        // Dry/enhanced balance, 0..100 %. Constant-voltage (linear complementary):
+        // out = (1-mix)*direct + mix*enhanced. Linear (not equal-power) is correct
+        // because the direct path and the enhanced path's linear reconstruction are
+        // the SAME allpass (phase-coherent, no comb) — their arithmetic blend is flat.
+        void setMix      (double pct) noexcept { mixTarget = std::clamp (pct, 0.0, 100.0) * 0.01; }
+        // Per-band solo. When >=1 band is soloed the output carries only the soloed
+        // bands' contribution (direct + enhanced, still honouring mix); none soloed
+        // = full output. Any number of bands may be soloed simultaneously.
+        void setSolo     (int band, bool on) noexcept { soloBand[band] = on; }
         void setOutputDb (double db) noexcept { gOutputTarget = dbToLin (db); }
         void setQuality  (Quality q) noexcept { qualityParam = q; }
         void setDeltaListen (bool on) noexcept { deltaListen = on; }
@@ -192,8 +209,7 @@ namespace factory_core
             // block; during a fade BOTH paths must see the identical trajectory).
             for (int b = 0; b < kBands; ++b) { enhSm[b].set (enhTarget[b]); widthSm[b].set (widthTarget[b]); }
             for (int j = 0; j < 4; ++j) xoverSm[j].set (std::log (xoverTargetHz[j]));
-            gDirectSm.set (gDirectTarget);
-            gWetSm.set (gWetTarget);
+            mixSm.set (mixTarget);
             gOutputSm.set (gOutputTarget);
 
             // Outgoing (old) path — only during a fade. Snapshot the host-rate
@@ -255,7 +271,14 @@ namespace factory_core
 
             for (int b = 0; b < kBands; ++b)
                 for (int c = 0; c < 2; ++c)
-                    P.shaper[b][c].setMode (modeParam);
+                    P.shaper[b][c].setMode (bandMode[b]);
+
+            // Solo mask (stable across the block): with >=1 band soloed only the
+            // soloed bands feed the buses, otherwise every band is active.
+            bool anySolo = false;
+            for (int b = 0; b < kBands; ++b) anySolo = anySolo || soloBand[b];
+            bool bandActive[kBands];
+            for (int b = 0; b < kBands; ++b) bandActive[b] = anySolo ? soloBand[b] : true;
 
             P.up[0].processUp (inL, n, osInL.data());
             P.up[1].processUp (inR, n, osInR.data());
@@ -266,8 +289,7 @@ namespace factory_core
             {
                 double curEnh[kBands], curWidth[kBands];
                 for (int b = 0; b < kBands; ++b) { curEnh[b] = enhSm[b].next(); curWidth[b] = widthSm[b].next(); }
-                const double gDirect = gDirectSm.next();
-                const double gWet    = gWetSm.next();
+                const double mix = mixSm.next();
 
                 // Crossover coefficient update at sub-block granularity (log-smoothed
                 // frequencies), only when a value actually moved (avoids zipper).
@@ -291,13 +313,15 @@ namespace factory_core
                     const double xL = (double) osInL[(size_t) k];
                     const double xR = (double) osInR[(size_t) k];
 
-                    const double dL = P.xover[0].allpass (xL);
-                    const double dR = P.xover[1].allpass (xR);
-
                     double bL[kBands], bR[kBands];
                     P.xover[0].process (xL, bL);
                     P.xover[1].process (xR, bR);
 
+                    // Direct bus is the sum of the (active) bands: for the LR tree
+                    // sum(bands) == allpass(x) bit-for-bit, so the direct path stays
+                    // phase-coherent with the linear wet reconstruction while solo
+                    // can drop individual bands cleanly.
+                    double dirL = 0.0, dirR = 0.0;
                     double linWetL = 0.0, linWetR = 0.0, resPreL = 0.0, resPreR = 0.0;
                     for (int b = 0; b < kBands; ++b)
                     {
@@ -309,14 +333,20 @@ namespace factory_core
                         P.shaper[b][0].setEnvGain (P.gSmoothed[b]);
                         P.shaper[b][1].setEnvGain (P.gSmoothed[b]);
 
+                        // Shaper + envelope run for EVERY band (state stays hot) so
+                        // that un-soloing a band does not click; only active (soloed,
+                        // or all when none soloed) bands are summed into the buses.
                         const double rL = P.shaper[b][0].processResidual (bL[b]);
                         const double rR = P.shaper[b][1].processResidual (bR[b]);
 
-                        const double w = curWidth[b];
-                        { const double m = 0.5 * (bL[b] + bR[b]); const double s = 0.5 * (bL[b] - bR[b]) * w; linWetL += m + s; linWetR += m - s; }
-                        { const double m = 0.5 * (rL   + rR);     const double s = 0.5 * (rL   - rR)   * w; resPreL += m + s; resPreR += m - s; }
-
                         rmsAcc[b] += 0.5 * (rL * rL + rR * rR);
+
+                        if (! bandActive[b]) continue;
+
+                        dirL += bL[b]; dirR += bR[b];
+                        const double w = curWidth[b];
+                        { const double mm = 0.5 * (bL[b] + bR[b]); const double s = 0.5 * (bL[b] - bR[b]) * w; linWetL += mm + s; linWetR += mm - s; }
+                        { const double mm = 0.5 * (rL   + rR);     const double s = 0.5 * (rL   - rR)   * w; resPreL += mm + s; resPreR += mm - s; }
                     }
 
                     const double resWetL = P.dcBlock[0].hp (resPreL);
@@ -324,20 +354,20 @@ namespace factory_core
                     const double wetL = linWetL + resWetL;
                     const double wetR = linWetR + resWetR;
 
-                    osOutL[(size_t) k]   = (float) (dL * gDirect + wetL * gWet);
-                    osOutR[(size_t) k]   = (float) (dR * gDirect + wetR * gWet);
-                    osDeltaL[(size_t) k] = (float) (resWetL * gWet);
-                    osDeltaR[(size_t) k] = (float) (resWetR * gWet);
+                    // Constant-voltage blend of the direct and enhanced buses.
+                    osOutL[(size_t) k]   = (float) (dirL * (1.0 - mix) + wetL * mix);
+                    osOutR[(size_t) k]   = (float) (dirR * (1.0 - mix) + wetR * mix);
+                    osDeltaL[(size_t) k] = (float) (resWetL * mix);
+                    osDeltaR[(size_t) k] = (float) (resWetR * mix);
 
-                    // Glue envelope-normalised drive: recompute the per-band target
-                    // gain at control rate, smooth it (~10 ms) toward that target.
+                    // Glue envelope-normalised drive: recompute each band's target
+                    // gain at control rate (per-band mode), smooth it (~10 ms).
                     if (--P.glueDecim <= 0)
                     {
                         P.glueDecim = kGlueDecim;
-                        const bool glue = (modeParam == Mode::Glue);
                         for (int b = 0; b < kBands; ++b)
                         {
-                            if (glue)
+                            if (bandMode[b] == Mode::Glue)
                             {
                                 const double e = std::max (P.glueEnv[b].value(), kEnvFloor);
                                 P.gTarget[b] = std::clamp (std::sqrt (kGlueRef / e), kGlueMin, kGlueMax);
@@ -384,20 +414,20 @@ namespace factory_core
         // the new). Plain doubles/ints on the stack — no allocation.
         struct SmootherState
         {
-            double enh[kBands], width[kBands], xover[4], gDirect, gWet, lastXover[4];
+            double enh[kBands], width[kBands], xover[4], mix, lastXover[4];
             int    xoverDecim;
         };
         void saveSmoothers (SmootherState& s) const noexcept
         {
             for (int b = 0; b < kBands; ++b) { s.enh[b] = enhSm[b].cur; s.width[b] = widthSm[b].cur; }
             for (int j = 0; j < 4; ++j) { s.xover[j] = xoverSm[j].cur; s.lastXover[j] = lastXoverHz[j]; }
-            s.gDirect = gDirectSm.cur; s.gWet = gWetSm.cur; s.xoverDecim = xoverDecim;
+            s.mix = mixSm.cur; s.xoverDecim = xoverDecim;
         }
         void restoreSmoothers (const SmootherState& s) noexcept
         {
             for (int b = 0; b < kBands; ++b) { enhSm[b].cur = s.enh[b]; widthSm[b].cur = s.width[b]; }
             for (int j = 0; j < 4; ++j) { xoverSm[j].cur = s.xover[j]; lastXoverHz[j] = s.lastXover[j]; }
-            gDirectSm.cur = s.gDirect; gWetSm.cur = s.gWet; xoverDecim = s.xoverDecim;
+            mixSm.cur = s.mix; xoverDecim = s.xoverDecim;
         }
 
         // One rate configuration (HQ or Zero-Latency). Plain data holder; the
@@ -417,7 +447,7 @@ namespace factory_core
             double glueSmooth = 0.01;
             int    glueDecim = 0;
 
-            void prepare (double hostFs, int factor, int maxBlock, Mode mode)
+            void prepare (double hostFs, int factor, int maxBlock, const Mode (&modes)[kBands])
             {
                 M    = factor;
                 rate = hostFs * (double) factor;
@@ -436,7 +466,7 @@ namespace factory_core
                     for (int c = 0; c < 2; ++c)
                     {
                         shaper[b][c].prepare (rate);
-                        shaper[b][c].setMode (mode);
+                        shaper[b][c].setMode (modes[b]);
                         shaper[b][c].setAdaa (factor == 1);   // 1x path anti-aliases via ADAA
                     }
                 }
@@ -494,7 +524,8 @@ namespace factory_core
         int   xfadeRemaining = 0;
         Quality qualityParam  = Quality::HQ;
         Quality activeQuality = Quality::HQ;
-        Mode    modeParam     = Mode::Tube;
+        Mode    bandMode[kBands] { Mode::Tube, Mode::Tube, Mode::Tube, Mode::Tube, Mode::Tube };
+        bool    soloBand[kBands] { false, false, false, false, false };
         bool    deltaListen   = false;
         bool    latencyDirty  = false;
 
@@ -502,13 +533,14 @@ namespace factory_core
         double enhTarget[kBands]   { 0, 0, 0, 0, 0 };
         double widthTarget[kBands] { 1, 1, 1, 1, 1 };
         double xoverTargetHz[4]    { 130.0, 700.0, 2200.0, 7500.0 };
-        double gDirectTarget = 1.0;
-        double gWetTarget    = 0.251188643150958; // -12 dB default (Enhanced)
+        // Mix as a 0..1 fraction. 0.20 ~= the old direct 0 dB + wet -12 dB balance
+        // (m = w/(1+w), w = 10^(-12/20) = 0.251 -> m = 0.201).
+        double mixTarget     = 0.20;
         double gOutputTarget = 1.0;
 
         // smoothers
         Smoother enhSm[kBands], widthSm[kBands], xoverSm[4];
-        Smoother gDirectSm, gWetSm, gOutputSm;
+        Smoother mixSm, gOutputSm;
         double   lastXoverHz[4] { 130.0, 700.0, 2200.0, 7500.0 };
         int      xoverDecim = 0;
 
