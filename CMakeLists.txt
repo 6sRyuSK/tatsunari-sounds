@@ -35,6 +35,12 @@ add_library(factory_ui INTERFACE)
 target_include_directories(factory_ui INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/ui/include)
 target_compile_features(factory_ui INTERFACE cxx_std_20)
 
+# --- Shared factory-preset model (header-only) ---
+# PresetBank.h is JUCE-independent; ProgramAdapter.h rides the JUCE program API.
+add_library(factory_presets INTERFACE)
+target_include_directories(factory_presets INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/presets/include)
+target_compile_features(factory_presets INTERFACE cxx_std_20)
+
 enable_testing()
 
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---
