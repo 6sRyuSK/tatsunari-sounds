@@ -31,8 +31,9 @@
 // free). Delta-listen + solo yields only the soloed bands' residual.
 //
 // Two full rate configurations are pre-built so Quality can switch with no
-// allocation: HQ (M = 4/2/1 by sample rate, raw shaper) and Zero-Latency
-// (M = 1, residual-ADAA shaper). M == 1 makes the oversampler a true bypass
+// allocation: HQ (M = 4 below 50 kHz, else 2, raw shaper) and Zero-Latency
+// (M = 1, residual-ADAA shaper). HQ therefore oversamples at every supported rate
+// (uniform 51-sample latency); ZL's M == 1 makes the oversampler a true bypass
 // (latency 0). The DC blocker sits on the residual bus ONLY, so the linear
 // reconstruction stays bit-flat (no flatness damage from asymmetric curves).
 //
@@ -65,13 +66,16 @@ namespace factory_core
         using Mode = HarmonicShaper::Mode;
         enum class Quality { HQ = 0, ZeroLatency };
 
-        // HQ oversampling factor: 4x below 50 kHz, 2x below 100 kHz, else 1x
-        // (176.4/192 kHz already have the headroom, so run at native rate + ADAA).
+        // HQ oversampling factor: 4x below 50 kHz, else 2x. Every supported rate
+        // oversamples so the raw shaper's ultrasonic harmonics are pushed above the
+        // host Nyquist and removed by the decimation FIR before they can fold into
+        // the audible band (at 176.4/192 kHz native-rate ADAA alone let a ~-38 dBFS
+        // 3rd-harmonic image fold near 19 kHz — #70). Both 4x and 2x round-trip to
+        // exactly 51 host samples, so HQ latency is a uniform 51 at every rate.
         static int hqFactor (double fs) noexcept
         {
-            if (fs < 50000.0)  return 4;
-            if (fs < 100000.0) return 2;
-            return 1;
+            if (fs < 50000.0) return 4;
+            return 2;
         }
 
         // ---- lifecycle ------------------------------------------------------

@@ -21,8 +21,8 @@
 //     rounded UP until (2H % M) == 0, so the up+down round trip delay
 //     latencyHostSamples() = 2H/M is an exact integer:
 //        M=4: H=102 (L=205) -> 51    M=2: H=51 (L=103) -> 51    M=1: bypass -> 0
-//     => HQ latency is a uniform 51 host samples at 44.1..96 kHz, and 0 at
-//        176.4/192 kHz and in Zero-Latency mode (both use M=1).
+//     => the enhancer's HQ path (M = 4 below 50 kHz, else 2) has a uniform 51
+//        host-sample latency at EVERY rate; only Zero-Latency (M=1) is 0.
 //
 // Polyphase: up-sampling is zero-stuff-equivalent (branch p reads taps p, p+M, …)
 // with a gain-M compensation; down-sampling filters at the OS rate and decimates
