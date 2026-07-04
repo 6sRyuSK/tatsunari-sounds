@@ -16,6 +16,19 @@ ShimmerReverbAudioProcessorEditor::ShimmerReverbAudioProcessorEditor (ShimmerRev
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
+    // Preset selector: populate from the processor's program list and wire the
+    // two-way host sync. User selection drives the program API + notifies the
+    // host; host-driven changes come back via audioProcessorChanged.
+    refreshPresetSelector();
+    presetSelector.onChange = [this] (int idx)
+    {
+        processor.setCurrentProgram (idx);
+        processor.updateHostDisplay (
+            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+    };
+    addAndMakeVisible (presetSelector);
+    processor.addListener (this);
+
     addAndMakeVisible (visualizer);
 
     // Decimals: % integer; cutoff-Hz integer; s / ms / rate-Hz to 2 dp.
@@ -45,7 +58,32 @@ ShimmerReverbAudioProcessorEditor::ShimmerReverbAudioProcessorEditor (ShimmerRev
 
 ShimmerReverbAudioProcessorEditor::~ShimmerReverbAudioProcessorEditor()
 {
+    processor.removeListener (this);
     setLookAndFeel (nullptr);
+}
+
+void ShimmerReverbAudioProcessorEditor::refreshPresetSelector()
+{
+    juce::StringArray names;
+    for (int i = 0; i < processor.getNumPrograms(); ++i)
+        names.add (processor.getProgramName (i));
+    presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void ShimmerReverbAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
+                                                               const ChangeDetails& details)
+{
+    if (! details.programChanged)
+        return;
+
+    // May arrive on any thread; marshal the selector update to the message thread.
+    juce::Component::SafePointer<ShimmerReverbAudioProcessorEditor> safe (this);
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe != nullptr)
+            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
+                                                   juce::dontSendNotification);
+    });
 }
 
 void ShimmerReverbAudioProcessorEditor::addKnob (const char* id, const char* name, const char* suffix, int decimals)
@@ -92,7 +130,10 @@ void ShimmerReverbAudioProcessorEditor::resized()
     bypassButton.setBounds (top.removeFromRight (90));
     top.removeFromRight (8);
     freezeButton.setBounds (top.removeFromRight (90));
-    titleLabel.setBounds (top);
+    top.removeFromRight (8);
+    titleLabel.setBounds (top.removeFromLeft (170));
+    top.removeFromLeft (8);
+    presetSelector.setBounds (top);
 
     r.removeFromTop (10);
     visualizer.setBounds (r.removeFromTop (180));
