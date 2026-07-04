@@ -133,6 +133,9 @@ DynamicEqAudioProcessor::DynamicEqAudioProcessor()
         params[(size_t) b].knee  = apvts.getRawParameterValue (pid (b, "knee"));
     }
     bypassParam = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, dynamic_eq_presets::bank,
+                        dynamic_eq_presets::kExclude, dynamic_eq_presets::kNumExclude);
 }
 
 void DynamicEqAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
@@ -292,14 +295,22 @@ juce::AudioProcessorEditor* DynamicEqAudioProcessor::createEditor()
 void DynamicEqAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void DynamicEqAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
