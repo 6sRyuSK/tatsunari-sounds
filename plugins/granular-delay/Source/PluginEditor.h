@@ -4,12 +4,14 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
+#include "factory_ui/PresetSelector.h"
 #include "GrainCloudComponent.h"
 
 #include <memory>
 #include <vector>
 
-class GranularDelayAudioProcessorEditor final : public juce::AudioProcessorEditor
+class GranularDelayAudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                                private juce::AudioProcessorListener
 {
 public:
     explicit GranularDelayAudioProcessorEditor (GranularDelayAudioProcessor&);
@@ -24,6 +26,11 @@ private:
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void addKnob (const char* id, const char* name, const char* suffix, int decimals);
+    void refreshPresetSelector();
+
+    // AudioProcessorListener — follow host-driven program changes.
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     GranularDelayAudioProcessor& processor;
     FactoryLookAndFeel lnf;
@@ -32,6 +39,7 @@ private:
     juce::ToggleButton bypassButton { "Bypass" };
     juce::ToggleButton syncButton { "Sync" };
     juce::ComboBox divisionBox;
+    factory_ui::PresetSelector presetSelector;
     GrainCloudComponent cloud;
 
     std::vector<std::unique_ptr<juce::Slider>> knobs;

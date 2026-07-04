@@ -90,6 +90,9 @@ GranularDelayAudioProcessor::GranularDelayAudioProcessor()
     lfoRateParam  = apvts.getRawParameterValue ("lforate");
     lfoDepthParam = apvts.getRawParameterValue ("lfodepth");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+
+    programs.configure (apvts, granular_delay_presets::bank,
+                        granular_delay_presets::kExclude, granular_delay_presets::kNumExclude);
 }
 
 void GranularDelayAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
@@ -203,14 +206,22 @@ juce::AudioProcessorEditor* GranularDelayAudioProcessor::createEditor()
 void GranularDelayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
+    {
+        // Append the selected program index (attribute only — existing sessions
+        // without it read back as program 0, so state stays compatible).
+        programs.writeStateAttribute (*xml);
         copyXmlToBinary (*xml, destData);
+    }
 }
 
 void GranularDelayAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
