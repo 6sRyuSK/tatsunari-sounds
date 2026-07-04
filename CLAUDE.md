@@ -68,17 +68,22 @@ ctest --test-dir build --output-on-failure           # run all headless DSP test
 - Editors compose `factory_ui` (`FactoryLookAndFeel`, `factory_ui::paintBackground`
   / `paintCard` / knob helpers), not bespoke look-and-feel.
 
+## Skills (read these INSTEAD of other plugins' sources)
+The conventions live in `.claude/skills/` so starting work never requires
+reading another plugin as reference (token discipline — do not open other
+plugins' sources to copy patterns):
+- `new-plugin` — scaffold + full workflow for a new plugin.
+- `write-dsp-test` — test structure, `DspInvariants.h` API, oracle rules.
+- `factory-ui` — the design-system API and editor conventions.
+- `core-primitives` — catalog of `core/` primitives to compose from.
+- `release` — versioning + release/installer pipeline mechanics.
+
 ## Adding / changing a plugin
-1. Create `plugins/<slug>/` with `plugin.toml` (`name`, `slug`, `category`,
-   `status`, `version`, `formats`, `reference`), `Source/`, `tests/dsp_test.cpp`,
-   and a `CMakeLists.txt`. Copy an existing plugin's CMake as the template:
-   - `factory_read_version(... <VER>)` then `juce_add_plugin(... VERSION ${<VER>})`
-     — CMake reads the version from `plugin.toml`, never hard-code it.
-   - `FORMATS VST3 Standalone` with `AU` appended only `if(APPLE)`.
-   - Link `factory_core` + `factory_ui` (+ `juce::juce_dsp` etc.); PUBLIC
-     `juce::juce_recommended_config_flags` and `..._warning_flags`.
-   - Register the DSP test with the `foreach(_fs 44100 48000 88200 96000 176400
-     192000)` sample-rate loop.
+1. Scaffold it: `python tools/scaffold_plugin.py <slug> --name "…" --category …
+   --reference "…"` generates `plugins/<slug>/` with every convention pre-wired
+   (`plugin.toml`, CMake with `factory_read_version` + the full sample-rate test
+   loop, thin Processor/Editor, a failing test stub) — do not hand-copy an
+   existing plugin. Details: the `new-plugin` skill.
 2. Regenerate the catalog: `python tools/gen_catalog.py` (never hand-edit the
    README block between `<!-- BEGIN:CATALOG -->` / `<!-- END:CATALOG -->`).
 3. Any change under `core/` must run the full test suite of **all** dependent
