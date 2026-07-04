@@ -24,6 +24,15 @@
 // (latency 0). The DC blocker sits on the residual bus ONLY, so the linear
 // reconstruction stays bit-flat (no flatness damage from asymmetric curves).
 //
+// Quality switching is click-free: a change does NOT hard-swap the path. The
+// previously-active path keeps its live state and both paths run in parallel for
+// a short window (~20 ms), with an equal-power crossfade of the host-rate output
+// from old to new; once the fade completes the old path stops. Only processing is
+// toggled and the two outputs are mixed — nothing allocates (CPU doubles only for
+// the fade window). The two paths have different latency (HQ 51 / ZL 0 samples),
+// so brief comb-filtering during the fade is inherent and accepted; the reported
+// latency (PDC) still flips to the new quality immediately.
+//
 #include "Oversampler.h"
 #include "Crossover5.h"
 #include "HarmonicShaper.h"
@@ -38,6 +47,7 @@ namespace factory_core
 {
     class MultibandEnhancer
     {
+        struct Path;   // fwd-decl (fully defined below); runPath() takes Path& by ref.
     public:
         static constexpr int    kBands      = 5;
         using Mode = HarmonicShaper::Mode;
@@ -67,6 +77,15 @@ namespace factory_core
             osInL.assign (osCap, 0.0f);   osInR.assign (osCap, 0.0f);
             osOutL.assign (osCap, 0.0f);  osOutR.assign (osCap, 0.0f);
             osDeltaL.assign (osCap, 0.0f); osDeltaR.assign (osCap, 0.0f);
+
+            // Host-rate scratch for the outgoing path during a quality crossfade
+            // (both paths write host-rate output; only mixing/processing toggles).
+            const std::size_t hostCap = (std::size_t) maxN;
+            xfL.assign (hostCap, 0.0f);  xfR.assign (hostCap, 0.0f);
+            xfDL.assign (hostCap, 0.0f); xfDR.assign (hostCap, 0.0f);
+            xfadeLen = std::max (1, (int) std::lround (kXfadeSeconds * fs)); // ~20 ms
+            xfadeRemaining = 0;
+            xfadeFrom = nullptr;
 
             // Host-rate parameter smoothers.
             for (int b = 0; b < kBands; ++b)
@@ -101,6 +120,17 @@ namespace factory_core
             gWetSm.snap (gWetTarget);
             gOutputSm.snap (gOutputTarget);
             xoverDecim = 0;
+            // An explicit reset is a clean slate: drop any in-flight quality
+            // crossfade and adopt the currently-selected quality directly (no
+            // fade needed — the audio graph is (re)starting). Keeping activeQuality
+            // in sync also means the next processBlock does not spuriously start a
+            // fade after a reset (Class E: canonical state == freshly prepared).
+            Path* prev    = active;
+            activeQuality = qualityParam;
+            active        = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
+            xfadeRemaining = 0;
+            xfadeFrom      = nullptr;
+            if (active != prev) latencyDirty = true;
         }
 
         // ---- parameters (plain setters; smoothed internally) ----------------
@@ -143,31 +173,92 @@ namespace factory_core
                 if (! std::isfinite (R[i])) R[i] = 0.0f;
             }
 
-            // Quality switch: swap the pre-built path, reset it (clean, click on a
-            // deliberate latency change is acceptable), flag latency for the host.
+            // Quality switch: begin an equal-power crossfade instead of a hard swap.
+            // The previously-active path keeps its live state and fades OUT while the
+            // newly-active path is reset (its buildup masked by the fade-in) and fades
+            // IN over ~20 ms. PDC still flips to the new quality now (latencyDirty).
             if (qualityParam != activeQuality)
             {
-                activeQuality = qualityParam;
-                active = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
+                xfadeFrom      = active;
+                activeQuality  = qualityParam;
+                active         = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
                 active->reset();
-                latencyDirty = true;
+                xfadeRemaining = xfadeLen;
+                latencyDirty   = true;
             }
-            Path& P = *active;
-            const int M = P.M;
+            const bool fading = (xfadeRemaining > 0 && xfadeFrom != nullptr && xfadeFrom != active);
 
-            // Push current parameter targets into the host-rate smoothers.
+            // Push current parameter targets into the host-rate smoothers (once per
+            // block; during a fade BOTH paths must see the identical trajectory).
             for (int b = 0; b < kBands; ++b) { enhSm[b].set (enhTarget[b]); widthSm[b].set (widthTarget[b]); }
             for (int j = 0; j < 4; ++j) xoverSm[j].set (std::log (xoverTargetHz[j]));
             gDirectSm.set (gDirectTarget);
             gWetSm.set (gWetTarget);
             gOutputSm.set (gOutputTarget);
 
+            // Outgoing (old) path — only during a fade. Snapshot the host-rate
+            // smoother + crossover-decimation state, run the old path into scratch,
+            // then restore so the new path re-runs the identical parameter path.
+            if (fading)
+            {
+                SmootherState snap; saveSmoothers (snap);
+                runPath (*xfadeFrom, L, R, n, xfL.data(), xfR.data(), xfDL.data(), xfDR.data(), false);
+                restoreSmoothers (snap);
+            }
+
+            // Active (incoming) path — processes in place and drives the meters.
+            runPath (*active, L, R, n, L, R, deltaL, deltaR, true);
+
+            // Equal-power crossfade old -> new at host rate. Equal-power (sin/cos)
+            // rather than linear: the two paths have different latency (51 vs 0
+            // samples) and are partially decorrelated during the window, so a
+            // constant-power law keeps the summed level steady with no mid-fade dip.
+            if (fading)
+            {
+                for (int i = 0; i < n; ++i)
+                {
+                    const double x  = (double) (xfadeLen - xfadeRemaining) / (double) xfadeLen; // 0 -> 1
+                    const double gN = std::sin (0.5 * kPi * x);   // incoming weight (0 -> 1)
+                    const double gO = std::cos (0.5 * kPi * x);   // outgoing weight (1 -> 0)
+                    L[i]      = (float) (gO * (double) xfL[(size_t) i]  + gN * (double) L[i]);
+                    R[i]      = (float) (gO * (double) xfR[(size_t) i]  + gN * (double) R[i]);
+                    deltaL[i] = (float) (gO * (double) xfDL[(size_t) i] + gN * (double) deltaL[i]);
+                    deltaR[i] = (float) (gO * (double) xfDR[(size_t) i] + gN * (double) deltaR[i]);
+                    if (xfadeRemaining > 0) --xfadeRemaining;
+                }
+                if (xfadeRemaining <= 0) xfadeFrom = nullptr;
+            }
+
+            // Output gain + delta-listen (once, post-crossfade).
+            for (int i = 0; i < n; ++i)
+            {
+                const double go = gOutputSm.next();
+                const float outL = (float) ((deltaListen ? (double) deltaL[i] : (double) L[i]) * go);
+                const float outR = (float) ((deltaListen ? (double) deltaR[i] : (double) R[i]) * go);
+                L[i] = outL;
+                R[i] = outR;
+            }
+        }
+
+        // Process n host samples through ONE pre-built path (up -> per-sample core
+        // -> down), reading from inL/inR and writing host-rate output to outL/outR
+        // and the residual delta to outDL/outDR. Advances the shared host-rate
+        // smoothers and crossover-decimation counters, so the caller snapshots/
+        // restores that state to run a second path over the same block. outL/outR
+        // may alias inL/inR (the up-sampler fully consumes the input first). No
+        // allocation — the oversample scratch is shared (paths run sequentially).
+        void runPath (Path& P, const float* inL, const float* inR, int n,
+                      float* outL, float* outR, float* outDL, float* outDR,
+                      bool updateMeter) noexcept
+        {
+            const int M = P.M;
+
             for (int b = 0; b < kBands; ++b)
                 for (int c = 0; c < 2; ++c)
                     P.shaper[b][c].setMode (modeParam);
 
-            P.up[0].processUp (L, n, osInL.data());
-            P.up[1].processUp (R, n, osInR.data());
+            P.up[0].processUp (inL, n, osInL.data());
+            P.up[1].processUp (inR, n, osInR.data());
 
             double rmsAcc[kBands] = { 0, 0, 0, 0, 0 };
 
@@ -260,23 +351,18 @@ namespace factory_core
                 }
             }
 
-            P.down[0].processDown (osOutL.data(),   n, L);
-            P.down[1].processDown (osOutR.data(),   n, R);
-            P.downD[0].processDown (osDeltaL.data(), n, deltaL);
-            P.downD[1].processDown (osDeltaR.data(), n, deltaR);
+            P.down[0].processDown (osOutL.data(),   n, outL);
+            P.down[1].processDown (osOutR.data(),   n, outR);
+            P.downD[0].processDown (osDeltaL.data(), n, outDL);
+            P.downD[1].processDown (osDeltaR.data(), n, outDR);
 
-            for (int i = 0; i < n; ++i)
+            // Only the active (incoming) path publishes the residual meters.
+            if (updateMeter)
             {
-                const double go = gOutputSm.next();
-                const float outL = (float) ((deltaListen ? (double) deltaL[i] : (double) L[i]) * go);
-                const float outR = (float) ((deltaListen ? (double) deltaR[i] : (double) R[i]) * go);
-                L[i] = outL;
-                R[i] = outR;
+                const double inv = 1.0 / (double) std::max (1, n * M);
+                for (int b = 0; b < kBands; ++b)
+                    bandRmsDb[(size_t) b] = 10.0 * std::log10 (std::max (rmsAcc[b] * inv, 1.0e-30));
             }
-
-            const double inv = 1.0 / (double) std::max (1, n * M);
-            for (int b = 0; b < kBands; ++b)
-                bandRmsDb[(size_t) b] = 10.0 * std::log10 (std::max (rmsAcc[b] * inv, 1.0e-30));
         }
 
     private:
@@ -291,6 +377,28 @@ namespace factory_core
             void set (double v) noexcept { target = v; }
             double next() noexcept { cur += (target - cur) * coeff; return cur; }
         };
+
+        // Snapshot of the shared host-rate smoother + crossover-decimation state,
+        // so a quality crossfade can run BOTH paths over one block with an identical
+        // per-sample parameter trajectory (save before the old path, restore before
+        // the new). Plain doubles/ints on the stack — no allocation.
+        struct SmootherState
+        {
+            double enh[kBands], width[kBands], xover[4], gDirect, gWet, lastXover[4];
+            int    xoverDecim;
+        };
+        void saveSmoothers (SmootherState& s) const noexcept
+        {
+            for (int b = 0; b < kBands; ++b) { s.enh[b] = enhSm[b].cur; s.width[b] = widthSm[b].cur; }
+            for (int j = 0; j < 4; ++j) { s.xover[j] = xoverSm[j].cur; s.lastXover[j] = lastXoverHz[j]; }
+            s.gDirect = gDirectSm.cur; s.gWet = gWetSm.cur; s.xoverDecim = xoverDecim;
+        }
+        void restoreSmoothers (const SmootherState& s) noexcept
+        {
+            for (int b = 0; b < kBands; ++b) { enhSm[b].cur = s.enh[b]; widthSm[b].cur = s.width[b]; }
+            for (int j = 0; j < 4; ++j) { xoverSm[j].cur = s.xover[j]; lastXoverHz[j] = s.lastXover[j]; }
+            gDirectSm.cur = s.gDirect; gWetSm.cur = s.gWet; xoverDecim = s.xoverDecim;
+        }
 
         // One rate configuration (HQ or Zero-Latency). Plain data holder; the
         // engine drives its members. Both are pre-built so Quality switches
@@ -366,16 +474,24 @@ namespace factory_core
         static constexpr int    kGlueDecim = 32;
         static constexpr double kDcBlockHz = 5.0;
         static constexpr int    kXoverDecim = 32;
+        static constexpr double kXfadeSeconds = 0.020; // ~20 ms click-free quality crossfade
+        static constexpr double kPi = 3.14159265358979323846; // equal-power crossfade curve
 
         double fs   = 44100.0;
         int    maxN = 0;
         int    maxM = 1;
 
-        // Oversample-rate scratch (shared: only one path is active at a time).
+        // Oversample-rate scratch (shared: the two paths run sequentially per block).
         std::vector<float> osInL, osInR, osOutL, osOutR, osDeltaL, osDeltaR;
+        // Host-rate scratch for the outgoing path's output during a quality crossfade.
+        std::vector<float> xfL, xfR, xfDL, xfDR;
 
         Path pathHQ, pathZL;
         Path* active = nullptr;
+        // Quality crossfade: the path fading out, and how many host samples remain.
+        Path* xfadeFrom      = nullptr;
+        int   xfadeLen       = 1;
+        int   xfadeRemaining = 0;
         Quality qualityParam  = Quality::HQ;
         Quality activeQuality = Quality::HQ;
         Mode    modeParam     = Mode::Tube;
