@@ -21,7 +21,15 @@
 //   G8  finiteness + worst-case hold (Class C)      G16 solo routing (superposition)
 //                                                   G17 per-band mode independence
 //
+// Linear-phase crossover option (issue #72, HQ-only):
+//   G18 linear split reconstruction == pure delay (flat, all rates, extreme fc)
+//   G19 linear phase: tap symmetry + measured group-delay flatness
+//   G20 crossover -6 dB at fc + mastering-grade stopband
+//   G21 reported latency == FIR group delay + OS latency; taps follow the rate
+//   G22 engine linear mode: enh-0 flatness, worst-case finiteness, redesign-on-drag
+//
 #include "factory_core/MultibandEnhancer.h"
+#include "factory_core/LinearPhaseCrossover5.h"
 #include "factory_core/Oversampler.h"
 #include "factory_core/HarmonicShaper.h"
 #include "factory_core/FFT.h"
@@ -1033,6 +1041,352 @@ namespace
         if (farDev > 0.05) fail ("G17 far-band mode change moved band-2 H2 by " + std::to_string (farDev) + " dB");
         if (sigDev < 3.0)  fail ("G17 own-band mode change left band-2 H2 unmoved (" + std::to_string (sigDev) + " dB)");
     }
+
+    // ==========================================================================
+    // Linear-phase crossover helpers (issue #72)
+    // ==========================================================================
+    using LPX = factory_core::LinearPhaseCrossover5;
+
+    // FFT order large enough to hold the full length-N impulse response plus margin.
+    int firFftOrder (int taps, int maxBlock)
+    {
+        int order = 1;
+        while ((1 << order) < taps + 2 * maxBlock + 16) ++order;
+        return order;
+    }
+
+    // Push a unit impulse (at global sample 0) through the primitive on channel 0 and
+    // collect the five band signals, each `L` samples long (block-driven, so the
+    // stateful cross-block reconstruction is exercised).
+    void firImpulseBands (LPX& xo, int L, int maxBlock, std::vector<std::vector<double>>& bands)
+    {
+        bands.assign (5, std::vector<double> ((size_t) L, 0.0));
+        std::vector<float> in ((size_t) maxBlock);
+        std::vector<float> b[5];
+        for (auto& v : b) v.assign ((size_t) maxBlock, 0.0f);
+        for (int s = 0; s < L; s += maxBlock)
+        {
+            const int n = std::min (maxBlock, L - s);
+            for (int i = 0; i < n; ++i) in[(size_t) i] = (s + i == 0) ? 1.0f : 0.0f;
+            xo.process (0, in.data(), n, b[0].data(), b[1].data(), b[2].data(), b[3].data(), b[4].data());
+            for (int band = 0; band < 5; ++band)
+                for (int i = 0; i < n; ++i) bands[(size_t) band][(size_t) (s + i)] = (double) b[(size_t) band][(size_t) i];
+        }
+    }
+
+    // Rate-scaled FIR geometry the engine uses (host-rate primitive test path).
+    struct FirGeom { int taps; int delay; };
+    FirGeom firGeom (double fs)
+    {
+        const int D = ME::firDelayHostSamples (fs);
+        return { 2 * D + 1, D };
+    }
+
+    // ==========================================================================
+    // G18 — linear split reconstruction == pure delay (complementary by construction)
+    // ==========================================================================
+    // The five bands are differences of adjacent linear-phase low-passes plus a
+    // D-sample delayed input, so their sum telescopes to a UNIT impulse at D — i.e.
+    // sum(bands) is a pure delay, EXACTLY, regardless of the crossover frequencies.
+    // Impulse -> sum -> FFT must be flat 0 dB at every bin (independent oracle: the
+    // ideal magnitude of a pure delay is 1 at all frequencies), at every rate and at
+    // extreme crossover settings (40 Hz .. 18 kHz — the redesign-under-drag worst case).
+    void g18_linear_reconstruction (double fs)
+    {
+        std::printf ("G18 linear split reconstruction @ %.0f\n", fs);
+        const FirGeom g = firGeom (fs);
+        const int maxBlock = 192;                 // deliberately not a divisor of taps
+        const int order = firFftOrder (g.taps, maxBlock);
+        const int L = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+
+        struct XSet { double f1, f2, f3, f4; const char* name; };
+        const XSet sets[] = {
+            { 130.0, 700.0, 2200.0, 7500.0, "default"    },
+            { 40.0,  60.0,  90.0,   130.0,  "extreme-lo" }, // 40 Hz split, packed low
+            { 2000.0, 5000.0, 10000.0, 18000.0, "extreme-hi" },
+        };
+
+        for (const auto& xs : sets)
+        {
+            LPX xo; xo.prepare (fs, maxBlock, g.taps, g.delay);
+            xo.design (xs.f1, xs.f2, xs.f3, xs.f4);
+
+            std::vector<std::vector<double>> bands;
+            firImpulseBands (xo, L, maxBlock, bands);
+
+            std::vector<double> sum ((size_t) L, 0.0);
+            for (int i = 0; i < L; ++i)
+                for (int b = 0; b < 5; ++b) sum[(size_t) i] += bands[(size_t) b][(size_t) i];
+
+            // (a) the sum is a single unit spike at the group delay D.
+            int peakIdx = 0; double peak = 0.0, off = 0.0;
+            for (int i = 0; i < L; ++i)
+            {
+                const double a = std::abs (sum[(size_t) i]);
+                if (a > peak) { peak = a; peakIdx = i; }
+            }
+            for (int i = 0; i < L; ++i) if (std::abs (i - g.delay) > 1) off = std::max (off, std::abs (sum[(size_t) i]));
+            if (peakIdx != g.delay) fail ("G18 " + std::string (xs.name) + " peak at " + std::to_string (peakIdx) + " != D " + std::to_string (g.delay));
+            if (std::abs (peak - 1.0) > 0.02) fail ("G18 " + std::string (xs.name) + " peak " + std::to_string (peak) + " != 1");
+            if (off > 2.0e-3) fail ("G18 " + std::string (xs.name) + " off-delay leakage " + std::to_string (off) + " > 2e-3");
+
+            // (b) magnitude spectrum of the sum is flat 0 dB (pure delay).
+            std::vector<double> magDb; magSpectrum (sum, order, fft, magDb);
+            double maxDev = 0.0;
+            for (int k = 1; k < L / 2; ++k) maxDev = std::max (maxDev, std::abs (magDb[(size_t) k]));
+            if (g_verbose) std::printf ("   [%s] taps=%d D=%d peak=%.6f@%d flat dev=%.4f dB\n",
+                                        xs.name, g.taps, g.delay, peak, peakIdx, maxDev);
+            if (maxDev > 0.02) fail ("G18 " + std::string (xs.name) + " band-sum not flat (dev " + std::to_string (maxDev) + " dB > 0.02)");
+        }
+    }
+
+    // ==========================================================================
+    // G19 — linear phase: tap symmetry AND measured group-delay flatness
+    // ==========================================================================
+    // Every band is symmetric about D (the low-passes are symmetric windowed sincs,
+    // the delta band is a symmetric impulse minus a symmetric low-pass), so its
+    // impulse response h[i] == h[N-1-i] (Type-I linear phase). Equivalently the band
+    // response H(w) = A(w) e^{-jDw} with A real, so H(w) e^{+jDw} has ZERO imaginary
+    // part — a direct, unwrap-free group-delay-flatness check (constant delay D).
+    void g19_linear_phase (double fs)
+    {
+        std::printf ("G19 linear phase / group delay @ %.0f\n", fs);
+        const FirGeom g = firGeom (fs);
+        const int maxBlock = 192;
+        const int order = firFftOrder (g.taps, maxBlock);
+        const int L = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+
+        LPX xo; xo.prepare (fs, maxBlock, g.taps, g.delay);
+        xo.design (130.0, 700.0, 2200.0, 7500.0);
+        std::vector<std::vector<double>> bands;
+        firImpulseBands (xo, L, maxBlock, bands);
+
+        // (a) tap symmetry of the LO low-pass (band 0) and HI band (band 4).
+        for (int band : { 0, 4 })
+        {
+            double sym = 0.0;
+            for (int i = 0; i < g.taps; ++i)
+                sym = std::max (sym, std::abs (bands[(size_t) band][(size_t) i] - bands[(size_t) band][(size_t) (g.taps - 1 - i)]));
+            if (g_verbose) std::printf ("   band %d tap asymmetry=%.2e\n", band, sym);
+            if (sym > 1.0e-5) fail ("G19 band " + std::to_string (band) + " taps not symmetric (" + std::to_string (sym) + ")");
+        }
+
+        // (b) group-delay flatness: rotate H(k) by e^{+j 2pi k D / L}; imaginary part
+        // must vanish (constant delay D across the whole band).
+        std::vector<cd> H ((size_t) L);
+        for (int i = 0; i < L; ++i) H[(size_t) i] = cd (bands[0][(size_t) i], 0.0);
+        fft.forward (H.data());
+        double maxImag = 0.0;
+        for (int k = 0; k < L / 2; ++k)
+        {
+            const cd rot = H[(size_t) k] * std::polar (1.0, 2.0 * kPi * (double) k * (double) g.delay / (double) L);
+            maxImag = std::max (maxImag, std::abs (rot.imag()));
+        }
+        if (g_verbose) std::printf ("   band 0 max |Im(H e^{jDw})|=%.2e (peak |H|=1)\n", maxImag);
+        if (maxImag > 1.0e-3) fail ("G19 band 0 non-linear phase (residual imag " + std::to_string (maxImag) + " > 1e-3)");
+    }
+
+    // ==========================================================================
+    // G20 — crossover -6 dB at fc + mastering-grade stopband
+    // ==========================================================================
+    // A DC-normalised windowed-sinc low-pass at cutoff fc has |H(fc)| ~ 0.5 (-6 dB),
+    // so adjacent bands cross complementary. Independent oracle: the ideal half-band
+    // crossover point is -6.02 dB. Also assert a deep stopband well above fc.
+    void g20_crossover_points (double fs)
+    {
+        std::printf ("G20 crossover -6 dB / stopband @ %.0f\n", fs);
+        const FirGeom g = firGeom (fs);
+        const int maxBlock = 192;
+        const int order = firFftOrder (g.taps, maxBlock);
+        const int L = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+
+        const double f1 = 130.0, f2 = 700.0, f3 = 2200.0, f4 = 7500.0;
+        LPX xo; xo.prepare (fs, maxBlock, g.taps, g.delay);
+        xo.design (f1, f2, f3, f4);
+        std::vector<std::vector<double>> bands;
+        firImpulseBands (xo, L, maxBlock, bands);
+        (void) fft;
+
+        // Evaluate the band's magnitude response at EXACTLY f (direct DTFT of the
+        // impulse response) — the crossover edge is steep, so snapping to the nearest
+        // FFT bin adds several dB of quantisation error where f does not divide the
+        // bin grid (e.g. 7.5 kHz at 88.2 kHz). This is a more accurate measurement of
+        // the same -6 dB spec, not a looser one.
+        auto magAt = [&] (int band, double f) -> double
+        {
+            const double w = 2.0 * kPi * f / fs;
+            double re = 0.0, im = 0.0;
+            for (int n = 0; n < L; ++n)
+            {
+                const double h = bands[(size_t) band][(size_t) n];
+                re += h * std::cos (w * (double) n);
+                im -= h * std::sin (w * (double) n);
+            }
+            return std::sqrt (re * re + im * im);
+        };
+
+        // LO low-pass (band 0) is -6 dB at f1, HI band (band 4) is -6 dB at f4.
+        const double lo6  = linToDb (magAt (0, f1));
+        const double hi6  = linToDb (magAt (4, f4));
+        if (g_verbose) std::printf ("   |LO(f1)|=%.2f dB  |HI(f4)|=%.2f dB (target -6.02)\n", lo6, hi6);
+        if (std::abs (lo6 - (-6.02)) > 2.0) fail ("G20 LO band not -6 dB at f1 (" + std::to_string (lo6) + ")");
+        if (std::abs (hi6 - (-6.02)) > 2.0) fail ("G20 HI band not -6 dB at f4 (" + std::to_string (hi6) + ")");
+
+        // Stopband: the LO low-pass is deep well above f1 (5x), the HI band deep well
+        // below f4 (f4/5) — mastering-grade rejection past the transition.
+        const double loStop = linToDb (magAt (0, 5.0 * f1));
+        const double hiStop = linToDb (magAt (4, f4 / 5.0));
+        if (g_verbose) std::printf ("   LO stop@5f1=%.1f dB  HI stop@f4/5=%.1f dB\n", loStop, hiStop);
+        if (loStop > -55.0) fail ("G20 LO stopband weak (" + std::to_string (loStop) + " dB > -55)");
+        if (hiStop > -55.0) fail ("G20 HI stopband weak (" + std::to_string (hiStop) + " dB > -55)");
+    }
+
+    // ==========================================================================
+    // G21 — reported latency == FIR group delay + OS latency; taps follow the rate
+    // ==========================================================================
+    void g21_linear_latency (double fs)
+    {
+        std::printf ("G21 linear-phase latency @ %.0f\n", fs);
+        const int Dhost = ME::firDelayHostSamples (fs);
+
+        // (i) HQ + Linear reports OS latency (51) + the FIR group delay.
+        {
+            ME eng; eng.prepare (fs, 256); configFlat (eng);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Linear);
+            tick (eng);
+            const int rep = eng.latencySamples();
+            const int exp = expectedLatency (fs) + Dhost;   // 51 + D at every supported rate
+            if (g_verbose) std::printf ("   HQ+Linear latency=%d expect=%d (D=%d)\n", rep, exp, Dhost);
+            if (rep != exp) fail ("G21 HQ+Linear latency " + std::to_string (rep) + " != " + std::to_string (exp));
+        }
+        // (ii) Standard phase is unchanged (no FIR delay).
+        {
+            ME eng; eng.prepare (fs, 256); configFlat (eng);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Standard);
+            tick (eng);
+            if (eng.latencySamples() != expectedLatency (fs))
+                fail ("G21 HQ+Standard latency changed (" + std::to_string (eng.latencySamples()) + ")");
+        }
+        // (iii) Zero-Latency ignores the phase option (no oversampling bracket).
+        {
+            ME eng; eng.prepare (fs, 256); configFlat (eng);
+            eng.setQuality (ME::Quality::ZeroLatency); eng.setPhaseMode (ME::Phase::Linear);
+            tick (eng);
+            if (eng.latencySamples() != 0) fail ("G21 ZL+Linear latency != 0 (" + std::to_string (eng.latencySamples()) + ")");
+        }
+        // (iv) Resolution follows the sample rate: the FIR group delay is a fixed
+        // ~43 ms of TIME at every rate (so the tap count scales with fs, never fixed).
+        const double sec = (double) Dhost / fs;
+        if (g_verbose) std::printf ("   FIR group delay=%.2f ms (taps=%d)\n", 1000.0 * sec, 2 * Dhost + 1);
+        if (sec < 0.040 || sec > 0.045) fail ("G21 FIR delay " + std::to_string (1000.0 * sec) + " ms out of [40,45]");
+    }
+
+    // ==========================================================================
+    // G22 — engine linear mode: flatness, worst-case finiteness, redesign-on-drag
+    // ==========================================================================
+    void g22_linear_engine (double fs)
+    {
+        std::printf ("G22 engine linear mode @ %.0f\n", fs);
+        const int order = 15, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+        const int Dhost = ME::firDelayHostSamples (fs);
+
+        // (a) enh 0, every mix -> the enhanced bus's linear reconstruction is the pure
+        // (delayed) band sum == the direct bus, so the constant-voltage blend is FLAT
+        // 0 dB at every mix (the linear-mode analogue of G1). Measure through the full
+        // HQ oversampling bracket (band ~20 Hz .. 0.42 fs, matching G1's HQ window).
+        for (double mixPct : { 0.0, 50.0, 100.0 })
+        {
+            ME eng; eng.prepare (fs, 256); configFlat (eng);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Linear);
+            eng.setMix (mixPct);
+            warmup (eng, fs, 0.4);
+            std::vector<double> in ((size_t) (Nfft + Dhost), 0.0), inR, oL, oR, dL, dR;
+            in[0] = 1.0; inR = in;
+            runEngine (eng, in, inR, oL, oR, dL, dR);
+            // Align out to the reported latency so the impulse sits at the window start.
+            std::vector<double> seg (oL.begin() + Dhost, oL.begin() + Dhost + Nfft);
+            std::vector<double> magDb; magSpectrum (seg, order, fft, magDb);
+            double maxDev = 0.0;
+            for (int k = 1; k < Nfft / 2; ++k)
+            {
+                const double f = freqOfBin (k, fs, order);
+                if (f < 20.0 || f > 0.42 * fs) continue;
+                maxDev = std::max (maxDev, std::abs (magDb[(size_t) k]));
+            }
+            if (g_verbose) std::printf ("   enh0 mix%.0f linear flatness dev=%.4f dB\n", mixPct, maxDev);
+            if (maxDev > 0.25) fail ("G22 linear enh0 mix" + std::to_string ((int) mixPct) + " not flat (" + std::to_string (maxDev) + " dB)");
+        }
+
+        // (b) worst case (enh 150 %, width 200 %, Glue, mix 100 %) in linear mode:
+        // output stays finite with a realistic peak, and the impulse response energy
+        // is non-increasing (the FIR + shaper path is strictly feed-forward).
+        {
+            ME eng; eng.prepare (fs, 256);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 200.0); }
+            setAllMode (eng, Mode::Glue);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Linear);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
+            warmup (eng, fs, 0.4);
+            const int N = (int) (2.0 * fs);
+            const int period = std::max (2, (int) (fs / 55.0));
+            std::vector<double> inL ((size_t) N), inR, oL, oR, dL, dR;
+            for (int i = 0; i < N; ++i) inL[(size_t) i] = ((i % period) < period / 2) ? 1.0 : -1.0;
+            inR = inL;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+            if (! factory_core::testing::allFinite (oL)) fail ("G22 worst-case output not finite");
+            const double pk = factory_core::testing::peakAbs (oL);
+            if (g_verbose) std::printf ("   worst-case peak=%.2f dBFS\n", linToDb (pk));
+            if (pk > dbToLin (12.0)) fail ("G22 worst-case peak " + std::to_string (linToDb (pk)) + " dBFS > +12");
+        }
+        {
+            ME eng; eng.prepare (fs, 256);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 150.0); eng.setWidth (b, 200.0); }
+            setAllMode (eng, Mode::Glue);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Linear);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
+            warmup (eng, fs);
+            auto proc = [&] (double x) -> double
+            {
+                float l = (float) x, r = (float) x, dl = 0.0f, dr = 0.0f;
+                eng.processBlock (&l, &r, 1, &dl, &dr);
+                return (double) l;
+            };
+            if (! factory_core::testing::impulseResponseNonIncreasing (proc, fs))
+                fail ("G22 linear impulse response energy increasing (feedback?)");
+        }
+
+        // (c) redesign-on-drag to extreme crossover settings stays finite + flat at
+        // enh 0 (the reconstruction is a pure delay for ANY crossover frequencies).
+        for (auto xs : { std::array<double,4>{ 40.0, 60.0, 90.0, 130.0 },
+                         std::array<double,4>{ 2000.0, 5000.0, 10000.0, 18000.0 } })
+        {
+            ME eng; eng.prepare (fs, 256); configFlat (eng);
+            eng.setQuality (ME::Quality::HQ); eng.setPhaseMode (ME::Phase::Linear);
+            eng.setMix (100.0);
+            eng.setCrossovers (xs[0], xs[1], xs[2], xs[3]);
+            eng.redesignFir (xs[0], xs[1], xs[2], xs[3]); // stands in for the message-thread redesign
+            warmup (eng, fs, 0.4);
+            std::vector<double> in ((size_t) (Nfft + Dhost), 0.0), inR, oL, oR, dL, dR;
+            in[0] = 1.0; inR = in;
+            runEngine (eng, in, inR, oL, oR, dL, dR);
+            if (! factory_core::testing::allFinite (oL)) fail ("G22 redesign extreme not finite");
+            std::vector<double> seg (oL.begin() + Dhost, oL.begin() + Dhost + Nfft);
+            std::vector<double> magDb; magSpectrum (seg, order, fft, magDb);
+            double maxDev = 0.0;
+            for (int k = 1; k < Nfft / 2; ++k)
+            {
+                const double f = freqOfBin (k, fs, order);
+                if (f < 20.0 || f > 0.42 * fs) continue;
+                maxDev = std::max (maxDev, std::abs (magDb[(size_t) k]));
+            }
+            if (g_verbose) std::printf ("   redesign [%.0f..%.0f] flat dev=%.4f dB\n", xs[0], xs[3], maxDev);
+            if (maxDev > 0.25) fail ("G22 redesign extreme not flat (" + std::to_string (maxDev) + " dB)");
+        }
+    }
 }
 
 int main (int argc, char** argv)
@@ -1061,6 +1415,11 @@ int main (int argc, char** argv)
         g15_mix_law (fs);
         g16_solo (fs);
         g17_band_mode_independence (fs);
+        g18_linear_reconstruction (fs);
+        g19_linear_phase (fs);
+        g20_crossover_points (fs);
+        g21_linear_latency (fs);
+        g22_linear_engine (fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

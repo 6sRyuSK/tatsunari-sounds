@@ -16,7 +16,8 @@ DSP は**既存プリミティブの合成**で作る。まずここから選び
 | `Filters.h` | RBJ cookbook 設計一式: bell / low・high shelf / high・low pass(a0=1 正規化、z 領域で検証済み) |
 | `OnePole.h` | 1-pole LP(補で HP)。ダンピング・トーン用 |
 | `LinkwitzRiley.h` | LR4 クロスオーバー(low/high が同相、和が allpass) |
-| `Crossover3.h` / `Crossover5.h` | LR4 ベースの 3 / 5 バンドスプリッタ(allpass 補償で完全再構成) |
+| `Crossover3.h` / `Crossover5.h` | LR4 ベースの 3 / 5 バンドスプリッタ(allpass 補償で完全再構成、最小レイテンシ) |
+| `LinearPhaseCrossover5.h` | 5 バンド **線形位相** スプリッタ(隣接 FIR ローパスの差＝帯域和が純遅延、マスタリング向け。redesign はメッセージスレッドで lock-free 差し替え、タップ長レート連動) |
 
 ## ダイナミクス
 

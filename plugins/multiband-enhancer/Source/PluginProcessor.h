@@ -106,9 +106,17 @@ private:
     std::atomic<float>* mixP     = nullptr;
     std::atomic<float>* outputP  = nullptr;
     std::atomic<float>* qualityP = nullptr;
+    std::atomic<float>* phaseP   = nullptr;
     std::atomic<float>* deltaP   = nullptr;
     std::atomic<float>* bypassP  = nullptr;
     juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
+
+    // Linear-phase FIR redesign handoff: the audio thread stores the dragged
+    // crossover frequencies and flags a redesign; handleAsyncUpdate (message thread)
+    // rebuilds the kernels off the audio thread. firLastHz is audio-thread-local.
+    std::array<std::atomic<double>, 4> firReqHz {};
+    std::atomic<bool> firRedesignPending { false };
+    double firLastHz[4] { 130.0, 700.0, 2200.0, 7500.0 };
 
     double currentSampleRate = 44100.0;
 

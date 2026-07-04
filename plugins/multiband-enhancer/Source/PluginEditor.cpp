@@ -38,6 +38,12 @@ MultibandEnhancerAudioProcessorEditor::MultibandEnhancerAudioProcessorEditor (Mu
         att = std::make_unique<ComboAtt> (processor.apvts, pid, box);
     };
     fillChoice (qualityBox, qualityLabel, "Quality", { "HQ", "Zero Latency" }, "quality", qualityAtt);
+    fillChoice (phaseBox, phaseLabel, "Xover Phase", { "Standard", "Linear" }, "phase", phaseAtt);
+
+    // Linear phase is HQ-only; grey the selector out whenever Zero-Latency is picked
+    // (fires for both user edits and host automation of the Quality box).
+    qualityBox.onChange = [this] { updatePhaseEnablement(); };
+    updatePhaseEnablement();
 
     // Single Mix knob (dry/enhanced blend) replaces the Direct + Enhanced faders.
     factory_ui::styleKnob (mixKnob, mixLabel, "Mix", " %");
@@ -77,6 +83,15 @@ void MultibandEnhancerAudioProcessorEditor::refreshPresetSelector()
     for (int i = 0; i < processor.getNumPrograms(); ++i)
         names.add (processor.getProgramName (i));
     presetSelector.setItems (names, processor.getCurrentProgram());
+}
+
+void MultibandEnhancerAudioProcessorEditor::updatePhaseEnablement()
+{
+    const bool zeroLatency = qualityBox.getSelectedItemIndex() == 1; // 0 = HQ, 1 = ZL
+    phaseBox.setEnabled (! zeroLatency);
+    phaseLabel.setEnabled (! zeroLatency);
+    phaseBox.setTooltip (zeroLatency ? "Linear-phase crossover requires HQ quality"
+                                     : "Linear-phase FIR crossover (mastering; adds ~43 ms latency)");
 }
 
 void MultibandEnhancerAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
@@ -139,7 +154,11 @@ void MultibandEnhancerAudioProcessorEditor::resized()
 
         qualityLabel.setBounds (c.removeFromTop (16));
         qualityBox.setBounds (c.removeFromTop (24));
-        c.removeFromTop (14);
+        c.removeFromTop (10);
+
+        phaseLabel.setBounds (c.removeFromTop (16));
+        phaseBox.setBounds (c.removeFromTop (24));
+        c.removeFromTop (12);
 
         deltaButton.setBounds (c.removeFromTop (22));
         c.removeFromTop (6);

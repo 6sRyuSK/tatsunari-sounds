@@ -48,6 +48,7 @@
 //
 #include "Oversampler.h"
 #include "Crossover5.h"
+#include "LinearPhaseCrossover5.h"
 #include "HarmonicShaper.h"
 #include "EnvelopeFollower.h"
 #include "OnePole.h"
@@ -65,6 +66,25 @@ namespace factory_core
         static constexpr int    kBands      = 5;
         using Mode = HarmonicShaper::Mode;
         enum class Quality { HQ = 0, ZeroLatency };
+        // Crossover phase response. Standard = the allpass-compensated IIR Crossover5
+        // (minimum latency). Linear = a linear-phase FIR split (LinearPhaseCrossover5,
+        // zero dispersion) — mastering only, HQ path only: in Zero-Latency the option
+        // has no effect (M = 1 has no oversampling bracket to carry the FIR latency).
+        enum class Phase   { Standard = 0, Linear };
+
+        // Linear-phase FIR group delay target: ~43 ms at every rate (2048 host
+        // samples at 48 kHz), sized so the 40 Hz split is resolved with mastering
+        // precision. The tap count follows the sample rate (never fixed) — see
+        // firDelayHostSamples() / prepare().
+        static constexpr double kFirLatencySeconds = 2048.0 / 48000.0; // ~0.04267 s
+
+        // Host-rate group delay the linear-phase FIR adds (an exact integer of host
+        // samples; the OS-rate delay firDelayHost*M is a multiple of M so the round
+        // trip through the decimator stays sample-exact).
+        static int firDelayHostSamples (double fs) noexcept
+        {
+            return std::max (1, (int) std::lround (kFirLatencySeconds * fs));
+        }
 
         // HQ oversampling factor: 4x below 50 kHz, else 2x. Every supported rate
         // oversamples so the raw shaper's ultrasonic harmonics are pushed above the
@@ -94,6 +114,21 @@ namespace factory_core
             osOutL.assign (osCap, 0.0f);  osOutR.assign (osCap, 0.0f);
             osDeltaL.assign (osCap, 0.0f); osDeltaR.assign (osCap, 0.0f);
 
+            // Linear-phase FIR crossover (HQ path only). Length follows the sample
+            // rate: firDelayHost host samples of group delay -> firDelayHost*mHq OS
+            // samples -> N = 2*firDelayHost*mHq + 1 taps. firDelayHost*mHq is a
+            // multiple of mHq, so the OS delay maps to an exact integer host latency.
+            firDelayHost = firDelayHostSamples (fs);
+            const int firDelayOs = firDelayHost * mHq;
+            const int firTaps    = 2 * firDelayOs + 1;
+            firXover.prepare (fs * (double) mHq, maxN * mHq, firTaps, firDelayOs);
+            firXover.design (xoverTargetHz[0], xoverTargetHz[1], xoverTargetHz[2], xoverTargetHz[3]);
+            for (int b = 0; b < kBands; ++b)
+            {
+                firBandL[b].assign (osCap, 0.0f);
+                firBandR[b].assign (osCap, 0.0f);
+            }
+
             // Host-rate scratch for the outgoing path during a quality crossfade
             // (both paths write host-rate output; only mixing/processing toggles).
             const std::size_t hostCap = (std::size_t) maxN;
@@ -120,6 +155,7 @@ namespace factory_core
 
             activeQuality = qualityParam;
             active = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
+            phaseActive = phaseParam;
             latencyDirty = true;
         }
 
@@ -127,6 +163,7 @@ namespace factory_core
         {
             pathHQ.reset();
             pathZL.reset();
+            firXover.reset();
             // Snap the host-rate smoothers to their targets so reset() lands in
             // the same canonical state a freshly prepared engine would (Class E).
             for (int b = 0; b < kBands; ++b) { enhSm[b].snap (enhTarget[b]); widthSm[b].snap (widthTarget[b]); }
@@ -140,11 +177,13 @@ namespace factory_core
             // in sync also means the next processBlock does not spuriously start a
             // fade after a reset (Class E: canonical state == freshly prepared).
             Path* prev    = active;
+            const Phase prevPhase = phaseActive;
             activeQuality = qualityParam;
             active        = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
+            phaseActive   = phaseParam;
             xfadeRemaining = 0;
             xfadeFrom      = nullptr;
-            if (active != prev) latencyDirty = true;
+            if (active != prev || phaseActive != prevPhase) latencyDirty = true;
         }
 
         // ---- parameters (plain setters; smoothed internally) ----------------
@@ -174,11 +213,35 @@ namespace factory_core
         void setOutputDb (double db) noexcept { gOutputTarget = dbToLin (db); }
         void setQuality  (Quality q) noexcept { qualityParam = q; }
         void setDeltaListen (bool on) noexcept { deltaListen = on; }
+        // Crossover phase mode. Effective on the HQ path only (Zero-Latency ignores
+        // it — no oversampling bracket). A change flips the reported latency by the
+        // FIR group delay, handled as a reset-based switch in processBlock().
+        void setPhaseMode (Phase p) noexcept { phaseParam = p; }
+
+        // Rebuild the linear-phase FIR kernels for new crossover frequencies. Heavy
+        // (windowed-sinc design + partition FFTs, allocates) -> MESSAGE THREAD ONLY;
+        // publishes lock-free so the audio thread never blocks. Draggable crossovers
+        // therefore redesign OFF the audio thread (the processor triggers this).
+        void redesignFir (double f1, double f2, double f3, double f4)
+        {
+            firXover.design (f1, f2, f3, f4);
+        }
 
         // ---- info -----------------------------------------------------------
-        int    latencySamples() const noexcept { return active ? active->up[0].latencyHostSamples() : 0; }
+        // Reported latency = the active path's oversampler round trip, PLUS the FIR
+        // group delay when the HQ path is running the linear-phase crossover.
+        int    latencySamples() const noexcept
+        {
+            const int os  = active ? active->up[0].latencyHostSamples() : 0;
+            const int fir = (active == &pathHQ && phaseParam == Phase::Linear) ? firDelayHost : 0;
+            return os + fir;
+        }
         double bandResidualRmsDb (int band) const noexcept { return bandRmsDb[(size_t) std::clamp (band, 0, kBands - 1)]; }
-        double effectiveCrossoverHz (int i) const noexcept { return active ? active->xover[0].effectiveCrossoverHz (i) : xoverTargetHz[i]; }
+        double effectiveCrossoverHz (int i) const noexcept
+        {
+            if (active == &pathHQ && phaseParam == Phase::Linear) return firXover.effectiveHz (i);
+            return active ? active->xover[0].effectiveCrossoverHz (i) : xoverTargetHz[i];
+        }
         bool   consumeLatencyDirty() noexcept { const bool d = latencyDirty; latencyDirty = false; return d; }
 
         // ---- audio ----------------------------------------------------------
@@ -204,10 +267,28 @@ namespace factory_core
                 activeQuality  = qualityParam;
                 active         = (activeQuality == Quality::HQ) ? &pathHQ : &pathZL;
                 active->reset();
+                // Entering HQ with linear phase: clear the FIR tail too (it is idle
+                // during ZL, so its history is stale) — a clean fill, masked by fade.
+                if (active == &pathHQ && phaseParam == Phase::Linear) firXover.reset();
                 xfadeRemaining = xfadeLen;
                 latencyDirty   = true;
             }
+            // Phase-mode switch is a reset-based change (not a crossfade): the FIR
+            // adds ~43 ms of latency, so a 20 ms equal-power fade across that gap
+            // would comb worse than a clean, PDC-republished transient. Reset the FIR
+            // convolver state and flip the reported latency now (the host re-aligns).
+            if (phaseParam != phaseActive)
+            {
+                phaseActive  = phaseParam;
+                firXover.reset();
+                latencyDirty = true;
+            }
+
             const bool fading = (xfadeRemaining > 0 && xfadeFrom != nullptr && xfadeFrom != active);
+            auto useLin = [this] (const Path* p) noexcept
+            {
+                return p == &pathHQ && phaseActive == Phase::Linear;
+            };
 
             // Push current parameter targets into the host-rate smoothers (once per
             // block; during a fade BOTH paths must see the identical trajectory).
@@ -222,12 +303,12 @@ namespace factory_core
             if (fading)
             {
                 SmootherState snap; saveSmoothers (snap);
-                runPath (*xfadeFrom, L, R, n, xfL.data(), xfR.data(), xfDL.data(), xfDR.data(), false);
+                runPath (*xfadeFrom, L, R, n, xfL.data(), xfR.data(), xfDL.data(), xfDR.data(), false, useLin (xfadeFrom));
                 restoreSmoothers (snap);
             }
 
             // Active (incoming) path — processes in place and drives the meters.
-            runPath (*active, L, R, n, L, R, deltaL, deltaR, true);
+            runPath (*active, L, R, n, L, R, deltaL, deltaR, true, useLin (active));
 
             // Equal-power crossfade old -> new at host rate. Equal-power (sin/cos)
             // rather than linear: the two paths have different latency (51 vs 0
@@ -269,7 +350,7 @@ namespace factory_core
         // allocation — the oversample scratch is shared (paths run sequentially).
         void runPath (Path& P, const float* inL, const float* inR, int n,
                       float* outL, float* outR, float* outDL, float* outDR,
-                      bool updateMeter) noexcept
+                      bool updateMeter, bool useLinear) noexcept
         {
             const int M = P.M;
 
@@ -287,6 +368,19 @@ namespace factory_core
             P.up[0].processUp (inL, n, osInL.data());
             P.up[1].processUp (inR, n, osInR.data());
 
+            // Linear-phase split: precompute the five OS-rate bands for the whole
+            // block (block-based FIR convolution) so the per-sample core below just
+            // reads them. sum(bands) == the upsampled input delayed by the FIR group
+            // delay, so the direct bus (sum of active bands) stays phase-coherent.
+            if (useLinear)
+            {
+                const int nOs = n * M;
+                firXover.process (0, osInL.data(), nOs, firBandL[0].data(), firBandL[1].data(),
+                                  firBandL[2].data(), firBandL[3].data(), firBandL[4].data());
+                firXover.process (1, osInR.data(), nOs, firBandR[0].data(), firBandR[1].data(),
+                                  firBandR[2].data(), firBandR[3].data(), firBandR[4].data());
+            }
+
             double rmsAcc[kBands] = { 0, 0, 0, 0, 0 };
 
             for (int i = 0; i < n; ++i)
@@ -299,7 +393,9 @@ namespace factory_core
                 // frequencies), only when a value actually moved (avoids zipper).
                 double xl[4];
                 for (int j = 0; j < 4; ++j) xl[j] = std::exp (xoverSm[j].next());
-                if (--xoverDecim <= 0)
+                // IIR split only: retune the biquads at sub-block granularity. The
+                // linear-phase split redesigns its FIR off the audio thread instead.
+                if (! useLinear && --xoverDecim <= 0)
                 {
                     xoverDecim = kXoverDecim;
                     if (xl[0] != lastXoverHz[0] || xl[1] != lastXoverHz[1]
@@ -318,8 +414,19 @@ namespace factory_core
                     const double xR = (double) osInR[(size_t) k];
 
                     double bL[kBands], bR[kBands];
-                    P.xover[0].process (xL, bL);
-                    P.xover[1].process (xR, bR);
+                    if (useLinear)
+                    {
+                        for (int b = 0; b < kBands; ++b)
+                        {
+                            bL[b] = (double) firBandL[(size_t) b][(size_t) k];
+                            bR[b] = (double) firBandR[(size_t) b][(size_t) k];
+                        }
+                    }
+                    else
+                    {
+                        P.xover[0].process (xL, bL);
+                        P.xover[1].process (xR, bR);
+                    }
 
                     // Direct bus is the sum of the (active) bands: for the LR tree
                     // sum(bands) == allpass(x) bit-for-bit, so the direct path stays
@@ -520,6 +627,13 @@ namespace factory_core
         // Host-rate scratch for the outgoing path's output during a quality crossfade.
         std::vector<float> xfL, xfR, xfDL, xfDR;
 
+        // Linear-phase FIR crossover (HQ path only). firBand{L,R}[b] hold the five
+        // OS-rate bands for the current block; firDelayHost is the extra host-sample
+        // latency the FIR group delay adds when the linear phase mode is active.
+        LinearPhaseCrossover5 firXover;
+        std::vector<float>    firBandL[kBands], firBandR[kBands];
+        int                   firDelayHost = 0;
+
         Path pathHQ, pathZL;
         Path* active = nullptr;
         // Quality crossfade: the path fading out, and how many host samples remain.
@@ -528,6 +642,8 @@ namespace factory_core
         int   xfadeRemaining = 0;
         Quality qualityParam  = Quality::HQ;
         Quality activeQuality = Quality::HQ;
+        Phase   phaseParam    = Phase::Standard; // target crossover phase mode
+        Phase   phaseActive   = Phase::Standard; // currently-rendered phase mode
         Mode    bandMode[kBands] { Mode::Tube, Mode::Tube, Mode::Tube, Mode::Tube, Mode::Tube };
         bool    soloBand[kBands] { false, false, false, false, false };
         bool    deltaListen   = false;
