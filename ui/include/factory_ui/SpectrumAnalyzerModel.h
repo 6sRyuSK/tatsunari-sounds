@@ -21,18 +21,25 @@
 //
 namespace factory_ui
 {
+    // Per-frame display options for SpectrumAnalyzerModel. Defaults match the
+    // house analyser: fast up / slow down at 0.25, peak falls 0.6 dB/frame,
+    // −120 dB floor, no tilt. Kept at namespace scope (not nested) because a
+    // nested struct with default member initializers cannot be used as a
+    // defaulted argument (`Options opt = {}`) inside member functions of the
+    // enclosing class while it is still incomplete — clang rejects it (MSVC
+    // accepts). SpectrumAnalyzerModel::Options aliases this for call sites.
+    struct SpectrumAnalyzerOptions
+    {
+        float smoothing    = 0.25f;   // smoothed lerp toward the instantaneous value when falling
+        float peakFallDb   = 0.6f;    // peak-hold decay per frame
+        float floorDb      = -120.0f; // gain→dB floor
+        float tiltDbPerOct = 0.0f;    // display tilt (e.g. +3 dB/oct to flatten pink-ish spectra)
+    };
+
     class SpectrumAnalyzerModel
     {
     public:
-        // Per-frame display options. Defaults match the house analyser: fast up /
-        // slow down at 0.25, peak falls 0.6 dB/frame, −120 dB floor, no tilt.
-        struct Options
-        {
-            float smoothing    = 0.25f;   // smoothed lerp toward the instantaneous value when falling
-            float peakFallDb   = 0.6f;    // peak-hold decay per frame
-            float floorDb      = -120.0f; // gain→dB floor
-            float tiltDbPerOct = 0.0f;    // display tilt (e.g. +3 dB/oct to flatten pink-ish spectra)
-        };
+        using Options = SpectrumAnalyzerOptions;
 
         // (Re)allocate for `numChannels` spectra at `fftOrder`, resetting all
         // smoothed / peak state to the floor. A no-op when nothing changed, so
