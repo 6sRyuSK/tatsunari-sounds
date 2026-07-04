@@ -90,6 +90,7 @@ GranularDelayAudioProcessor::GranularDelayAudioProcessor()
     lfoRateParam  = apvts.getRawParameterValue ("lforate");
     lfoDepthParam = apvts.getRawParameterValue ("lfodepth");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, granular_delay_presets::bank,
                         granular_delay_presets::kExclude, granular_delay_presets::kNumExclude);

@@ -43,6 +43,8 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
+
     const juce::String getName() const override { return "Tatsumin Enhancer"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -104,6 +106,7 @@ private:
     std::atomic<float>* qualityP = nullptr;
     std::atomic<float>* deltaP   = nullptr;
     std::atomic<float>* bypassP  = nullptr;
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     double currentSampleRate = 44100.0;
 

@@ -33,6 +33,8 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
+
     const juce::String getName() const override { return "Fuzznari"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -76,6 +78,7 @@ private:
     std::atomic<float>* levelParam  = nullptr; // dB
     std::atomic<float>* mixParam    = nullptr; // %
     std::atomic<float>* bypassParam = nullptr; // bool
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
 

@@ -42,6 +42,7 @@ SaturatorAudioProcessor::SaturatorAudioProcessor()
     mixParam    = apvts.getRawParameterValue ("mix");
     outputParam = apvts.getRawParameterValue ("output");
     bypassParam = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, saturator_presets::bank,
                         saturator_presets::kExclude, saturator_presets::kNumExclude);

@@ -28,6 +28,8 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
+
     const juce::String getName() const override { return "Tatsunari Bus Compressor"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -59,6 +61,7 @@ private:
     std::atomic<float>* makeupParam    = nullptr;
     std::atomic<float>* mixParam       = nullptr;
     std::atomic<float>* bypassParam    = nullptr;
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
 

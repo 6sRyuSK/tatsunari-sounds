@@ -73,6 +73,7 @@ MultibandEnhancerAudioProcessor::MultibandEnhancerAudioProcessor()
     qualityP = apvts.getRawParameterValue ("quality");
     deltaP   = apvts.getRawParameterValue ("delta");
     bypassP  = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, multiband_enhancer_presets::bank,
                         multiband_enhancer_presets::kExclude, multiband_enhancer_presets::kNumExclude);

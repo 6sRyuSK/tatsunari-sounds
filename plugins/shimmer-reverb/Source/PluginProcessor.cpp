@@ -91,6 +91,7 @@ ShimmerReverbAudioProcessor::ShimmerReverbAudioProcessor()
     freezeParam   = apvts.getRawParameterValue ("freeze");
     mixParam      = apvts.getRawParameterValue ("mix");
     bypassParam   = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, shimmer_reverb_presets::bank,
                         shimmer_reverb_presets::kExclude, shimmer_reverb_presets::kNumExclude);

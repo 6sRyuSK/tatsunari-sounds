@@ -71,6 +71,7 @@ BusCompressorAudioProcessor::BusCompressorAudioProcessor()
     makeupParam    = apvts.getRawParameterValue ("makeup");
     mixParam       = apvts.getRawParameterValue ("mix");
     bypassParam    = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, bus_compressor_presets::bank,
                         bus_compressor_presets::kExclude, bus_compressor_presets::kNumExclude);

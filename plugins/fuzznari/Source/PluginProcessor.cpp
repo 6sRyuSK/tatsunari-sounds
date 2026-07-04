@@ -68,6 +68,7 @@ FuzznariAudioProcessor::FuzznariAudioProcessor()
     levelParam  = apvts.getRawParameterValue ("level");
     mixParam    = apvts.getRawParameterValue ("mix");
     bypassParam = apvts.getRawParameterValue ("bypass");
+    bypassParamPtr = apvts.getParameter ("bypass");
 
     programs.configure (apvts, fuzznari_presets::bank,
                         fuzznari_presets::kExclude, fuzznari_presets::kNumExclude);

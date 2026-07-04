@@ -33,6 +33,8 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParamPtr; }
+
     const juce::String getName() const override { return "Dynamic Tatsunari EQ"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
@@ -92,6 +94,7 @@ private:
     std::array<BandParams, kNumBands> params;
     std::array<factory_core::DynamicEqBand, kNumBands> bands;
     std::atomic<float>* bypassParam = nullptr;
+    juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
 

@@ -3,6 +3,6 @@ name      = "Resonance TatSuppressor"
 slug      = "resonance-suppressor"
 category  = "EQ"
 status    = "shipped"
-version   = "1.1.0"
+version   = "1.2.0"
 formats   = ["VST3", "AU"]
 reference = "oeksound soothe2"
