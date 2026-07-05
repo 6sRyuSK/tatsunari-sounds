@@ -37,6 +37,8 @@ namespace
     void fail (const std::string& m) { std::printf ("  FAIL: %s\n", m.c_str()); ++g_failures; }
     void check (bool ok, const std::string& m) { if (! ok) fail (m); }
 
+    constexpr double kPi = 3.14159265358979323846;
+
     // Injected known nonlinearity: x -> tanh(g*x). Memoryless, so per-sample and
     // per-block processing agree — which lets the oracle stay per-sample.
     struct TanhModel : factory_core::MonoProcessor
@@ -49,6 +51,37 @@ namespace
             for (int i = 0; i < n; ++i) b[i] = std::tanh (g * b[i]);
         }
     };
+
+    // Stateful model injected only for the reset() test: a one-pole leaky
+    // integrator (y[n] = decay*y[n-1] + x[n]) so the engine's reset() has real
+    // per-model memory to clear (TanhModel above is memoryless, so it can't
+    // exercise reset()'s "propagate to model.reset()" contract, class E in
+    // docs/regression-policy.md).
+    struct LeakyModel : factory_core::MonoProcessor
+    {
+        float decay = 0.9f;
+        float state = 0.0f;
+        void processReplacing (float* b, int n) noexcept override
+        {
+            for (int i = 0; i < n; ++i) { state = decay * state + b[i]; b[i] = state; }
+        }
+        void reset() noexcept override { state = 0.0f; }
+    };
+
+    // Identity model injected only for the ramp-trajectory test: leaves the
+    // signal unchanged, so the engine's per-sample output is exactly
+    // in[i] * bufInGain[i] * bufOut[i] with no nonlinearity in the way of the
+    // linear-ramp oracle.
+    struct WireModel : factory_core::MonoProcessor
+    {
+        void processReplacing (float*, int) noexcept override {}
+    };
+
+    // Independent restatement of the ~5 ms ramp length documented in
+    // NamRoutingEngine.h (NamRoutingEngine::prepare): the per-slot gain/balance
+    // smoothers run over this many samples. Used as the oracle's ramp duration,
+    // not read out of the engine at runtime.
+    int rampLenSamples (double fs) { return std::max (1, (int) std::lround (0.005 * fs)); }
 
     struct SlotCfg { bool en; Mode mode; float inGain; float out; float bal; float tanhG; bool loaded; };
 
@@ -272,6 +305,173 @@ namespace
             // out gains are 2.0; series ends at |tanh|*2 <= 2, parallel sums 3 taps each
             // <= 2 => a comfortable ceiling well under 12.
             check (factory_core::testing::peakAbs (collected) < 12.0, "routing exceeded a realistic peak bound");
+        }
+    }
+
+    // ---- NamRoutingEngine::reset(): buses cleared, models reset, ramps settled ---
+    //
+    // reset() (NamRoutingEngine.h ~89-98) fills running/parBus with 0, propagates
+    // to every loaded model's reset(), then calls snap() to settle all gain/
+    // balance ramps onto their current targets. None of that is directly
+    // observable from outside the engine except by its effect on subsequent
+    // output, so the oracle here is behavioural: an engine that has accumulated
+    // real held state (nonzero model memory, a still-in-flight ramp) and is then
+    // reset() must produce EXACTLY the same output, sample-for-sample, on a
+    // subsequent input as a freshly-constructed engine configured identically
+    // and explicitly snap()ped. This is the class-E regression gate (#30/#39/#41)
+    // applied to the routing engine itself, which previously had no test at all.
+    void resetTests (double fs)
+    {
+        std::printf ("Engine reset() @ Fs=%.0f\n", fs);
+        std::mt19937 rng (0xA55E7u ^ (unsigned) (long long) fs);
+        const int maxBlock = 4096;
+        const int rl = rampLenSamples (fs);
+
+        auto buildEngine = [&] (factory_core::NamRoutingEngine& eng, std::array<LeakyModel, 3>& models)
+        {
+            eng.prepare (fs, maxBlock);
+            for (int k = 0; k < 3; ++k)
+            {
+                eng.setModel (k, 0, &models[(size_t) k]);
+                eng.setModel (k, 1, &models[(size_t) k]);
+            }
+            eng.setSlot (0, true,  Mode::Series,   1.4f, 0.85f,  0.0f);
+            eng.setSlot (1, true,  Mode::Parallel, 0.9f, 0.6f,  -0.4f);
+            eng.setSlot (2, false, Mode::Series,   1.0f, 1.0f,   0.0f);
+        };
+
+        // Engine A: build, settle to the initial targets, THEN retarget slots 0/1
+        // (creating still-active, in-flight ramps -- no snap()) and stream a
+        // priming signal so the leaky models accumulate real, nonzero memory.
+        // Prime with FEWER samples than the ramp length so the ramps are
+        // genuinely mid-flight at the moment of reset() (not already converged
+        // by coincidence).
+        factory_core::NamRoutingEngine engA;
+        std::array<LeakyModel, 3> modelsA;
+        buildEngine (engA, modelsA);
+        engA.snap();
+        engA.setSlot (0, true, Mode::Series,   2.2f, 0.5f, 0.0f);
+        engA.setSlot (1, true, Mode::Parallel, 1.6f, 0.4f, 0.5f);
+
+        const int primeN = std::max (1, rl / 2);
+        {
+            const auto inL = randomSignal (rng, primeN, 0.8f);
+            const auto inR = randomSignal (rng, primeN, 0.8f);
+            std::vector<float> outL ((size_t) primeN), outR ((size_t) primeN);
+            engA.process (inL.data(), inR.data(), outL.data(), outR.data(), primeN);
+        }
+        check (modelsA[0].state != 0.0f,
+               "reset test setup: series model never accumulated state (test would be vacuous)");
+
+        engA.reset();
+        check (modelsA[0].state == 0.0f && modelsA[1].state == 0.0f,
+               "engine reset() did not propagate to model.reset()");
+
+        // Engine B: fresh construction, configured to exactly the targets engine
+        // A held at reset time, then explicitly snap()ped -- the documented
+        // post-reset contract.
+        factory_core::NamRoutingEngine engB;
+        std::array<LeakyModel, 3> modelsB;
+        buildEngine (engB, modelsB);
+        engB.setSlot (0, true, Mode::Series,   2.2f, 0.5f, 0.0f);
+        engB.setSlot (1, true, Mode::Parallel, 1.6f, 0.4f, 0.5f);
+        engB.snap();
+
+        // Drive the SAME subsequent input through both and compare.
+        const int n = 1000;
+        const auto inL = randomSignal (rng, n, 0.7f);
+        const auto inR = randomSignal (rng, n, 0.7f);
+        std::vector<float> outAL ((size_t) n), outAR ((size_t) n);
+        std::vector<float> outBL ((size_t) n), outBR ((size_t) n);
+        engA.process (inL.data(), inR.data(), outAL.data(), outAR.data(), n);
+        engB.process (inL.data(), inR.data(), outBL.data(), outBR.data(), n);
+
+        const double dl = maxAbsDiff (outAL, outBL);
+        const double dr = maxAbsDiff (outAR, outBR);
+        check (dl < 1e-6 && dr < 1e-6,
+               "reset() did not converge to a freshly-configured engine (buses/ramps/model state), diff L="
+               + std::to_string (dl) + " R=" + std::to_string (dr));
+    }
+
+    // ---- Ramp trajectory: linear-interpolation oracle over the documented ramp --
+    //
+    // The pre-existing "ramp active" test only asserted finite + peak<12 (no
+    // oracle on the actual trajectory). Here: a steady sine through a Series
+    // slot with an identity (Wire) model, so output[i] == input[i] * inGain(i)
+    // exactly, with inGain(i) driven by a single retarget (no snap()). The
+    // independent oracle re-derives Ramp::next()'s documented linear ramp
+    // (NamRoutingEngine.h ~156-160: cur += inc each sample, exactly hitting
+    // target at sample rl-1, held after) using rampLenSamples() (the ~5 ms
+    // constant from the header, not read out of the engine). Both an instant
+    // jump (no ramp) and a wrong-duration ramp diverge from this oracle and
+    // must fail.
+    void rampTrajectoryTests (double fs)
+    {
+        std::printf ("Ramp trajectory @ Fs=%.0f\n", fs);
+        const int rl = rampLenSamples (fs);
+        const int n  = rl + 2000;                 // full ramp + a settled tail, one block
+
+        const float oldGain = 0.2f;
+        const float newGain = 1.6f;
+        const float A = 0.5f;
+        const double f = 500.0;
+
+        factory_core::NamRoutingEngine eng;
+        WireModel model;
+        eng.prepare (fs, n);
+        eng.setModel (0, 0, &model);
+        eng.setModel (0, 1, &model);
+        eng.setSlot (0, true,  Mode::Series, oldGain, 1.0f, 0.0f);
+        eng.setSlot (1, false, Mode::Series, 1.0f,    1.0f, 0.0f);
+        eng.setSlot (2, false, Mode::Series, 1.0f,    1.0f, 0.0f);
+        eng.snap();
+
+        // Retarget WITHOUT snap() -> the engine must ramp inGain from oldGain to
+        // newGain over exactly rl samples.
+        eng.setSlot (0, true, Mode::Series, newGain, 1.0f, 0.0f);
+
+        std::vector<float> inL ((size_t) n), inR ((size_t) n);
+        for (int i = 0; i < n; ++i)
+        {
+            const float s = A * (float) std::sin (2.0 * kPi * f * i / fs);
+            inL[(size_t) i] = s; inR[(size_t) i] = s;
+        }
+        std::vector<float> outL ((size_t) n), outR ((size_t) n);
+        eng.process (inL.data(), inR.data(), outL.data(), outR.data(), n);
+
+        // Independent oracle: Ramp::next() returns cur_0 + (i+1)*inc for
+        // i = 0..rl-2, and exactly `target` at i == rl-1 and after.
+        double maxErr = 0.0, maxErrPostRamp = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double gain = (i < rl) ? (oldGain + (double) (i + 1) / rl * (newGain - oldGain)) : newGain;
+            const double expected = gain * inL[(size_t) i];
+            const double err = std::abs ((double) outL[(size_t) i] - expected);
+            maxErr = std::max (maxErr, err);
+            if (i >= rl) maxErrPostRamp = std::max (maxErrPostRamp, err);
+        }
+        check (maxErr < 2e-5, "ramp trajectory diverged from the linear-interpolation oracle, maxErr="
+               + std::to_string (maxErr));
+        check (maxErrPostRamp < 2e-5,
+               "ramp did not settle to newGain by the documented rate-dependent sample count rl="
+               + std::to_string (rl));
+
+        // Explicit "no-ramp / wrong-duration must fail" gate: near the temporal
+        // midpoint of the ramp (picking a sample with enough signal amplitude to
+        // avoid a near-zero sine crossing), the output must sit meaningfully
+        // between the "already at newGain" (instant jump) and "still at oldGain"
+        // (too-slow / wrong-duration ramp) hypotheses, matching only the linear
+        // oracle.
+        {
+            int idx = rl / 2;
+            while (idx < n - 1 && std::abs (inL[(size_t) idx]) < 0.3f * A) ++idx;
+            const double instantJumpOut = (double) newGain * inL[(size_t) idx];
+            const double staticOut      = (double) oldGain * inL[(size_t) idx];
+            const double span = std::abs (instantJumpOut - staticOut);
+            check (std::abs ((double) outL[(size_t) idx] - instantJumpOut) > 0.2 * span,
+                   "ramp jumped to newGain instantly at rl/2 (no ramp)");
+            check (std::abs ((double) outL[(size_t) idx] - staticOut) > 0.2 * span,
+                   "ramp still at oldGain at rl/2 (too slow / wrong duration)");
         }
     }
 
@@ -514,7 +714,6 @@ namespace
     // The Catmull-Rom Resampler folds near-Nyquist tones back at ~0 dB; the
     // band-limited PolyphaseResampler must keep every alias/image bin <= -70 dB
     // (designed for 80 dB). Passband tones must be preserved (±0.5 dB).
-    constexpr double kPi = 3.14159265358979323846;
 
     double toneAmplitude (const std::vector<float>& x, int start, int len, double f, double fs)
     {
@@ -798,6 +997,8 @@ int main (int argc, char** argv)
     for (double fs : rates)
     {
         routingTests (fs);
+        resetTests (fs);
+        rampTrajectoryTests (fs);
         rateBracketTests (fs);
     }
 
