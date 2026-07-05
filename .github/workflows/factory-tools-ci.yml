@@ -1,0 +1,47 @@
+# PR gate for the Python factory tooling (tools/gen_catalog.py, release_plan.py,
+# and their unit tests). Kept separate from the JUCE/CMake ci.yml so it never
+# touches that build gate's path scoping. This closes the "README catalog drift
+# is ungated" hole: ci.yml only builds when a build-affecting source changes, so
+# a plugin.toml/roadmap edit that leaves README stale would otherwise merge
+# unchecked. Runs quickly on ubuntu — no JUCE, no compilation.
+name: factory-tools-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/**"
+      - "plugins/*/plugin.toml"
+      - "roadmap.toml"
+      - "README.md"
+      - ".github/workflows/factory-tools-ci.yml"
+  pull_request:
+    paths:
+      - "tools/**"
+      - "plugins/*/plugin.toml"
+      - "roadmap.toml"
+      - "README.md"
+      - ".github/workflows/factory-tools-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Gate README catalog staleness (the block between the CATALOG markers must
+      # match plugins/*/plugin.toml + roadmap.toml).
+      - name: Catalog freshness
+        run: python tools/gen_catalog.py --check
+
+      # Stdlib-only unit tests for gen_catalog.py and release_plan.py.
+      - name: Unit tests
+        run: python -m unittest discover -s tools/tests
