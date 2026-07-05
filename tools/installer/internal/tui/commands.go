@@ -22,9 +22,8 @@ type progressMsg app.ProgressEvent
 
 // installDoneMsg is the terminal message of an install run.
 type installDoneMsg struct {
-	result    model.ApplyResult
-	installed []app.InstalledItem
-	err       error
+	result model.ApplyResult
+	err    error
 }
 
 // discoverCmd fetches the latest release and reconciles with the local receipt.
@@ -51,7 +50,7 @@ func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanI
 			if err == nil && len(installed) > 0 {
 				_ = app.WriteReceipt(installed, versionOf)
 			}
-			ch <- installDoneMsg{result: res, installed: installed, err: err}
+			ch <- installDoneMsg{result: res, err: err}
 			close(ch)
 		}()
 		return waitForMsg(ch)()

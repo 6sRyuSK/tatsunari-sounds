@@ -30,14 +30,23 @@ BEGIN = "<!-- BEGIN:CATALOG -->"
 END = "<!-- END:CATALOG -->"
 
 
+def _read_plugin_tables():
+    """Glob and parse every plugins/*/plugin.toml once, yielding (Path, table)
+    pairs where table is the [plugin] section (or the whole document when the
+    file has no [plugin] header). Single source of the glob + normalization both
+    public loaders build on."""
+    for path in sorted(glob.glob(str(ROOT / "plugins" / "*" / "plugin.toml"))):
+        p = Path(path)
+        raw = tomllib.loads(p.read_text(encoding="utf-8"))
+        yield p, raw.get("plugin", raw)
+
+
 def load_plugins():
     shipped, in_progress = [], []
-    for path in sorted(glob.glob(str(ROOT / "plugins" / "*" / "plugin.toml"))):
-        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-        p = raw.get("plugin", raw)
+    for path, p in _read_plugin_tables():
         entry = {
             "name": p.get("name", "?"),
-            "slug": p.get("slug", Path(path).parent.name),
+            "slug": p.get("slug", path.parent.name),
             "category": p.get("category", "?"),
             "version": p.get("version", ""),
             "formats": ", ".join(p.get("formats", [])),
@@ -53,12 +62,10 @@ def load_all_plugins():
     by the TUI installer's catalog.json — NOT filtered by status, since all
     released plugins are still "in-progress" yet shipped."""
     out = []
-    for path in sorted(glob.glob(str(ROOT / "plugins" / "*" / "plugin.toml"))):
-        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-        p = raw.get("plugin", raw)
+    for path, p in _read_plugin_tables():
         out.append({
             "name": p.get("name", "?"),
-            "slug": p.get("slug", Path(path).parent.name),
+            "slug": p.get("slug", path.parent.name),
             "category": p.get("category", "?"),
             "formats": list(p.get("formats", [])),
             "status": p.get("status", "shipped"),
