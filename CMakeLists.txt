@@ -43,6 +43,10 @@ target_compile_features(factory_presets INTERFACE cxx_std_20)
 
 enable_testing()
 
+# --- Direct per-primitive tests for the shared factory_core DSP primitives ---
+# (links only factory_core, headless; one CTest case per standard sample rate).
+add_subdirectory(core/tests)
+
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---
 # FACTORY_PLUGINS narrows the build to a subset of slugs (comma- or
 # semicolon-separated). Empty (the default) configures everything. CI passes

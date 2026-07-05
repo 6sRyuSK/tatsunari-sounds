@@ -32,6 +32,24 @@
 //       bias step during silence produces no thump.
 //   10. Latency truth: the reported latencySamples() matches the measured
 //       impulse arrival at every rate.
+//   11. Bypass (regression class E): engaging bypass while the worst-case
+//       squeal grid is self-oscillating fades the output to the silence
+//       floor within the documented kBypassFadeSec time constants, the edge
+//       is click-free (bounded sample-to-sample delta vs the squeal's own
+//       steady-state delta), and un-bypassing restarts the loop clean
+//       (clearedWhileBypassed) instead of snapping back to the established
+//       squeal amplitude — checked against a genuinely fresh engine too.
+//   12. Tone tilt: a two-tone (low/high, both far from the 800 Hz corner)
+//       integer-bin measurement shows the hi/lo energy ratio moves in the
+//       documented direction (tone>0 cuts low-shelf/boosts high-shelf) with
+//       a meaningful (not just nonzero) swing between the extremes.
+//   13. Level: an exact linear-gain oracle — level is applied purely as a
+//       post-nonlinearity output multiply (never fed back into the loop), so
+//       the whole waveform must scale by the level ratio, pointwise.
+//   14. Mix: mix=0.5 equals 0.5*dry + 0.5*wet sample-for-sample. dry and wet
+//       are combined at the same model-rate index inside processChannel
+//       before the shared RateBracket downsampling, so they are inherently
+//       latency-aligned — no manual delay compensation is needed.
 //
 // Sample-rate dependence: the tones are fixed absolute frequencies and the
 // analysis grids are derived from Fs, the engine's internal model rate is
@@ -708,6 +726,252 @@ namespace
                   + ", reported latency " + std::to_string (reported));
         std::printf ("  reported=%d  measured=%d\n", reported, (int) peakIdx);
     }
+
+    // Max sample-to-sample delta over x[start .. start+len).
+    double maxDelta (const std::vector<double>& x, size_t start, size_t len)
+    {
+        double m = 0.0;
+        for (size_t i = std::max (start, (size_t) 1); i < start + len && i < x.size(); ++i)
+            m = std::max (m, std::abs (x[i] - x[i - 1]));
+        return m;
+    }
+
+    // ---- 11. Bypass (regression class E): fade to dry, click-free, restarts
+    //          clean -------------------------------------------------------
+    void bypassTests (double Fs)
+    {
+        std::printf ("Bypass @ Fs=%.0f\n", Fs);
+
+        // Worst-case squeal grid, reused verbatim from oscillationTests/
+        // resetTests: osc ON, stab=1, gate=0, drive=36 dB self-sustains from
+        // digital silence and never decays on its own.
+        Params p;
+        p.driveDb = 36.0; p.stab = 1.0; p.gate = 0.0; p.osc = true;
+
+        FuzzEngine e;
+        applyParams (e, p);
+        e.prepare (Fs, 256);
+
+        // 1. Let the squeal establish.
+        const int buildLen = (int) std::llround (2.5 * Fs);
+        const auto established = processThrough (e, std::vector<double> ((size_t) buildLen, 0.0));
+        const size_t lastSec = (size_t) std::llround (1.0 * Fs);
+        if (rmsOf (established, established.size() - lastSec, lastSec) < 0.05)
+            fail ("Fs=" + std::to_string (Fs) + ": bypass setup squeal did not establish");
+        const double squealPeak = fct::peakAbs (tail (established, lastSec));
+
+        // Baseline per-sample delta of the *steady, un-bypassed* squeal, for
+        // the click-free comparison below (the oscillation itself moves
+        // sample-to-sample; the bar is "the bypass edge adds nothing on top
+        // of that", not "nothing moves at all").
+        const double steadyMaxDelta = maxDelta (established, established.size() - lastSec, lastSec);
+
+        // 2. Engage bypass: within a handful of the documented fade time
+        // constants the output (silence in, so dry == 0) must reach the
+        // silence floor even though the loop is self-sustaining.
+        e.setBypassed (true);
+        const int fadeSettleLen = (int) std::llround (10.0 * FuzzEngine::kBypassFadeSec * Fs);
+        const int fadeWatchLen  = (int) std::llround (20.0 * FuzzEngine::kBypassFadeSec * Fs);
+        const auto fadeOut = processThrough (e, std::vector<double> ((size_t) fadeWatchLen, 0.0));
+
+        if (fct::peakAbs (tail (fadeOut, (size_t) (fadeWatchLen - fadeSettleLen))) > 1e-4)
+            fail ("Fs=" + std::to_string (Fs) + ": bypass fade did not reach silence within "
+                  + std::to_string (10.0 * FuzzEngine::kBypassFadeSec) + " s ("
+                  + std::to_string (fct::peakAbs (tail (fadeOut, (size_t) (fadeWatchLen - fadeSettleLen)))) + ")");
+
+        // Click-free bypass edge: a hard cut to dry would jump by
+        // ~squealPeak in a single sample; a smooth one-pole fade cannot add
+        // more than a modest margin over the oscillation's own steady delta.
+        const double bypassEdgeDelta = maxDelta (fadeOut, 0, (size_t) fadeSettleLen);
+        if (bypassEdgeDelta > 2.0 * steadyMaxDelta + 1e-6)
+            fail ("Fs=" + std::to_string (Fs) + ": bypass edge click (" + std::to_string (bypassEdgeDelta)
+                  + " vs steady " + std::to_string (steadyMaxDelta) + ")");
+
+        // 3. Un-bypass: the loop must restart clean (clearedWhileBypassed),
+        // i.e. re-grow from the noise floor like a fresh engine rather than
+        // snap back to the established squeal amplitude. The regrowth from
+        // the 1e-11 noise seed is exponential and, once it takes off, VERY
+        // fast (measured on this engine: ~3e-8 peak at 20 ms, full ~1.0
+        // swing by ~100 ms) -- so a *correctly cleared* loop and a loop whose
+        // state *survived* bypass look identical if you wait 300 ms; they
+        // only differ in the first few ms, where a survived squeal would
+        // already show a large fraction of full amplitude (scaled by the
+        // wetFade ramp itself) while a genuinely cleared loop is still stuck
+        // at the noise floor. Use that short, timing-insensitive window.
+        e.setBypassed (false);
+        const int immediateLen = (int) std::llround (0.015 * Fs);
+        const auto regrow = processThrough (e, std::vector<double> ((size_t) immediateLen, 0.0));
+
+        FuzzEngine fresh;
+        applyParams (fresh, p);
+        fresh.prepare (Fs, 256);
+        const auto freshRegrow = processThrough (fresh, std::vector<double> ((size_t) immediateLen, 0.0));
+
+        const double regrowPeak = fct::peakAbs (regrow);
+        const double freshPeak  = fct::peakAbs (freshRegrow);
+        const double residualBound = 1e-3; // << squealPeak (~1), >> the measured noise-floor growth at 15 ms
+        if (regrowPeak > residualBound)
+            fail ("Fs=" + std::to_string (Fs) + ": squeal survived bypass (regrow peak " + std::to_string (regrowPeak)
+                  + " within " + std::to_string (immediateLen) + " samples of un-bypass; established squeal was "
+                  + std::to_string (squealPeak) + ")");
+        if (regrowPeak > 1000.0 * freshPeak + 1e-6)
+            fail ("Fs=" + std::to_string (Fs) + ": post-unbypass regrowth (" + std::to_string (regrowPeak)
+                  + ") not comparable to a fresh engine's (" + std::to_string (freshPeak) + ")");
+
+        // Click-free un-bypass edge too (regrowth is negligible here, so this
+        // should be far below anything squeal-scale).
+        const double unbypassEdgeDelta = maxDelta (regrow, 0, (size_t) immediateLen);
+        if (unbypassEdgeDelta > 0.01)
+            fail ("Fs=" + std::to_string (Fs) + ": un-bypass edge click (" + std::to_string (unbypassEdgeDelta) + ")");
+
+        std::printf ("  squeal peak=%.3f  bypass-edge delta=%.5f (steady %.5f)  regrow(15ms) peak=%.2e (fresh %.2e)\n",
+                     squealPeak, bypassEdgeDelta, steadyMaxDelta, regrowPeak, freshPeak);
+    }
+
+    // ---- 12. Tone tilt direction + meaningful magnitude ----------------------
+    void toneTests (double Fs)
+    {
+        std::printf ("Tone tilt @ Fs=%.0f\n", Fs);
+
+        const double loHz = 150.0, hiHz = 4000.0; // both well off the 800 Hz shelf corner
+        const double duration = 16384.0 / 48000.0;
+        const int    N = (int) std::llround (duration * Fs);
+        const int    loCycles = (int) std::llround (loHz * N / Fs);
+        const int    hiCycles = (int) std::llround (hiHz * N / Fs);
+        const double loW = 2.0 * kPi * loCycles / N;
+        const double hiW = 2.0 * kPi * hiCycles / N;
+        const int    warmup = (int) std::llround (0.3 * Fs);
+        const double amp = 0.01; // small signal: shaper stays ~linear so the shelf tilt dominates
+
+        auto ratioDbFor = [&] (double toneVal)
+        {
+            std::vector<double> in ((size_t) (warmup + N));
+            for (int n = 0; n < warmup + N; ++n)
+                in[(size_t) n] = amp * std::sin (loW * n) + amp * std::sin (hiW * n);
+
+            Params p;
+            p.driveDb = 0.0;
+            p.tone    = toneVal;
+            const auto y = tail (runEngine (p, Fs, in), (size_t) N);
+
+            const double loMag = std::abs (dftAt (y, loW));
+            const double hiMag = std::abs (dftAt (y, hiW));
+            return db (hiMag / loMag);
+        };
+
+        const double ratioNeg  = ratioDbFor (-1.0);
+        const double ratioFlat = ratioDbFor (0.0);
+        const double ratioPos  = ratioDbFor (1.0);
+
+        // Documented direction: tone>0 cuts the low shelf / boosts the high
+        // shelf (brighter); tone<0 is the mirror image (darker).
+        if (! (ratioPos > ratioFlat && ratioFlat > ratioNeg))
+            fail ("Fs=" + std::to_string (Fs) + ": tone tilt direction wrong (tone=-1:"
+                  + std::to_string (ratioNeg) + " 0:" + std::to_string (ratioFlat)
+                  + " +1:" + std::to_string (ratioPos) + " dB hi/lo)");
+
+        const double swing = ratioPos - ratioNeg;
+        if (swing < 12.0) // meaningful: comfortably below the ~2*2*kToneRangeDb=36dB asymptote
+            fail ("Fs=" + std::to_string (Fs) + ": tone tilt swing too small (" + std::to_string (swing) + " dB)");
+
+        std::printf ("  hi/lo ratio: tone=-1 %.1f dB  tone=0 %.1f dB  tone=+1 %.1f dB (swing %.1f dB)\n",
+                     ratioNeg, ratioFlat, ratioPos, swing);
+    }
+
+    // ---- 13. Level: exact linear-gain oracle ---------------------------------
+    void levelTests (double Fs)
+    {
+        std::printf ("Level gain oracle @ Fs=%.0f\n", Fs);
+
+        const int len = (int) std::llround (0.5 * Fs);
+        const auto in = sineSignal (Fs, 600.0, 0.3, len);
+
+        Params base;
+        base.driveDb = 12.0; base.bias = 0.2; base.mix = 1.0; base.levelDb = 0.0;
+        Params boosted = base;
+        boosted.levelDb = 12.0;
+
+        const auto outBase  = runEngine (base, Fs, in);
+        const auto outBoost = runEngine (boosted, Fs, in);
+
+        const double levelBase     = std::pow (10.0, base.levelDb / 20.0);
+        const double levelBoost    = std::pow (10.0, boosted.levelDb / 20.0);
+        const double expectedRatio = levelBoost / levelBase;
+
+        // level multiplies the output *after* the nonlinear shaper and is
+        // never fed back into the loop (processChannel writes `y` into
+        // fbDelay before applying level) — with mix=1 the entire waveform
+        // must scale by the level ratio exactly (up to float rounding), an
+        // oracle from the parameter's own definition rather than a
+        // re-derivation of the implementation.
+        const size_t settle = (size_t) std::llround (0.1 * Fs);
+        double num = 0.0, den = 0.0;
+        for (size_t n = settle; n < outBase.size(); ++n)
+        {
+            num += outBoost[n] * outBoost[n];
+            den += outBase[n] * outBase[n];
+        }
+        const double measuredRatio = std::sqrt (num / den);
+        if (std::abs (measuredRatio - expectedRatio) > 0.02 * expectedRatio)
+            fail ("Fs=" + std::to_string (Fs) + ": level gain " + std::to_string (measuredRatio)
+                  + "x != expected " + std::to_string (expectedRatio) + "x");
+
+        // Pointwise too: the scaling must hold sample-by-sample, not just in
+        // aggregate energy.
+        double worstRel = 0.0;
+        for (size_t n = settle; n < outBase.size(); ++n)
+        {
+            const double b = outBase[n];
+            if (std::abs (b) < 0.02) continue; // skip near-zero crossings (relative error blows up)
+            worstRel = std::max (worstRel, std::abs (outBoost[n] / b - expectedRatio) / expectedRatio);
+        }
+        if (worstRel > 0.05)
+            fail ("Fs=" + std::to_string (Fs) + ": level scaling not pointwise-linear (worst rel err "
+                  + std::to_string (worstRel) + ")");
+
+        std::printf ("  measured ratio=%.4fx expected=%.4fx (worst pointwise rel err %.4f)\n",
+                     measuredRatio, expectedRatio, worstRel);
+    }
+
+    // ---- 14. Mix intermediate blend ------------------------------------------
+    void mixTests (double Fs)
+    {
+        std::printf ("Mix intermediate blend @ Fs=%.0f\n", Fs);
+
+        const int len = (int) std::llround (0.5 * Fs);
+        const auto in = sineSignal (Fs, 600.0, 0.3, len);
+
+        Params p;
+        p.driveDb = 18.0; p.bias = 0.3; p.levelDb = 0.0;
+        Params dryP = p;  dryP.mix  = 0.0;
+        Params wetP = p;  wetP.mix  = 1.0;
+        Params halfP = p; halfP.mix = 0.5;
+
+        const auto outDry  = runEngine (dryP, Fs, in);
+        const auto outWet  = runEngine (wetP, Fs, in);
+        const auto outHalf = runEngine (halfP, Fs, in);
+
+        // processChannel (~line 298) combines dry and level*y at the *same*
+        // model-rate sample index, before the shared RateBracket
+        // downsampling -- dry and wet are inherently latency-aligned, so
+        // mix=0.5 must equal 0.5*dry + 0.5*wet sample-for-sample with no
+        // manual delay compensation.
+        const size_t settle = (size_t) std::llround (0.05 * Fs);
+        double worstAbs = 0.0, refPeak = 1e-12;
+        for (size_t n = settle; n < outHalf.size(); ++n)
+        {
+            const double predicted = 0.5 * outDry[n] + 0.5 * outWet[n];
+            worstAbs = std::max (worstAbs, std::abs (outHalf[n] - predicted));
+            refPeak  = std::max (refPeak, std::abs (predicted));
+        }
+        const double tol = 1e-3 * refPeak + 1e-4; // float-rounding margin, not a loosened gate
+        if (worstAbs > tol)
+            fail ("Fs=" + std::to_string (Fs) + ": mix=0.5 (worst |diff|=" + std::to_string (worstAbs)
+                  + ") != 0.5*dry+0.5*wet within " + std::to_string (tol));
+
+        std::printf ("  worst |mix0.5 - 0.5*(dry+wet)| = %.6f (tol %.6f, ref peak %.4f)\n",
+                     worstAbs, tol, refPeak);
+    }
 }
 
 int main (int argc, char** argv)
@@ -725,6 +989,10 @@ int main (int argc, char** argv)
         aliasTests (Fs);
         dcTests (Fs);
         latencyTests (Fs);
+        bypassTests (Fs);
+        toneTests (Fs);
+        levelTests (Fs);
+        mixTests (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

@@ -5,22 +5,31 @@
 //
 //   1. OnePole: unity at DC for the lowpass, zero at DC for the highpass.
 //   2. PitchShifter: a tone at f comes out dominated by ratio*f (+12 -> 2f,
-//      -12 -> f/2), measured by DFT.
+//      +7 -> 2^(7/12) f, -12 -> f/2), measured by DFT.
 //   3. Reverb decay: the tail decays, and a longer Decay setting sustains more.
 //   4. Damping darkens the tail (less high-frequency energy).
 //   5. Freeze sustains the tail (orthonormal feedback, no damping).
 //   6. Mix=0 is exact dry passthrough.
-//   7. Stability: no NaN/Inf at extreme settings.
+//   7. Stability: no NaN/Inf at extreme settings; feedback loop gain < 1
+//      (impulse-response energy non-increasing, class A).
+//   8. Mod headroom is a fixed *time* across all rates and the delay buffers
+//      carry the matching rate-derived headroom (class G/D).
+//   9. Pre-delay places the wet onset at the requested time (class D buffer).
+//  10. Freeze toggle mid-tone is click-free (class E, no discontinuity).
+//  11. Low/high cut tone-shape the shimmer tail in the expected direction.
 //
 #include "factory_core/OnePole.h"
 #include "factory_core/PitchShifter.h"
 #include "factory_core/ShimmerReverb.h"
+#include "factory_core/testing/DspInvariants.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+namespace fct = factory_core::testing;
 
 namespace
 {
@@ -81,7 +90,12 @@ namespace
         std::printf ("PitchShifter @ Fs=%.0f\n", Fs);
         const double f = 440.0;
         struct Case { double semis; double targetMul; const char* name; };
-        for (auto c : { Case { 12.0, 2.0, "+12" }, Case { -12.0, 0.5, "-12" } })
+        // +7 is a shimmer-path interval used by Pitch A/B (Voice B default);
+        // 2^(7/12) ~= 1.4983. Kept alongside the octave cases so every shipped
+        // shimmer interval is accuracy-checked, not just +/-12.
+        for (auto c : { Case { 12.0, 2.0, "+12" },
+                        Case { 7.0, std::pow (2.0, 7.0 / 12.0), "+7" },
+                        Case { -12.0, 0.5, "-12" } })
         {
             factory_core::PitchShifter ps;
             ps.prepare (Fs);
@@ -218,15 +232,16 @@ namespace
             rv.setFreeze (true);
 
             const int hold = (int) (45.0 * Fs);
-            double peak = 0.0;
+            std::vector<double> out ((size_t) hold);
             for (int n = 0; n < hold; ++n)
             {
                 double l = 0.0, r = 0.0;
                 rv.processStereo (l, r);
-                if (! std::isfinite (l) || ! std::isfinite (r))
-                { fail ("freeze+shimmer non-finite at shimmer=" + std::to_string (shimmer) + " n=" + std::to_string (n)); return; }
-                peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+                out[(size_t) n] = std::max (std::abs (l), std::abs (r));
             }
+            if (! fct::allFinite (out))
+            { fail ("freeze+shimmer non-finite at shimmer=" + std::to_string (shimmer)); return; }
+            const double peak = fct::peakAbs (out);
             if (peak > kPeakCeiling)
                 fail ("freeze+shimmer grew past ceiling (shimmer=" + std::to_string (shimmer)
                       + " peak=" + std::to_string (peak) + ")");
@@ -247,18 +262,18 @@ namespace
         rv.setShimmer (0.95); rv.setPitchASemis (12.0); rv.setPitchBSemis (19.0);
         rv.setVoiceBMix (0.5); rv.setModDepth (1.0); rv.setMix (1.0);
 
-        double peak = 0.0;
         const int burst = (int) (0.1 * Fs);
         const int N = (int) (20.0 * Fs);
+        std::vector<double> out ((size_t) N);
         for (int n = 0; n < N; ++n)
         {
             const double x = (n < burst) ? 0.4 * std::sin (2.0 * kPi * 220.0 * n / Fs) : 0.0;
             double l = x, r = x;
             rv.processStereo (l, r);
-            if (! std::isfinite (l) || ! std::isfinite (r))
-            { fail ("high-shimmer transient non-finite at n=" + std::to_string (n)); return; }
-            peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+            out[(size_t) n] = std::max (std::abs (l), std::abs (r));
         }
+        if (! fct::allFinite (out)) { fail ("high-shimmer transient non-finite"); return; }
+        const double peak = fct::peakAbs (out);
         if (peak > kPeakCeiling)
             fail ("high-shimmer transient exceeded ceiling (peak " + std::to_string (peak) + ")");
         std::printf ("  finite, peak=%.3f\n", peak);
@@ -292,17 +307,228 @@ namespace
         rv.setShimmer (0.9); rv.setPitchASemis (12.0); rv.setPitchBSemis (7.0);
         rv.setVoiceBMix (0.5); rv.setModDepth (1.0); rv.setMix (1.0);
 
-        double peak = 0.0;
-        for (int n = 0; n < (int) (2.0 * Fs); ++n)
+        const int N = (int) (2.0 * Fs);
+        std::vector<double> out ((size_t) N);
+        for (int n = 0; n < N; ++n)
         {
             const double x = 0.3 * std::sin (2.0 * kPi * 220.0 * n / Fs);
             double l = x, r = x;
             rv.processStereo (l, r);
-            if (! std::isfinite (l) || ! std::isfinite (r)) { fail ("non-finite output at n=" + std::to_string (n)); break; }
-            peak = std::max (peak, std::abs (l));
+            out[(size_t) n] = std::abs (l);
         }
+        if (! fct::allFinite (out)) { fail ("non-finite output"); return; }
+        const double peak = fct::peakAbs (out);
         if (peak > kPeakCeiling) fail ("output grew unbounded (peak " + std::to_string (peak) + ")");
         std::printf ("  finite, peak=%.2f\n", peak);
+    }
+
+    // Class A (regression-policy): the FDN feedback loop gain must be < 1 at the
+    // worst-case (max size, max decay, no damping) so the impulse-response
+    // energy is non-increasing window-over-window and the tail cannot run away.
+    // Shimmer is off here so this isolates the FDN loop (the shimmer + freeze
+    // divergence path is gated separately by freezeShimmerTest). Uses the shared
+    // oracle-free invariant across the full rate matrix.
+    void feedbackNonIncreasingTest (double Fs)
+    {
+        std::printf ("Feedback loop gain < 1 @ Fs=%.0f\n", Fs);
+        factory_core::ShimmerReverb rv;
+        rv.prepare (Fs);
+        rv.setSize (1.6); rv.setDecaySec (15.0); rv.setDamping (0.0);
+        rv.setShimmer (0.0); rv.setModDepth (0.0); rv.setMix (1.0);
+        rv.setFreeze (false);
+        const bool ok = fct::impulseResponseNonIncreasing (
+            [&] (double x) { double l = x, r = x; rv.processStereo (l, r); return 0.5 * (l + r); },
+            Fs);
+        if (! ok) fail ("impulse-response energy increased (loop gain >= 1)");
+        else      std::printf ("  non-increasing tail (loop gain < 1)\n");
+    }
+
+    // Class G/D: the LFO tail modulation is a fixed *time* depth, so its sample
+    // count must scale with the rate (the old fixed 24-sample constant gave 1/4
+    // the time-depth at 192 kHz). Assert (a) the depth-in-time is rate-invariant
+    // and equals the 44.1 kHz reference, and (b) the delay buffers carry the
+    // matching headroom: at max size + full mod depth the tail stays finite,
+    // bounded, and non-silent (no silent buffer clamp / wrap).
+    void modHeadroomTest (double Fs)
+    {
+        std::printf ("Mod headroom (rate-consistent) @ Fs=%.0f\n", Fs);
+        factory_core::ShimmerReverb rv;
+        rv.prepare (Fs);
+
+        const double got     = rv.maxModDepthSamples();
+        const double expSamp = 24.0 * Fs / 44100.0;                 // fixed time in samples
+        const double refMs   = 24.0 / 44100.0 * 1000.0;             // ~0.544 ms reference
+        const double gotMs   = got / Fs * 1000.0;
+        if (std::abs (got - expSamp) > 1e-6 * std::max (1.0, expSamp))
+            fail ("mod depth sample count not rate-derived (got " + std::to_string (got)
+                  + " expected " + std::to_string (expSamp) + ")");
+        if (std::abs (gotMs - refMs) > 1e-6)
+            fail ("mod depth time not rate-invariant (" + std::to_string (gotMs) + "ms vs "
+                  + std::to_string (refMs) + "ms)");
+
+        // Worst-case buffer exercise: max size, full mod depth, non-zero mod rate.
+        rv.setSize (1.6); rv.setDecaySec (4.0); rv.setDamping (0.1);
+        rv.setShimmer (0.5); rv.setPitchASemis (12.0); rv.setVoiceBMix (0.0);
+        rv.setModRateHz (5.0); rv.setModDepth (1.0); rv.setMix (1.0);
+
+        const int N = (int) (3.0 * Fs);
+        std::vector<double> out ((size_t) N);
+        for (int n = 0; n < N; ++n)
+        {
+            const double x = (n == 0) ? 1.0 : 0.0;
+            double l = x, r = x;
+            rv.processStereo (l, r);
+            out[(size_t) n] = 0.5 * (l + r);
+        }
+        if (! fct::allFinite (out)) { fail ("mod-depth=100% non-finite"); return; }
+        if (fct::peakAbs (out) > kPeakCeiling) fail ("mod-depth=100% exceeded ceiling");
+        const double tail = rms (out, (int) (2.0 * Fs), (int) (0.25 * Fs));
+        if (tail <= 1e-9)
+            fail ("mod-depth=100% tail silent (buffer clamp/wrap?)");
+        std::printf ("  modSamples=%.3f (%.4f ms), tail rms=%.3e\n", got, gotMs, tail);
+    }
+
+    // Class D: pre-delay must place the wet onset later by exactly the requested
+    // time. The FDN's own first-reflection latency (shortest comb) is identical
+    // regardless of pre-delay, so onset(preDelay) - onset(0) == preDelaySamples
+    // is a clean, implementation-independent oracle. Tested at max (250 ms) and a
+    // mid value (100 ms), across the full rate matrix.
+    void preDelayTest (double Fs)
+    {
+        std::printf ("Pre-delay onset @ Fs=%.0f\n", Fs);
+        auto onsetFor = [&] (double preMs) {
+            factory_core::ShimmerReverb rv;
+            rv.prepare (Fs);
+            rv.setSize (1.0); rv.setDecaySec (2.5); rv.setDamping (0.3);
+            rv.setShimmer (0.0); rv.setModDepth (0.0); rv.setMix (1.0);
+            rv.setPreDelayMs (preMs);
+            const int N = (int) (0.6 * Fs + preMs * 1.0e-3 * Fs);
+            std::vector<double> out ((size_t) N);
+            for (int n = 0; n < N; ++n)
+            {
+                double l = (n == 0) ? 1.0 : 0.0, r = l;
+                rv.processStereo (l, r);
+                out[(size_t) n] = 0.5 * (l + r);
+            }
+            const double peak = fct::peakAbs (out);
+            const double thr  = 0.01 * peak;
+            for (int n = 0; n < N; ++n)
+                if (std::abs (out[(size_t) n]) > thr) return n;
+            return N;
+        };
+        const int on0 = onsetFor (0.0);
+        const double window = std::max (4.0, 0.002 * Fs); // 2 ms slack for threshold crossing
+        for (double preMs : { 100.0, 250.0 })
+        {
+            const int    on   = onsetFor (preMs);
+            const double pdS  = preMs * 1.0e-3 * Fs;
+            const double diff = (double) (on - on0);
+            if (on <= (int) pdS)
+                fail ("wet appeared before pre-delay (" + std::to_string (preMs) + "ms)");
+            if (std::abs (diff - pdS) > window)
+                fail ("pre-delay onset off (" + std::to_string (preMs) + "ms: diff="
+                      + std::to_string (diff) + " expected " + std::to_string (pdS) + ")");
+            std::printf ("  preDelay=%.0fms: onset shift=%.0f samples (expected %.0f)\n", preMs, diff, pdS);
+        }
+    }
+
+    // Class E: toggling Freeze on then off mid-stream, under a sustained tone,
+    // must not click. Measured directly: the largest sample-to-sample step near
+    // each toggle stays a small fraction of the running signal peak. An abrupt
+    // gain step (a real click) has a step of order the signal peak, so a 0.15x
+    // ceiling fails on it with margin while the (continuous) toggle passes.
+    void freezeEdgeTest (double Fs)
+    {
+        std::printf ("Freeze toggle click-free @ Fs=%.0f\n", Fs);
+        factory_core::ShimmerReverb rv;
+        rv.prepare (Fs);
+        rv.setSize (1.0); rv.setDecaySec (2.5); rv.setDamping (0.2);
+        rv.setShimmer (0.0); rv.setModDepth (0.0); rv.setMix (1.0);
+
+        const int N   = (int) (3.0 * Fs);
+        const int onN  = (int) (1.0 * Fs);
+        const int offN = (int) (2.0 * Fs);
+        std::vector<double> out ((size_t) N);
+        for (int n = 0; n < N; ++n)
+        {
+            if (n == onN)  rv.setFreeze (true);
+            if (n == offN) rv.setFreeze (false);
+            const double x = 0.3 * std::sin (2.0 * kPi * 300.0 * n / Fs);
+            double l = x, r = x;
+            rv.processStereo (l, r);
+            out[(size_t) n] = 0.5 * (l + r);
+        }
+        if (! fct::allFinite (out)) { fail ("freeze-edge non-finite"); return; }
+        const double peak = fct::peakAbs (out);
+        auto maxDeltaNear = [&] (int c) {
+            double m = 0.0;
+            for (int n = std::max (1, c - 64); n < c + 256 && n < N; ++n)
+                m = std::max (m, std::abs (out[(size_t) n] - out[(size_t) n - 1]));
+            return m;
+        };
+        const double dOn  = maxDeltaNear (onN);
+        const double dOff = maxDeltaNear (offN);
+        const double bound = 0.15 * peak;
+        if (dOn > bound)  fail ("freeze-ON click (delta " + std::to_string (dOn) + " > " + std::to_string (bound) + ")");
+        if (dOff > bound) fail ("freeze-OFF click (delta " + std::to_string (dOff) + " > " + std::to_string (bound) + ")");
+        std::printf ("  peak=%.3f  dOn=%.4f  dOff=%.4f  bound=%.4f\n", peak, dOn, dOff, bound);
+    }
+
+    // Class H (real bug path) for the tone-shaping cuts, which act only on the
+    // shimmer feedback voice. With shimmer high and a long recirculating tail,
+    // engaging the high cut low must drop the tail HF/LF ratio, and engaging the
+    // low cut high must drop the tail LF energy — direction + a meaningful
+    // magnitude, measured with independent OnePole split filters (band edges are
+    // fixed audio frequencies, well below Nyquist at every rate).
+    void cutShapingTest (double Fs)
+    {
+        std::printf ("Low/High-cut tone shaping @ Fs=%.0f\n", Fs);
+        auto tailBands = [&] (double hicut, double locut, double lpHz, double hpHz,
+                              double& hf, double& lf) {
+            factory_core::ShimmerReverb rv;
+            rv.prepare (Fs);
+            rv.setSize (1.2); rv.setDecaySec (6.0); rv.setDamping (0.05);
+            rv.setShimmer (0.85); rv.setPitchASemis (12.0); rv.setVoiceBMix (0.0);
+            rv.setHighCutHz (hicut); rv.setLowCutHz (locut);
+            rv.setModDepth (0.0); rv.setMix (1.0);
+            const int burst = (int) (0.2 * Fs);
+            const int N = (int) (4.0 * Fs);
+            std::vector<double> out ((size_t) N);
+            for (int n = 0; n < N; ++n)
+            {
+                const double x = (n < burst) ? 0.4 * std::sin (2.0 * kPi * 300.0 * n / Fs) : 0.0;
+                double l = x, r = x;
+                rv.processStereo (l, r);
+                out[(size_t) n] = 0.5 * (l + r);
+            }
+            factory_core::OnePole hp, lp; hp.setCutoff (hpHz, Fs); lp.setCutoff (lpHz, Fs);
+            const int s = (int) (2.5 * Fs);
+            hf = 0.0; lf = 0.0;
+            for (int n = 0; n < N; ++n)
+            {
+                const double h = hp.hp (out[(size_t) n]);
+                const double o = lp.lp (out[(size_t) n]);
+                if (n >= s) { hf += h * h; lf += o * o; }
+            }
+        };
+
+        // High cut: HF/LF ratio must fall when the cut is brought down low.
+        double hf, lf;
+        tailBands (16000.0, 20.0, 600.0, 3000.0, hf, lf);   const double rOpen = hf / std::max (lf, 1e-30);
+        tailBands ( 1200.0, 20.0, 600.0, 3000.0, hf, lf);   const double rLow  = hf / std::max (lf, 1e-30);
+        if (! (rLow < 0.5 * rOpen))
+            fail ("high-cut did not reduce HF/LF ratio (rLow " + std::to_string (rLow)
+                  + " vs rOpen " + std::to_string (rOpen) + ")");
+
+        // Low cut: LF energy must fall when the cut is brought up high.
+        double lfOpen, lfHigh, d;
+        tailBands (16000.0,   20.0, 400.0, 3000.0, d, lfOpen);
+        tailBands (16000.0, 1000.0, 400.0, 3000.0, d, lfHigh);
+        if (! (lfHigh < 0.7 * lfOpen))
+            fail ("low-cut did not reduce LF energy (lfHigh " + std::to_string (lfHigh)
+                  + " vs lfOpen " + std::to_string (lfOpen) + ")");
+        std::printf ("  highcut HF/LF: open=%.4f low=%.4f | lowcut LF: open=%.3e high=%.3e\n",
+                     rOpen, rLow, lfOpen, lfHigh);
     }
 }
 
@@ -310,18 +536,19 @@ int main (int argc, char** argv)
 {
     onePoleTest();
 
-    std::vector<double> rates;
-    if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
-
-    for (double Fs : rates)
+    for (double Fs : fct::sampleRatesFromArgs (argc, argv))
     {
         pitchTest (Fs);
         decayTest (Fs);
         dampingTest (Fs);
+        cutShapingTest (Fs);
+        preDelayTest (Fs);
+        modHeadroomTest (Fs);
         freezeTest (Fs);
+        freezeEdgeTest (Fs);
         freezeShimmerTest (Fs);
         highShimmerTransientTest (Fs);
+        feedbackNonIncreasingTest (Fs);
         mixTest (Fs);
         stabilityTest (Fs);
     }

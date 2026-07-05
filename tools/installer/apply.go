@@ -11,6 +11,13 @@ import (
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
 )
 
+// installRootsFn resolves the allowlisted install roots for the running
+// platform. It is a package variable purely as a test seam: the real
+// InstallRoots is empty on unsupported CI platforms (e.g. Linux), so tests
+// inject a temporary root to exercise the apply orchestration end-to-end. The
+// production value is unchanged from calling install.InstallRoots directly.
+var installRootsFn = func() []string { return install.InstallRoots(applyOS()) }
+
 // runApply is the privileged file-mover, re-invoked as
 // `__apply --plan <f> --result <f>` under OS elevation (macOS osascript /
 // Windows RunAs) or in-process. It reads the plan, re-validates every path
@@ -51,7 +58,7 @@ func runApply(args []string) int {
 	// Security gate: destinations must be under a known install root, sources
 	// under the staging dir (the directory holding plan.json).
 	stagingRoot := filepath.Dir(planPath)
-	roots := install.InstallRoots(applyOS())
+	roots := installRootsFn()
 	if err := install.ValidatePlan(plan, roots, stagingRoot); err != nil {
 		writeResult(resultPath, model.ApplyResult{Errors: []string{err.Error()}})
 		fmt.Fprintln(os.Stderr, "__apply: rejected plan:", err)

@@ -23,6 +23,23 @@
 //      loud and left alone when quiet. Hard stays selective (resonance cut, not
 //      broadband) and numerically safe (finite / non-increasing) at worst-case
 //      Depth. Delta and the silence floor are re-checked in both modes.
+//   9. reset() (issue-class E): a heavily-driven engine, once reset(), behaves
+//      identically to a freshly-constructed engine on the same subsequent
+//      signal -- no stale per-bin gain / ring-buffer state survives reset().
+//  10. Attack/release ballistics (setTimes) are exercised with contrasting
+//      fast/slow settings, not just the defaults: release recovery and attack
+//      engagement are asserted to order (fast quicker than slow, meaningful
+//      margin) AND, quantitatively, against an independent one-pole
+//      time-constant prediction derived from the standard EMA relation
+//      c = exp(-frameTime/tau) (frameTime = hop/Fs) -- not from the code
+//      under test.
+//  11. setRange band-limiting: suppression occurs for an in-range resonance and
+//      is fully absent (output == latency-aligned input to FFT-roundtrip
+//      tolerance) for an out-of-range one, at every rate.
+//  12. Depth/sharpness hard step mid-stream: output stays finite and bounded,
+//      and the step does not introduce a slew far beyond the signal's own
+//      baseline slew (documents current behaviour; a genuine zipper here would
+//      be reported, not silently patched).
 //
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
@@ -454,6 +471,406 @@ namespace
         std::printf ("  ok (peak=%.3f)\n", factory_core::testing::peakAbs (y));
     }
 
+    // Regression guard for issue-class E (#30/#39/#41 style state-reset leaks):
+    // drive the engine hard (dirty ring buffers, non-trivial idx/hop phase,
+    // heavily-adapted per-bin gain state), call reset(), then feed an identical
+    // subsequent signal into both the dirtied-then-reset engine and a freshly
+    // constructed+prepared+configured one. If reset() truly clears all
+    // processing state (ring buffers, gainL/gainR, idx, hop), the two must
+    // produce bit-for-bit-close output on the same signal.
+    void resetStateTest (double Fs)
+    {
+        std::printf ("reset() clears stale state @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const double f0 = alignedFreq (Fs, 2000.0);
+
+        auto configure = [] (factory_core::ResonanceSuppressor& s)
+        {
+            s.setDepth (1.4); s.setSharpness (0.3); s.setTimes (5.0, 30.0);
+        };
+
+        factory_core::ResonanceSuppressor dirty;
+        dirty.prepare (Fs, order);
+        configure (dirty);
+        {
+            std::mt19937 rng (101);
+            std::normal_distribution<double> g (0.0, 0.2);
+            // Not a multiple of the hop size: leaves idx/hop mid-cycle, and long
+            // enough to fully adapt the per-bin gain state away from unity.
+            const int dirtyLen = (int) (0.7 * Fs) + 137;
+            for (int n = 0; n < dirtyLen; ++n)
+            {
+                double l = g (rng) + 0.6 * std::sin (2.0 * kPi * f0 * n / Fs);
+                double r = l;
+                dirty.process (l, r);
+            }
+        }
+        dirty.reset();
+
+        factory_core::ResonanceSuppressor fresh;
+        fresh.prepare (Fs, order);
+        configure (fresh);
+
+        const int M = 1 << 15;
+        std::mt19937 rng (303);
+        std::normal_distribution<double> g (0.0, 0.15);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        double maxErr = 0.0;
+        for (int n = 0; n < M; ++n)
+        {
+            double lA = x[(size_t) n], rA = x[(size_t) n];
+            double lB = x[(size_t) n], rB = x[(size_t) n];
+            dirty.process (lA, rA);
+            fresh.process (lB, rB);
+            maxErr = std::max ({ maxErr, std::abs (lA - lB), std::abs (rA - rB) });
+        }
+        if (maxErr > 1.0e-9)
+            fail ("reset() left stale state: dirtied-then-reset engine diverges from a fresh one by "
+                  + std::to_string (maxErr) + " at Fs=" + std::to_string (Fs));
+        std::printf ("  maxErr(dirty-vs-fresh after reset)=%.2e\n", maxErr);
+    }
+
+    // Regression guard for issue-class F (ballistics never varied from
+    // defaults): release recovery, measured via the same per-bin gain the GUI
+    // reads (reductionDb()), must (a) be ordered -- a fast release recovers to
+    // near-unity gain in fewer hops than a slow one, with a meaningful margin --
+    // and (b) quantitatively track an independent one-pole prediction. After the
+    // resonant tone is replaced by true silence and the analysis window is fully
+    // flushed of the old tone (>= N/H hops), every subsequent frame's target is
+    // exactly 1.0 (mag below the absolute floor), so the smoother is a clean
+    // one-pole recurrence g[m] = c^m*(g0-1) + 1 with c = exp(-frameTime/tau),
+    // frameTime = hop/Fs, tau = releaseMs/1000 -- the standard EMA/one-pole
+    // time-constant relation, not a value read out of computeGains().
+    void releaseBallisticsTest (double Fs)
+    {
+        std::printf ("Release ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int H = N / 4;
+        const double f0 = alignedFreq (Fs, 2000.0);
+        const int kf = (int) std::round (f0 * (double) N / Fs);
+        const double atkMs = 2.0; // fast & common to both runs: fully converged before switch-off
+
+        auto measure = [&] (double relMs)
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.3); s.setSharpness (0.5); s.setTimes (atkMs, relMs);
+
+            std::mt19937 rng (17);
+            std::normal_distribution<double> g (0.0, 0.05);
+            const int settleSamples = (int) (0.5 * Fs);
+            for (int n = 0; n < settleSamples; ++n)
+            {
+                double l = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+                double r = l;
+                s.process (l, r);
+            }
+
+            // Sanity: the tone was genuinely suppressed before the switch-off
+            // (this is what the "recovery" below recovers from). Checked here,
+            // before flush, because a fast release can already claw back part
+            // of that reduction during the flush hops themselves.
+            const double gBeforeSwitch = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+            if (gBeforeSwitch > 0.6)
+                fail ("release test: resonance not meaningfully suppressed before release (relMs=" + std::to_string (relMs)
+                      + ") g=" + std::to_string (gBeforeSwitch) + " at Fs=" + std::to_string (Fs));
+
+            // Switch to true silence; flush the analysis window of the old tone
+            // (window = N samples = N/H hops) before trusting target == 1.0.
+            const int flushHops = N / H + 2;
+            for (int h = 0; h < flushHops; ++h)
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+
+            const double g0 = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            const int measureHops = 40;
+            std::vector<double> traj ((size_t) measureHops);
+            for (int h = 0; h < measureHops; ++h)
+            {
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+                traj[(size_t) h] = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+            }
+            return std::pair<double, std::vector<double>> { g0, traj };
+        };
+
+        const double fastRelMs = 20.0, slowRelMs = 400.0;
+        const auto [g0Fast, trajFast] = measure (fastRelMs);
+        const auto [g0Slow, trajSlow] = measure (slowRelMs);
+
+        auto hopsToRecover = [] (const std::vector<double>& traj, double thresh)
+        {
+            for (size_t i = 0; i < traj.size(); ++i) if (traj[i] >= thresh) return (int) i;
+            return (int) traj.size();
+        };
+        const double recoverThresh = 0.9; // gain back within ~1 dB of unity
+        const int hopsFast = hopsToRecover (trajFast, recoverThresh);
+        const int hopsSlow = hopsToRecover (trajSlow, recoverThresh);
+        if (! (hopsFast < hopsSlow))
+            fail ("fast release should recover sooner than slow: hopsFast=" + std::to_string (hopsFast)
+                  + " hopsSlow=" + std::to_string (hopsSlow) + " at Fs=" + std::to_string (Fs));
+        if (hopsSlow - hopsFast < 3)
+            fail ("release ordering margin too small: hopsFast=" + std::to_string (hopsFast)
+                  + " hopsSlow=" + std::to_string (hopsSlow) + " at Fs=" + std::to_string (Fs));
+
+        auto predict = [&] (double relMs, double g0, int hops)
+        {
+            const double tau = relMs * 1.0e-3;
+            const double frameTime = (double) H / Fs;
+            const double c = std::exp (-frameTime / tau);
+            std::vector<double> p ((size_t) hops);
+            double g = g0;
+            for (int i = 0; i < hops; ++i) { g = c * g + (1.0 - c) * 1.0; p[(size_t) i] = g; }
+            return p;
+        };
+        const auto predFast = predict (fastRelMs, g0Fast, (int) trajFast.size());
+        const auto predSlow = predict (slowRelMs, g0Slow, (int) trajSlow.size());
+
+        double errFast = 0.0, errSlow = 0.0;
+        for (size_t i = 0; i < trajFast.size(); ++i) errFast = std::max (errFast, std::abs (trajFast[i] - predFast[i]));
+        for (size_t i = 0; i < trajSlow.size(); ++i) errSlow = std::max (errSlow, std::abs (trajSlow[i] - predSlow[i]));
+        const double tol = 0.05;
+        if (errFast > tol) fail ("fast release trajectory vs one-pole prediction err " + std::to_string (errFast)
+                                  + " at Fs=" + std::to_string (Fs));
+        if (errSlow > tol) fail ("slow release trajectory vs one-pole prediction err " + std::to_string (errSlow)
+                                  + " at Fs=" + std::to_string (Fs));
+        std::printf ("  hopsFast=%d hopsSlow=%d  predErrFast=%.3f predErrSlow=%.3f\n",
+                     hopsFast, hopsSlow, errFast, errSlow);
+    }
+
+    // Same idea for attack: a fast attack must reach the (shared) steady-state
+    // reduction target sooner than a slow one, with a meaningful margin, and the
+    // post-ramp-in tail is quantitatively checked against the same one-pole
+    // relation. Because the STFT's own magnitude estimate ramps in over the
+    // first N/H hops regardless of attack speed (physical window-fill, not
+    // ballistics), the run first "primes" the window with the resonant tone for
+    // that many hops (both runs use identical rng/signal so this ramp-in is
+    // byte-identical either way and cannot bias the ordering check), then reads
+    // the gain at that point as the one-pole recursion's initial condition and
+    // predicts the remaining approach toward an independently-measured
+    // steady-state target (obtained from a separate, very-fast-attack reference
+    // run so it does not depend on the attackMs values under test).
+    void attackBallisticsTest (double Fs)
+    {
+        std::printf ("Attack ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int H = N / 4;
+        const double f0 = alignedFreq (Fs, 2000.0);
+        const int kf = (int) std::round (f0 * (double) N / Fs);
+        const double relMs = 50.0; // fixed release; irrelevant while the attack branch is active
+        const int primeHops = N / H + 2;
+
+        auto driveTone = [&] (factory_core::ResonanceSuppressor& s, std::mt19937& rng, int& n, int samples)
+        {
+            std::normal_distribution<double> g (0.0, 0.05);
+            for (int i = 0; i < samples; ++i, ++n)
+            {
+                double l = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+                double r = l;
+                s.process (l, r);
+            }
+        };
+
+        double targetSteady;
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.3); s.setSharpness (0.5); s.setTimes (0.5, relMs);
+            std::mt19937 rng (17);
+            int n = 0;
+            driveTone (s, rng, n, (int) (1.0 * Fs));
+            targetSteady = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+        }
+
+        auto measure = [&] (double atkMs)
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.3); s.setSharpness (0.5); s.setTimes (atkMs, relMs);
+
+            std::mt19937 rng (17);
+            int n = 0;
+            for (int h = 0; h < primeHops; ++h) driveTone (s, rng, n, H);
+            const double g0 = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            const int measureHops = 60;
+            std::vector<double> traj ((size_t) measureHops);
+            for (int h = 0; h < measureHops; ++h)
+            {
+                driveTone (s, rng, n, H);
+                traj[(size_t) h] = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+            }
+            return std::pair<double, std::vector<double>> { g0, traj };
+        };
+
+        const double fastAtkMs = 5.0, slowAtkMs = 300.0;
+        const auto [g0Fast, trajFast] = measure (fastAtkMs);
+        const auto [g0Slow, trajSlow] = measure (slowAtkMs);
+
+        if (trajFast.back() > 0.6 || trajSlow.back() > 0.6)
+            fail ("attack test: resonance not meaningfully suppressed by end of window at Fs=" + std::to_string (Fs));
+
+        // "Reaches target reduction sooner": first hop at/below the halfway
+        // point between untouched (1.0) and the shared steady-state target.
+        const double halfway = 0.5 * (1.0 + targetSteady);
+        auto hopsToReach = [] (const std::vector<double>& traj, double thresh)
+        {
+            for (size_t i = 0; i < traj.size(); ++i) if (traj[i] <= thresh) return (int) i;
+            return (int) traj.size();
+        };
+        const int hopsFast = hopsToReach (trajFast, halfway);
+        const int hopsSlow = hopsToReach (trajSlow, halfway);
+        if (! (hopsFast < hopsSlow))
+            fail ("fast attack should reach target reduction sooner than slow: hopsFast=" + std::to_string (hopsFast)
+                  + " hopsSlow=" + std::to_string (hopsSlow) + " at Fs=" + std::to_string (Fs));
+        if (hopsSlow - hopsFast < 5)
+            fail ("attack ordering margin too small: hopsFast=" + std::to_string (hopsFast)
+                  + " hopsSlow=" + std::to_string (hopsSlow) + " at Fs=" + std::to_string (Fs));
+
+        auto predict = [&] (double atkMs, double g0, int hops)
+        {
+            const double tau = atkMs * 1.0e-3;
+            const double frameTime = (double) H / Fs;
+            const double c = std::exp (-frameTime / tau);
+            std::vector<double> p ((size_t) hops);
+            double g = g0;
+            for (int i = 0; i < hops; ++i) { g = c * g + (1.0 - c) * targetSteady; p[(size_t) i] = g; }
+            return p;
+        };
+        const auto predFast = predict (fastAtkMs, g0Fast, (int) trajFast.size());
+        const auto predSlow = predict (slowAtkMs, g0Slow, (int) trajSlow.size());
+
+        double errFast = 0.0, errSlow = 0.0;
+        for (size_t i = 0; i < trajFast.size(); ++i) errFast = std::max (errFast, std::abs (trajFast[i] - predFast[i]));
+        for (size_t i = 0; i < trajSlow.size(); ++i) errSlow = std::max (errSlow, std::abs (trajSlow[i] - predSlow[i]));
+        // Looser than the release check: unlike silence, the tone+noise signal
+        // still has small hop-to-hop magnitude jitter after priming.
+        const double tol = 0.10;
+        if (errFast > tol) fail ("fast attack trajectory vs one-pole prediction err " + std::to_string (errFast)
+                                  + " at Fs=" + std::to_string (Fs));
+        if (errSlow > tol) fail ("slow attack trajectory vs one-pole prediction err " + std::to_string (errSlow)
+                                  + " at Fs=" + std::to_string (Fs));
+        std::printf ("  targetSteady=%.3f hopsFast=%d hopsSlow=%d  predErrFast=%.3f predErrSlow=%.3f\n",
+                     targetSteady, hopsFast, hopsSlow, errFast, errSlow);
+    }
+
+    // Regression guard: setRange() is exercised with a narrow band (the
+    // processor otherwise hardcodes 20-20000 Hz). (a) A resonance inside the
+    // configured range is still suppressed; (b) a resonance outside it produces
+    // NO suppression at all -- with an isolated single tone outside the range
+    // (every bin, including any Hann-window leakage bins, sits well clear of
+    // [lowBin, highBin]), the whole output must match the latency-aligned input
+    // to the same FFT-roundtrip tolerance as the depth=0 reconstruction test.
+    void rangeGatingTest (double Fs)
+    {
+        std::printf ("Range gating (setRange) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const double lowHz = 1000.0, highHz = 3000.0;
+        const double insideF0  = alignedFreq (Fs, 1800.0);
+        const double outsideF0 = alignedFreq (Fs, 6000.0);
+
+        // (a) In-range resonance is still suppressed.
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (51);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * insideF0 * n / Fs);
+
+            const auto dry = render (Fs, x, x, [] (factory_core::ResonanceSuppressor& s) { s.setDepth (0.0); });
+            const auto wet = render (Fs, x, x, [lowHz, highHz] (factory_core::ResonanceSuppressor& s) {
+                s.setRange (lowHz, highHz); s.setDepth (1.2); s.setSharpness (0.5);
+            });
+            const int a = M / 2, b = M;
+            const double dB = 20.0 * std::log10 (magAt (wet, a, b, insideF0, Fs) / magAt (dry, a, b, insideF0, Fs));
+            if (dB > -4.4)
+                fail ("in-range resonance not suppressed with setRange active: " + std::to_string (dB)
+                      + " dB at Fs=" + std::to_string (Fs));
+            std::printf ("  inside-range %.1f dB (expect strong cut)\n", dB);
+        }
+
+        // (b) Out-of-range resonance: identity within reconstruction tolerance.
+        {
+            const int N = 1 << order;
+            const int M = std::max (1 << 14, 4 * N);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = 0.5 * std::sin (2.0 * kPi * outsideF0 * n / Fs);
+
+            const auto wet = render (Fs, x, x, [lowHz, highHz] (factory_core::ResonanceSuppressor& s) {
+                s.setRange (lowHz, highHz); s.setDepth (1.4); s.setSharpness (0.3); s.setMix (1.0);
+            });
+
+            double e = 0.0;
+            for (int n = 2 * N; n < M; ++n) e = std::max (e, std::abs (wet[(size_t) n] - x[(size_t) (n - N)]));
+            if (e > 1.0e-6)
+                fail ("out-of-range content modified despite setRange: err " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  outside-range maxErr=%.2e (expect ~identity)\n", e);
+        }
+    }
+
+    // Documents current behaviour for a hard mid-stream depth/sharpness step
+    // (both are applied with no smoothing of their own -- only the resulting
+    // per-bin gain ramps via attack/release): output must stay finite and
+    // within a realistic peak bound, and the step must not introduce a
+    // sample-to-sample slew far beyond the signal's own steady-state slew. This
+    // is a coarse sanity/documentation gate, not a tight spec -- if it ever
+    // finds a genuine zipper, that is a core bug to report, not to paper over
+    // here.
+    void depthSharpnessMidStreamTest (double Fs)
+    {
+        std::printf ("Depth/sharpness hard step mid-stream (no runaway) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int M = std::max (1 << 16, 8 * N);
+        const double f0 = alignedFreq (Fs, 2000.0);
+
+        std::mt19937 rng (61);
+        std::normal_distribution<double> g (0.0, 0.15);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        factory_core::ResonanceSuppressor s;
+        s.prepare (Fs, order);
+        s.setDepth (0.1); s.setSharpness (0.3);
+
+        std::vector<double> y ((size_t) M);
+        const int switchAt = M / 2;
+        for (int n = 0; n < M; ++n)
+        {
+            if (n == switchAt) { s.setDepth (1.5); s.setSharpness (1.5); }
+            double l = x[(size_t) n], r = x[(size_t) n];
+            s.process (l, r);
+            y[(size_t) n] = 0.5 * (l + r);
+        }
+
+        if (! factory_core::testing::allFinite (y))
+            fail ("depth/sharpness step produced non-finite output at Fs=" + std::to_string (Fs));
+        const double peak = factory_core::testing::peakAbs (y);
+        if (peak > 3.0)
+            fail ("depth/sharpness step produced unrealistic peak " + std::to_string (peak)
+                  + " at Fs=" + std::to_string (Fs));
+
+        auto maxSlew = [&] (int a, int b)
+        {
+            double m = 0.0;
+            for (int n = a + 1; n < b; ++n) m = std::max (m, std::abs (y[(size_t) n] - y[(size_t) (n - 1)]));
+            return m;
+        };
+        const double baseline   = maxSlew (N, switchAt - 2 * N);
+        const double transition = maxSlew (switchAt - N, std::min (M, switchAt + 3 * N));
+        const double bound = std::max (0.05, baseline * 8.0); // generous: documents behaviour, not a tight spec
+        if (transition > bound)
+            fail ("depth/sharpness step introduced a slew beyond a realistic bound: baseline="
+                  + std::to_string (baseline) + " transition=" + std::to_string (transition)
+                  + " at Fs=" + std::to_string (Fs));
+        std::printf ("  peak=%.3f baselineSlew=%.4f transitionSlew=%.4f (bound=%.4f)\n",
+                     peak, baseline, transition, bound);
+    }
+
     // ---- Reduction-profile (soothe-style depth EQ) shape invariants ----------
     // Independent, oracle-free checks of the per-frequency sensitivity curve
     // (factory_core::ReductionProfile), the single source of truth shared by the
@@ -592,6 +1009,11 @@ int main (int argc, char** argv)
         hardSuppressionTest (Fs);
         hardStabilityTest (Fs);
         reductionDefaultTest (Fs);
+        resetStateTest (Fs);
+        releaseBallisticsTest (Fs);
+        attackBallisticsTest (Fs);
+        rangeGatingTest (Fs);
+        depthSharpnessMidStreamTest (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

@@ -17,6 +17,8 @@
 //   4. Program 0 (Init) sets every non-excluded parameter to its default.
 //   5. setCurrentProgram(i) -> getCurrentProgram() == i, and the presetIndex
 //      survives a getStateInformation / setStateInformation round-trip.
+//   6. Every automatable parameter's raw value round-trips through
+//      getStateInformation / setStateInformation on a fresh processor instance.
 //
 #include "PluginProcessor.h"
 #include "FactoryPresets.h"
@@ -158,6 +160,57 @@ namespace
         if (legacyRestored->getCurrentProgram() != 0)
             fail ("legacy state without presetIndex did not default to program 0");
     }
+
+    void check6_full_state_roundtrip (ShimmerReverbAudioProcessor& p)
+    {
+        std::printf ("6. every parameter value round-trips through get/setStateInformation\n");
+
+        // Walk every non-excluded parameter to a distinct, deliberately
+        // non-default normalised value (a 10-point spread that never lands on
+        // 0/0.5/1), so a replaceState wiring regression that drops, clamps, or
+        // swaps a parameter shows up here even though check 5 only checks the
+        // presetIndex attribute.
+        int idx = 0;
+        for (auto* base : p.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (base))
+            {
+                if (isExcluded (rp->getParameterID()))
+                    continue;
+                const float norm = 0.05f + 0.9f * (float) (idx % 10) / 9.0f;
+                rp->setValueNotifyingHost (norm);
+                ++idx;
+            }
+
+        juce::MemoryBlock state;
+        p.getStateInformation (state);
+
+        // Heap-allocate: keeps large processors off the 1 MB Windows main-thread stack.
+        auto restored = std::make_unique<ShimmerReverbAudioProcessor>();
+        restored->setStateInformation (state.getData(), (int) state.getSize());
+
+        for (auto* base : p.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (base))
+            {
+                if (isExcluded (rp->getParameterID()))
+                    continue;
+                auto* restoredParam = rangedParam (*restored, rp->getParameterID());
+                if (restoredParam == nullptr)
+                {
+                    fail ("restored processor is missing parameter '"
+                          + rp->getParameterID().toStdString() + "'");
+                    continue;
+                }
+                const double original = readReal (rp);
+                const double got = readReal (restoredParam);
+                const double span = std::abs ((double) rp->convertFrom0to1 (1.0f)
+                                              - (double) rp->convertFrom0to1 (0.0f));
+                const double tol = 1.0e-3 + 1.0e-4 * span;
+                if (std::abs (got - original) > tol)
+                    fail ("param '" + rp->getParameterID().toStdString()
+                          + "' did not survive state round-trip (got " + std::to_string (got)
+                          + ", expected " + std::to_string (original) + ")");
+            }
+    }
 }
 
 int main()
@@ -178,6 +231,7 @@ int main()
     check3_values_in_range (*processor);
     check4_init_is_default (*processor);
     check5_index_roundtrip (*processor);
+    check6_full_state_roundtrip (*processor);
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

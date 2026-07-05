@@ -40,7 +40,8 @@ jobs:
           fi
 
       - run: go vet ./...
-      - run: go test ./...
+      # -cover reports coverage in the log (report-only; no threshold gate).
+      - run: go test -cover ./...
 
       - name: Cross-compile (CGO_ENABLED=0)
         env:
