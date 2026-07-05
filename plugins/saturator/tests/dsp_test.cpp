@@ -28,6 +28,7 @@
 // would land the harmonics at the wrong Hz and fail.
 //
 #include "factory_core/Waveshaper.h"
+#include "factory_core/testing/DspInvariants.h"
 
 #include <cmath>
 #include <complex>
@@ -36,10 +37,20 @@
 #include <string>
 #include <vector>
 
+namespace fct = factory_core::testing;
+
 namespace
 {
     using cd = std::complex<double>;
     constexpr double kPi = 3.14159265358979323846;
+
+    // The plugin's drive parameter tops out at 36 dB. factory_core::Waveshaper
+    // takes a *linear* gain -- the dB->linear conversion happens in
+    // PluginProcessor::processBlock via juce::Decibels::decibelsToGain (a
+    // generic, well-known formula, not derived from the shaper under test) --
+    // so the worst-case linear drive this core ever sees in the plugin is
+    // 10^(36/20).
+    constexpr double kMaxDriveLinear = 63.09573444801933;
 
     int g_failures = 0;
     void fail (const std::string& m) { std::printf ("  FAIL: %s\n", m.c_str()); ++g_failures; }
@@ -66,7 +77,11 @@ namespace
     void transferInvariants()
     {
         std::printf ("Transfer-curve invariants\n");
-        const double drives[]  = { 0.5, 1.0, 2.0, 5.0, 10.0 };
+        // kMaxDriveLinear (36 dB, the plugin's top of range) is included here so
+        // every combo below -- f(0)=0, odd symmetry, monotonicity, small-signal
+        // slope, mix=1 boundedness, and exact mix wiring (incl. mix=0 bit-exact
+        // dry) -- is exercised at the worst-case drive too, not just up to 10.0.
+        const double drives[]  = { 0.5, 1.0, 2.0, 5.0, 10.0, kMaxDriveLinear };
         const double mixes[]   = { 0.0, 0.25, 0.5, 1.0 };
         const double outputs[] = { 0.5, 1.0, 2.0 };
 
@@ -119,7 +134,7 @@ namespace
                             fail (tag + ": mix wiring mismatch at x=" + std::to_string (x));
                     }
                 }
-        std::printf ("  done (%d combos)\n", (int) (5 * 4 * 3));
+        std::printf ("  done (%d combos)\n", (int) (6 * 4 * 3));
     }
 
     // THD from odd harmonics (3,5,...) relative to the fundamental. The tone is
@@ -196,7 +211,12 @@ namespace
             ++expectedOddBelowNyq;
 
         double prevThd = -1.0;
-        for (double drive : { 2.0, 5.0, 10.0 })
+        // kMaxDriveLinear (36 dB) added: at the worst-case drive the shaper is
+        // deep into saturation (tanh(63.1*x) is nearly a square wave for any
+        // audible amplitude), so odd-harmonic dominance / even-harmonic-clean
+        // must still hold there, and THD should still not have *decreased*
+        // relative to the lower drives on the way to that asymptote.
+        for (double drive : { 2.0, 5.0, 10.0, kMaxDriveLinear })
         {
             bool evenClean = true;
             int  oddBelowNyq = 0;
@@ -240,16 +260,92 @@ namespace
         std::printf ("  f0=%.2f Hz (target %.0f)  N=%d  cycles=%d  binHz=%.3f\n",
                      f0Actual, f0Hz, N, cycles, binHz);
     }
+
+    // Max-drive (36 dB / kMaxDriveLinear) long loud hold. The Waveshaper is
+    // memoryless (no internal state), so its output does not depend on the
+    // sample rate at all -- there is nothing here for a rate loop to catch
+    // that a single, long, sample-count-based hold wouldn't. What IS untested
+    // above is many *consecutive* samples at the worst-case drive with a loud
+    // (beyond +/-1 full scale) input, exactly the "sustained loud passage"
+    // scenario the regression policy calls out: finite over a long hold, a
+    // realistic (formula-independent) peak bound, and mix wiring still exact
+    // (mix=0 -> bit-exact dry) at that drive.
+    void maxDriveLongHoldTests()
+    {
+        std::printf ("Max-drive (36 dB) long loud hold\n");
+
+        constexpr int    kNumSamples = 1'000'000;
+        constexpr double kLoudAmp    = 6.0; // well beyond +/-1 digital full scale
+
+        // Incommensurate angular step (not 2*pi*k/N for any small k) so the
+        // held tone does not happen to land back on a periodic pattern that
+        // would mask a growing/dropped-sample bug.
+        std::vector<double> x ((size_t) kNumSamples);
+        for (int n = 0; n < kNumSamples; ++n)
+            x[(size_t) n] = kLoudAmp * std::sin (0.0137 * n);
+
+        // 1) mix=1 (fully wet): |tanh(.)| <= 1 for all real arguments regardless
+        //    of how large drive*x gets, so the peak can never exceed `output`
+        //    -- a formula-independent bound, not derived from the shaper.
+        {
+            const auto w = makeShaper (kMaxDriveLinear, 1.0, 1.0);
+            std::vector<double> y ((size_t) kNumSamples);
+            for (int n = 0; n < kNumSamples; ++n)
+                y[(size_t) n] = w.processSample (x[(size_t) n]);
+
+            if (! fct::allFinite (y))
+                fail ("max-drive long hold (mix=1): non-finite output");
+            const double peak = fct::peakAbs (y);
+            if (peak > 1.0 + 1e-9)
+                fail ("max-drive long hold (mix=1): peak " + std::to_string (peak)
+                      + " exceeds output bound 1.0");
+        }
+
+        // 2) mix=0 (fully dry): drive must have zero effect -- bit-exact
+        //    passthrough even at the worst-case drive, over the whole hold.
+        {
+            const auto w = makeShaper (kMaxDriveLinear, 0.0, 1.0);
+            for (int n = 0; n < kNumSamples; ++n)
+            {
+                const double y = w.processSample (x[(size_t) n]);
+                if (std::abs (y - x[(size_t) n]) > 1e-12)
+                {
+                    fail ("max-drive long hold (mix=0): dry passthrough not bit-exact at n="
+                          + std::to_string (n));
+                    break;
+                }
+            }
+        }
+
+        // 3) A realistic intermediate mix: finite, and bounded by the analytic
+        //    worst case output*((1-mix)*|x|_max + mix*1) -- the dry term scales
+        //    linearly with the (bounded) input, the wet term is tanh-bounded.
+        {
+            const double mix = 0.5;
+            const auto w = makeShaper (kMaxDriveLinear, mix, 1.0);
+            std::vector<double> y ((size_t) kNumSamples);
+            for (int n = 0; n < kNumSamples; ++n)
+                y[(size_t) n] = w.processSample (x[(size_t) n]);
+
+            if (! fct::allFinite (y))
+                fail ("max-drive long hold (mix=0.5): non-finite output");
+            const double bound = (1.0 - mix) * kLoudAmp + mix * 1.0;
+            const double peak  = fct::peakAbs (y);
+            if (peak > bound + 1e-9)
+                fail ("max-drive long hold (mix=0.5): peak " + std::to_string (peak)
+                      + " exceeds analytic bound " + std::to_string (bound));
+        }
+
+        std::printf ("  done (%d samples)\n", kNumSamples);
+    }
 }
 
 int main (int argc, char** argv)
 {
     transferInvariants();
+    maxDriveLongHoldTests();
 
-    std::vector<double> rates;
-    if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
-    for (double Fs : rates)
+    for (double Fs : fct::sampleRatesFromArgs (argc, argv))
         harmonicTests (Fs);
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
