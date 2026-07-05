@@ -28,6 +28,11 @@
 //   G21 reported latency == FIR group delay + OS latency; taps follow the rate
 //   G22 engine linear mode: enh-0 flatness, worst-case finiteness, redesign-on-drag
 //
+// Output gain / delta-listen / IIR extreme-hi coverage (audit additions):
+//   G23 output gain law (dB oracle, relative to 0 dB) + clickless mid-stream change
+//   G24 delta-listen routes the residual bus to the MAIN output; enh-0 -> silence
+//   G25 standard-phase (IIR) flatness at the extreme-hi crossover set
+//
 #include "factory_core/MultibandEnhancer.h"
 #include "factory_core/LinearPhaseCrossover5.h"
 #include "factory_core/Oversampler.h"
@@ -1387,6 +1392,226 @@ namespace
             if (maxDev > 0.25) fail ("G22 redesign extreme not flat (" + std::to_string (maxDev) + " dB)");
         }
     }
+
+    // ==========================================================================
+    // G23 — output gain law (dB oracle) + clickless mid-stream gain change
+    // ==========================================================================
+    // setOutputDb() drives gOutputSm (host-rate one-pole, 30 ms -- the DOCUMENTED
+    // Smoother::setRate rate MultibandEnhancer.h uses for gOutputSm) which
+    // multiplies the FINAL output once, post-crossfade/post-delta-listen (line
+    // "Output gain + delta-listen (once, post-crossfade)"). At enh 0 / width 100
+    // the direct bus equals the wet bus (residual is silent, M/S transform is a
+    // no-op at width 1), so ANY mix reduces to out = direct * gOutput -- the ONLY
+    // effect a dB change can have is the multiplicative gain step. Comparing two
+    // outputDb settings RELATIVE to a 0 dB baseline (rather than to an assumed-
+    // unity direct-bus gain) isolates that step from the crossover/allpass's own
+    // (small, G1-gated) passband ripple -- an oracle that never reads the
+    // implementation's gain value, only the dB-to-linear spec (10^(db/20)).
+    void g23_output_gain (double fs)
+    {
+        std::printf ("G23 output gain @ %.0f\n", fs);
+        const int order = 14, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+        const int k0 = binOf (1000.0, fs, order);
+        const double f0 = freqOfBin (k0, fs, order);
+        const double A = 0.25;
+
+        // (a) dB oracle: dB(measured) - dB(measured @ 0 dB) == the requested dB,
+        // exactly, at -6 / +6 dB.
+        auto measure = [&] (double outDb) -> double
+        {
+            ME eng; eng.prepare (fs, 256);
+            configFlat (eng);            // enh 0, width 100 -> direct == wet
+            eng.setMix (60.0);           // any mix works at enh 0; prove it (not 0/50/100)
+            eng.setOutputDb (outDb);
+            warmup (eng, fs, 0.4);       // >> 30 ms gOutput smoother settle
+            const int settle = 2048;
+            std::vector<double> inL ((size_t) (settle + Nfft)), inR, oL, oR, dL, dR;
+            for (int i = 0; i < settle + Nfft; ++i) inL[(size_t) i] = A * std::sin (2.0 * kPi * f0 * i / fs);
+            inR = inL;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+            return binAmp (oL, (size_t) settle, order, k0, fft);
+        };
+        const double m0 = measure (0.0);
+        for (double db : { -6.0, 6.0 })
+        {
+            const double m = measure (db);
+            const double dev = (linToDb (m) - linToDb (m0)) - db;
+            if (g_verbose) std::printf ("   outputDb=%.0f rel=%.4f dB expect=%.1f dev=%.4f\n",
+                                        db, linToDb (m) - linToDb (m0), db, dev);
+            if (std::abs (dev) > 0.05) fail ("G23 outputDb " + std::to_string (db) + " dev " + std::to_string (dev) + " dB > 0.05");
+        }
+
+        // (b) mid-stream gain change: finite, and the click stays within an
+        // independent slew bound built from the DOCUMENTED 30 ms one-pole rate
+        // plus the steady-state per-sample step at the larger of the two gains --
+        // never derived by reading the engine's actual output.
+        {
+            const double ft = 300.0;      // low tone: even the steady-state step is small
+            const double fromDb = -6.0, toDb = 6.0;
+            ME eng; eng.prepare (fs, 256);
+            configFlat (eng);
+            eng.setMix (100.0);
+            eng.setOutputDb (fromDb);
+            warmup (eng, fs, 0.4);
+
+            const double coeff = 1.0 - std::exp (-1.0 / std::max (1.0, 30.0 * 0.001 * fs)); // documented rate
+            const double gFrom = dbToLin (fromDb), gTo = dbToLin (toDb);
+            const double maxGain = std::max (gFrom, gTo);
+            const double steadyStep    = maxGain * A * 2.0 * std::sin (kPi * ft / fs);
+            const double gainSlewStep  = A * coeff * std::abs (gTo - gFrom);
+            const double kSafety = 2.0;
+            const double bound = kSafety * (steadyStep + gainSlewStep);
+
+            const int N = (int) (1.0 * fs);
+            const int switchAt = N / 2;
+            std::vector<float> bL (256), bR (256), bdL (256), bdR (256);
+            double worstStep = 0.0, prev = 0.0; bool have = false, finite = true, switched = false;
+            for (int s = 0; s < N; s += 256)
+            {
+                const int n = std::min (256, N - s);
+                for (int i = 0; i < n; ++i)
+                {
+                    const double v = A * std::sin (2.0 * kPi * ft * (double) (s + i) / fs);
+                    bL[(size_t) i] = (float) v; bR[(size_t) i] = (float) v;
+                }
+                if (! switched && s >= switchAt) { eng.setOutputDb (toDb); switched = true; }
+                eng.processBlock (bL.data(), bR.data(), n, bdL.data(), bdR.data());
+                for (int i = 0; i < n; ++i)
+                {
+                    const double y = bL[(size_t) i];
+                    if (! std::isfinite (y)) finite = false;
+                    if (have) worstStep = std::max (worstStep, std::abs (y - prev));
+                    prev = y; have = true;
+                }
+            }
+            if (g_verbose) std::printf ("   mid-stream gain change worst step=%.5f (bound %.5f)\n", worstStep, bound);
+            if (! finite) fail ("G23 non-finite output during gain change");
+            if (worstStep > bound) fail ("G23 gain-change step " + std::to_string (worstStep) + " > bound " + std::to_string (bound));
+        }
+    }
+
+    // ==========================================================================
+    // G24 — delta-listen routes the residual bus to the MAIN output
+    // ==========================================================================
+    // MultibandEnhancer.h: "out = (deltaListen ? deltaHost : out) * gOutput" in the
+    // main processBlock's final loop. With gOutput == 1 (0 dB) the main L/R output
+    // must equal the delta bus (deltaL/deltaR) bit-for-bit; with enhance 0 (residual
+    // identically zero for |x| <= 1 -- HarmonicShaper::f(u) == fCore(u) == u in the
+    // linear region at enh 0) the main output under delta-listen must be silence.
+    void g24_delta_listen_routing (double fs)
+    {
+        std::printf ("G24 delta-listen routing @ %.0f\n", fs);
+
+        // (a) main == delta bus (post gOutput, here 0 dB) under deltaListen.
+        {
+            ME eng; eng.prepare (fs, 256);
+            for (int b = 0; b < 5; ++b) { eng.setEnhance (b, 100.0); eng.setWidth (b, 100.0); }
+            eng.setCrossovers (130.0, 700.0, 2200.0, 7500.0);
+            setAllMode (eng, Mode::Bright);
+            eng.setMix (100.0); eng.setOutputDb (0.0);
+            eng.setDeltaListen (true);
+            warmup (eng, fs, 0.4);
+
+            const int N = (int) (0.5 * fs);
+            std::vector<double> inL ((size_t) N), inR, oL, oR, dL, dR;
+            for (int i = 0; i < N; ++i)
+                inL[(size_t) i] = 0.30 * std::sin (2.0 * kPi * 1000.0 * i / fs) + 0.15 * std::sin (2.0 * kPi * 3000.0 * i / fs);
+            inR = inL;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+
+            double maxDiffL = 0.0, maxDiffR = 0.0;
+            const size_t settle = (size_t) (0.2 * fs);
+            for (size_t i = settle; i < oL.size(); ++i)
+            {
+                maxDiffL = std::max (maxDiffL, std::abs (oL[i] - dL[i]));
+                maxDiffR = std::max (maxDiffR, std::abs (oR[i] - dR[i]));
+            }
+            if (g_verbose) std::printf ("   deltaListen main-vs-delta maxDiff L=%.2e R=%.2e\n", maxDiffL, maxDiffR);
+            if (maxDiffL > 1.0e-6) fail ("G24 deltaListen main L != delta bus (" + std::to_string (maxDiffL) + ")");
+            if (maxDiffR > 1.0e-6) fail ("G24 deltaListen main R != delta bus (" + std::to_string (maxDiffR) + ")");
+        }
+
+        // (b) enhance 0 + deltaListen -> main output is silence (no residual to
+        // listen to; the linear reconstruction carries no harmonics).
+        {
+            ME eng; eng.prepare (fs, 256);
+            configFlat (eng);           // enh 0, width 100
+            eng.setMix (100.0);
+            eng.setDeltaListen (true);
+            warmup (eng, fs, 0.4);
+
+            const int N = (int) (0.5 * fs);
+            std::vector<double> inL ((size_t) N), inR, oL, oR, dL, dR;
+            for (int i = 0; i < N; ++i) inL[(size_t) i] = 0.30 * std::sin (2.0 * kPi * 1000.0 * i / fs);
+            inR = inL;
+            runEngine (eng, inL, inR, oL, oR, dL, dR);
+
+            if (! factory_core::testing::allFinite (oL)) fail ("G24 enh0 deltaListen output not finite");
+            const double pk = factory_core::testing::peakAbs (oL);
+            const double pkDb = linToDb (pk);
+            if (g_verbose) std::printf ("   enh0 deltaListen main peak=%.1f dBFS\n", pkDb);
+            if (pkDb > -90.0) fail ("G24 enh0 deltaListen main not silent (" + std::to_string (pkDb) + " dBFS)");
+        }
+    }
+
+    // ==========================================================================
+    // G25 — standard-phase (IIR) flatness at the extreme-hi crossover set
+    // ==========================================================================
+    // G1 only exercises the IIR crossover at 'default' and 'packed-lo'; the
+    // extreme-hi set (2k/5k/10k/18k -- the same redesign-under-drag worst case
+    // G18/G22 use for the LINEAR-phase FIR path) was never gated on the STANDARD
+    // (IIR/allpass-compensated) crossover. Same construction and tolerances as G1
+    // (constant-voltage + enh 0 -> flat 0 dB at every mix): do NOT loosen if it fails.
+    void g25_standard_extreme_hi (double fs)
+    {
+        std::printf ("G25 standard-phase extreme-hi flatness @ %.0f\n", fs);
+        const int order = 15, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+
+        const double f1 = 2000.0, f2 = 5000.0, f3 = 10000.0, f4 = 18000.0;
+
+        for (auto quality : { ME::Quality::HQ, ME::Quality::ZeroLatency })
+        {
+            const bool zl = (quality == ME::Quality::ZeroLatency);
+            const double loHz = zl ? 10.0 : 20.0;
+            const double hiFrac = zl ? 0.49 : 0.42;
+            const double tolA = zl ? 0.10 : 0.25;
+
+            for (double mixPct : { 0.0, 50.0, 100.0 })
+            {
+                ME eng; eng.prepare (fs, 256);
+                configFlat (eng);
+                eng.setQuality (quality);
+                eng.setPhaseMode (ME::Phase::Standard);   // IIR crossover explicitly (also the default)
+                eng.setCrossovers (f1, f2, f3, f4);
+                eng.setMix (mixPct);
+                warmup (eng, fs);
+
+                std::vector<double> in ((size_t) Nfft, 0.0), inR, oL, oR, dL, dR;
+                in[0] = 1.0; inR = in;
+                runEngine (eng, in, inR, oL, oR, dL, dR);
+
+                std::vector<double> magDb;
+                magSpectrum (oL, order, fft, magDb);
+                const double target = 0.0; // constant-voltage + enh 0 => flat 0 dB at every mix
+                double maxDev = 0.0; double atWorst = 0.0;
+                for (int k = 1; k < Nfft / 2; ++k)
+                {
+                    const double f = freqOfBin (k, fs, order);
+                    if (f < loHz || f > hiFrac * fs) continue;
+                    const double dev = std::abs (magDb[(size_t) k] - target);
+                    if (dev > maxDev) { maxDev = dev; atWorst = f; }
+                }
+                if (g_verbose)
+                    std::printf ("   [%s extreme-hi mix%.0f] maxDev=%.4f dB @ %.0f Hz (tol %.2f)\n",
+                                 zl ? "ZL" : "HQ", mixPct, maxDev, atWorst, tolA);
+                if (maxDev > tolA)
+                    fail ("G25 " + std::string (zl ? "ZL " : "HQ ") + "extreme-hi mix" + std::to_string ((int) mixPct)
+                          + " dev " + std::to_string (maxDev) + " dB > " + std::to_string (tolA));
+            }
+        }
+    }
 }
 
 int main (int argc, char** argv)
@@ -1420,6 +1645,9 @@ int main (int argc, char** argv)
         g20_crossover_points (fs);
         g21_linear_latency (fs);
         g22_linear_engine (fs);
+        g23_output_gain (fs);
+        g24_delta_listen_routing (fs);
+        g25_standard_extreme_hi (fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
