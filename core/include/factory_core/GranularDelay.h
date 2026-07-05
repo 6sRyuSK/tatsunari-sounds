@@ -36,7 +36,7 @@ namespace factory_core
         void prepare (double sampleRate, double maxDelaySeconds)
         {
             fs = sampleRate;
-            maxGrainSamples = (int) (kMaxGrainMs * 1.0e-3 * fs) + 4;
+            const int maxGrainSamples = (int) (kMaxGrainMs * 1.0e-3 * fs) + 4;
             const int bufLen = (int) (maxDelaySeconds * fs) + maxGrainSamples + 8;
             delay.prepare (bufLen);
             reset();
@@ -108,8 +108,6 @@ namespace factory_core
             r = (1.0 - mix) * r + mix * wetR;
         }
 
-        // Snapshot of an active grain for the editor's cloud visualizer.
-        struct GrainView { float age01; float pan; float pitch; };
         int activeGrains() const noexcept
         {
             int c = 0;
@@ -169,7 +167,6 @@ namespace factory_core
         }
 
         double fs = 44100.0;
-        int maxGrainSamples = 0;
 
         double delaySamples = 11025.0;
         double feedback = 0.0;

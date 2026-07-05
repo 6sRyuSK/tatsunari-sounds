@@ -1,7 +1,10 @@
 #pragma once
 //
 // factory_core/FftConvolver.h — headless, zero-latency FFT convolution built on
-// factory_core::FFT, used for the cabinet IR at the end of the NAM Player chain.
+// factory_core::FFT.
+//
+// Kept only as a headless comparison oracle for the PartitionedConvolver tests; no
+// shipping plugin routes audio through it (the NAM Player cab uses PartitionedConvolver).
 //
 // The convolver separates two concerns so the IR can be swapped lock-free from the
 // message thread while the audio thread keeps running:

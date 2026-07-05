@@ -68,6 +68,13 @@ DSP は**既存プリミティブの合成**で作る。まずここから選び
 | `RateBracket.h` | 「固定レート区間をホストレート内で走らせる」ブラケット |
 | `NamRoutingEngine.h` | NAM Player の 3 スロット直列/並列ルーティング |
 
+## 共通ヘルパ / 数値
+
+| ヘッダ | 内容 |
+|---|---|
+| `KaiserBessel.h` | 変形ベッセル関数 `besselI0(x)`。Kaiser 窓設計の共有実装(Oversampler / PolyphaseResampler / LinearPhaseCrossover5 が使用) |
+| `SmoothingCoeff.h` | 1-pole 平滑係数の共有式: `onePoleCoeffForMs(ms, rate)`(ms 時定数→係数)/ `onePoleAlphaForTauSamples(tau)`(サンプル時定数→α = 1-exp(-1/tau)) |
+
 ## テスト補助
 
 `testing/DspInvariants.h` — レート行列と不変量ヘルパ(`write-dsp-test` スキル参照)。

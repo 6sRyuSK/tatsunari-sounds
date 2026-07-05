@@ -43,23 +43,23 @@ namespace factory_core
             split[2].setCutoff (f[2], fs);
             split[3].setCutoff (f[3], fs);
 
-            // Band compensation allpasses.
-            comp1a.setCutoff (f[1], fs); comp1b.setCutoff (f[2], fs); comp1c.setCutoff (f[3], fs);
-            comp2a.setCutoff (f[2], fs); comp2b.setCutoff (f[3], fs);
-            comp3a.setCutoff (f[3], fs);
+            // Band compensation allpasses: comp[b][k] = AP(f[b+1+k]) on band b's low.
+            for (int b = 0; b < 3; ++b)
+                for (int k = 0; k < compCount[b]; ++k)
+                    comp[b][k].setCutoff (f[b + 1 + k], fs);
 
             // Direct-path allpass cascade (matches sum(B_i)).
-            dir0.setCutoff (f[0], fs); dir1.setCutoff (f[1], fs);
-            dir2.setCutoff (f[2], fs); dir3.setCutoff (f[3], fs);
+            for (int j = 0; j < 4; ++j)
+                dir[j].setCutoff (f[j], fs);
         }
 
         void reset() noexcept
         {
             for (auto& s : split) s.reset();
-            comp1a.reset(); comp1b.reset(); comp1c.reset();
-            comp2a.reset(); comp2b.reset();
-            comp3a.reset();
-            dir0.reset(); dir1.reset(); dir2.reset(); dir3.reset();
+            for (int b = 0; b < 3; ++b)
+                for (int k = 0; k < compCount[b]; ++k)
+                    comp[b][k].reset();
+            for (auto& d : dir) d.reset();
         }
 
         // Split x into five phase-aligned bands. sum(bands) == allpass(x).
@@ -71,9 +71,15 @@ namespace factory_core
             split[2].process (h2, l3, h3);
             split[3].process (h3, l4, h4);
 
-            bands[0] = comp1c.allpass (comp1b.allpass (comp1a.allpass (l1)));
-            bands[1] = comp2b.allpass (comp2a.allpass (l2));
-            bands[2] = comp3a.allpass (l3);
+            // Each low band passes through its comp cascade innermost-first
+            // (comp[b][0] applied first), i.e. AP(f_{b+1}) .. AP(f4) in order.
+            const double lband[3] = { l1, l2, l3 };
+            for (int b = 0; b < 3; ++b)
+            {
+                double v = lband[b];
+                for (int k = 0; k < compCount[b]; ++k) v = comp[b][k].allpass (v);
+                bands[b] = v;
+            }
             bands[3] = l4;
             bands[4] = h4;
         }
@@ -81,7 +87,9 @@ namespace factory_core
         // Direct-path allpass = AP(f1)AP(f2)AP(f3)AP(f4) x (own filter state).
         double allpass (double x) noexcept
         {
-            return dir3.allpass (dir2.allpass (dir1.allpass (dir0.allpass (x))));
+            double v = x;
+            for (int j = 0; j < 4; ++j) v = dir[j].allpass (v);
+            return v;
         }
 
         double effectiveCrossoverHz (int i) const noexcept { return f[(size_t) std::clamp (i, 0, 3)]; }
@@ -90,10 +98,13 @@ namespace factory_core
         double fs = 44100.0;
         double f[4] { 130.0, 700.0, 2200.0, 7500.0 };
 
+        // Per-band compensation cascade lengths: band b (0..2) applies compCount[b]
+        // allpasses AP(f[b+1]) .. AP(f4); the jagged comp[3][3] leaves the unused
+        // upper-triangle slots inert.
+        static constexpr int compCount[3] { 3, 2, 1 };
+
         LinkwitzRiley split[4];                     // S(f1..f4)
-        LinkwitzRiley comp1a, comp1b, comp1c;       // AP(f2),AP(f3),AP(f4) on L1
-        LinkwitzRiley comp2a, comp2b;               // AP(f3),AP(f4) on L2
-        LinkwitzRiley comp3a;                       // AP(f4) on L3
-        LinkwitzRiley dir0, dir1, dir2, dir3;       // direct allpass cascade
+        LinkwitzRiley comp[3][3];                   // comp[b][k] = AP(f[b+1+k]) on band b's low
+        LinkwitzRiley dir[4];                       // direct allpass cascade AP(f1..f4)
     };
 } // namespace factory_core

@@ -14,8 +14,10 @@
 // allocation-free in process(): all buffers are sized in prepare().
 //
 #include "FFT.h"
+#include "SmoothingCoeff.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <vector>
@@ -51,17 +53,17 @@ namespace factory_core
             }
             olaScale = (acc > 0.0) ? 1.0 / acc : 1.0;
 
-            inL.assign ((size_t) N, 0.0);  inR.assign ((size_t) N, 0.0);
-            outL.assign ((size_t) N, 0.0); outR.assign ((size_t) N, 0.0);
-            specL.assign ((size_t) N, cd {}); specR.assign ((size_t) N, cd {});
-
-            magL.assign ((size_t) (half + 1), 0.0);
-            magR.assign ((size_t) (half + 1), 0.0);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                in[ch].assign   ((size_t) N, 0.0);
+                out[ch].assign  ((size_t) N, 0.0);
+                spec[ch].assign ((size_t) N, cd {});
+                mag[ch].assign  ((size_t) (half + 1), 0.0);
+                gain[ch].assign ((size_t) (half + 1), 1.0);
+            }
             det.assign  ((size_t) (half + 1), 0.0);
             env.assign  ((size_t) (half + 1), 0.0);
             prefix.assign ((size_t) (half + 2), 0.0);
-            gainL.assign ((size_t) (half + 1), 1.0);
-            gainR.assign ((size_t) (half + 1), 1.0);
             dispMag.assign ((size_t) (half + 1), 0.0);
             dispRedDb.assign ((size_t) (half + 1), 0.0);
             profile.assign ((size_t) (half + 1), 1.0);
@@ -73,12 +75,12 @@ namespace factory_core
 
         void reset() noexcept
         {
-            std::fill (inL.begin(),  inL.end(),  0.0);
-            std::fill (inR.begin(),  inR.end(),  0.0);
-            std::fill (outL.begin(), outL.end(), 0.0);
-            std::fill (outR.begin(), outR.end(), 0.0);
-            std::fill (gainL.begin(), gainL.end(), 1.0);
-            std::fill (gainR.begin(), gainR.end(), 1.0);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                std::fill (in[ch].begin(),   in[ch].end(),   0.0);
+                std::fill (out[ch].begin(),  out[ch].end(),  0.0);
+                std::fill (gain[ch].begin(), gain[ch].end(), 1.0);
+            }
             idx = 0;
             hop = 0;
         }
@@ -131,15 +133,15 @@ namespace factory_core
         // Process one stereo sample in place. Output is latency-aligned dry/wet.
         void process (double& l, double& r) noexcept
         {
-            const double dryL = inL[(size_t) idx]; // input from N samples ago (== wet latency)
-            const double dryR = inR[(size_t) idx];
-            inL[(size_t) idx] = l;
-            inR[(size_t) idx] = r;
+            const double dryL = in[0][(size_t) idx]; // input from N samples ago (== wet latency)
+            const double dryR = in[1][(size_t) idx];
+            in[0][(size_t) idx] = l;
+            in[1][(size_t) idx] = r;
 
-            const double wetL = outL[(size_t) idx];
-            const double wetR = outR[(size_t) idx];
-            outL[(size_t) idx] = 0.0;
-            outR[(size_t) idx] = 0.0;
+            const double wetL = out[0][(size_t) idx];
+            const double wetR = out[1][(size_t) idx];
+            out[0][(size_t) idx] = 0.0;
+            out[1][(size_t) idx] = 0.0;
 
             idx = (idx + 1) & mask;
             if (++hop >= H) { hop = 0; processFrame(); }
@@ -176,12 +178,7 @@ namespace factory_core
         static constexpr double kHardThrHiDb = -6.0;
         static constexpr double kHardThrLoDb = -60.0;
 
-        static double coeff (double ms, double rate) noexcept
-        {
-            const double t = ms * 1.0e-3;
-            if (t <= 0.0 || rate <= 0.0) return 0.0;
-            return std::exp (-1.0 / (t * rate));
-        }
+        static double coeff (double ms, double rate) noexcept { return onePoleCoeffForMs (ms, rate); }
 
         // Compute per-bin gain from a magnitude spectrum + persistent gain state.
         void computeGains (const std::vector<double>& mag, std::vector<double>& g) noexcept
@@ -249,65 +246,62 @@ namespace factory_core
             for (int k = 0; k < N; ++k)
             {
                 const int p = (idx + k) & mask;
-                specL[(size_t) k] = cd (inL[(size_t) p] * win[(size_t) k], 0.0);
-                specR[(size_t) k] = cd (inR[(size_t) p] * win[(size_t) k], 0.0);
+                for (int ch = 0; ch < 2; ++ch)
+                    spec[ch][(size_t) k] = cd (in[ch][(size_t) p] * win[(size_t) k], 0.0);
             }
-            fft.forward (specL.data());
-            fft.forward (specR.data());
+            for (int ch = 0; ch < 2; ++ch) fft.forward (spec[ch].data());
 
             for (int k = 0; k <= half; ++k)
-            {
-                magL[(size_t) k] = std::abs (specL[(size_t) k]);
-                magR[(size_t) k] = std::abs (specR[(size_t) k]);
-            }
+                for (int ch = 0; ch < 2; ++ch)
+                    mag[ch][(size_t) k] = std::abs (spec[ch][(size_t) k]);
 
             if (link)
             {
-                for (int k = 0; k <= half; ++k) det[(size_t) k] = std::max (magL[(size_t) k], magR[(size_t) k]);
-                computeGains (det, gainL);
+                for (int k = 0; k <= half; ++k) det[(size_t) k] = std::max (mag[0][(size_t) k], mag[1][(size_t) k]);
+                computeGains (det, gain[0]);
                 for (int k = 0; k <= half; ++k)
                 {
-                    gainR[(size_t) k] = gainL[(size_t) k];
-                    dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (gainL[(size_t) k], 1.0e-6));
+                    gain[1][(size_t) k] = gain[0][(size_t) k];
+                    dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (gain[0][(size_t) k], 1.0e-6));
                 }
             }
             else
             {
-                computeGains (magL, gainL);
-                computeGains (magR, gainR);
+                computeGains (mag[0], gain[0]);
+                computeGains (mag[1], gain[1]);
                 for (int k = 0; k <= half; ++k)
-                    dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (std::min (gainL[(size_t) k], gainR[(size_t) k]), 1.0e-6));
+                    dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (std::min (gain[0][(size_t) k], gain[1][(size_t) k]), 1.0e-6));
             }
 
             // Analyser shows the post-processing (output) magnitude: the input
             // spectrum scaled by the per-bin gain just computed (the reduction
             // curtain shows that gain). Gain is real, so |spec * g| = mag * g.
             for (int k = 0; k <= half; ++k)
-                dispMag[(size_t) k] = std::max (magL[(size_t) k] * gainL[(size_t) k],
-                                                magR[(size_t) k] * gainR[(size_t) k]) / (0.5 * (double) N);
+                dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * gain[0][(size_t) k],
+                                                mag[1][(size_t) k] * gain[1][(size_t) k]) / (0.5 * (double) N);
 
             // Apply the real per-bin gains, keeping the spectrum Hermitian.
-            specL[0] *= gainL[0];               specR[0] *= gainR[0];
-            specL[(size_t) half] *= gainL[(size_t) half];
-            specR[(size_t) half] *= gainR[(size_t) half];
+            spec[0][0] *= gain[0][0];               spec[1][0] *= gain[1][0];
+            spec[0][(size_t) half] *= gain[0][(size_t) half];
+            spec[1][(size_t) half] *= gain[1][(size_t) half];
             for (int k = 1; k < half; ++k)
             {
-                specL[(size_t) k]       *= gainL[(size_t) k];
-                specL[(size_t) (N - k)] *= gainL[(size_t) k];
-                specR[(size_t) k]       *= gainR[(size_t) k];
-                specR[(size_t) (N - k)] *= gainR[(size_t) k];
+                spec[0][(size_t) k]       *= gain[0][(size_t) k];
+                spec[0][(size_t) (N - k)] *= gain[0][(size_t) k];
+                spec[1][(size_t) k]       *= gain[1][(size_t) k];
+                spec[1][(size_t) (N - k)] *= gain[1][(size_t) k];
             }
 
-            fft.inverse (specL.data());
-            fft.inverse (specR.data());
+            fft.inverse (spec[0].data());
+            fft.inverse (spec[1].data());
 
             // Windowed overlap-add back to the output ring (same alignment).
             for (int k = 0; k < N; ++k)
             {
                 const int p = (idx + k) & mask;
                 const double w = win[(size_t) k] * olaScale;
-                outL[(size_t) p] += specL[(size_t) k].real() * w;
-                outR[(size_t) p] += specR[(size_t) k].real() * w;
+                out[0][(size_t) p] += spec[0][(size_t) k].real() * w;
+                out[1][(size_t) p] += spec[1][(size_t) k].real() * w;
             }
         }
 
@@ -316,11 +310,12 @@ namespace factory_core
         int ord = 11, N = 2048, H = 512, mask = 2047;
 
         std::vector<double> win; double olaScale = 1.0;
-        std::vector<double> inL, inR, outL, outR;
+        std::array<std::vector<double>, 2> in, out;   // [ch] input / output rings
         int idx = 0, hop = 0;
-        std::vector<cd> specL, specR;
+        std::array<std::vector<cd>, 2> spec;          // [ch] analysis/synthesis spectrum
 
-        std::vector<double> magL, magR, det, env, prefix, gainL, gainR, profile;
+        std::array<std::vector<double>, 2> mag, gain; // [ch] magnitude / per-bin gain
+        std::vector<double> det, env, prefix, profile;
         std::vector<double> dispMag, dispRedDb;
 
         // params

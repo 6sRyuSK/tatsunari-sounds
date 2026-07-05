@@ -52,6 +52,7 @@
 #include "HarmonicShaper.h"
 #include "EnvelopeFollower.h"
 #include "OnePole.h"
+#include "SmoothingCoeff.h"
 
 #include <algorithm>
 #include <cmath>
@@ -456,8 +457,8 @@ namespace factory_core
 
                         dirL += bL[b]; dirR += bR[b];
                         const double w = curWidth[b];
-                        { const double mm = 0.5 * (bL[b] + bR[b]); const double s = 0.5 * (bL[b] - bR[b]) * w; linWetL += mm + s; linWetR += mm - s; }
-                        { const double mm = 0.5 * (rL   + rR);     const double s = 0.5 * (rL   - rR)   * w; resPreL += mm + s; resPreR += mm - s; }
+                        { double wl, wr; widen (bL[b], bR[b], w, wl, wr); linWetL += wl; linWetR += wr; }
+                        { double wl, wr; widen (rL,    rR,    w, wl, wr); resPreL += wl; resPreR += wr; }
                     }
 
                     const double resWetL = P.dcBlock[0].hp (resPreL);
@@ -509,11 +510,21 @@ namespace factory_core
     private:
         static double dbToLin (double db) noexcept { return std::pow (10.0, db / 20.0); }
 
+        // Mid/side widen: pass the mid untouched, scale the side by w. Identical
+        // operations/order to the two inlined blocks it replaced (bit-for-bit).
+        static void widen (double l, double r, double w, double& outL, double& outR) noexcept
+        {
+            const double mm = 0.5 * (l + r);
+            const double s  = 0.5 * (l - r) * w;
+            outL = mm + s;
+            outR = mm - s;
+        }
+
         // One-pole parameter smoother (host or path rate).
         struct Smoother
         {
             double cur = 0.0, target = 0.0, coeff = 1.0;
-            void setRate (double sr, double ms) noexcept { coeff = 1.0 - std::exp (-1.0 / std::max (1.0, ms * 0.001 * sr)); }
+            void setRate (double sr, double ms) noexcept { coeff = onePoleAlphaForTauSamples (std::max (1.0, ms * 0.001 * sr)); }
             void snap (double v) noexcept { cur = target = v; }
             void set (double v) noexcept { target = v; }
             double next() noexcept { cur += (target - cur) * coeff; return cur; }
@@ -581,7 +592,7 @@ namespace factory_core
                         shaper[b][c].setAdaa (factor == 1);   // 1x path anti-aliases via ADAA
                     }
                 }
-                glueSmooth = 1.0 - std::exp (-1.0 / std::max (1.0, 0.010 * rate));
+                glueSmooth = onePoleAlphaForTauSamples (std::max (1.0, 0.010 * rate));
                 reset();
             }
 

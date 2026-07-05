@@ -31,6 +31,8 @@
 // cap, so callers must size outCap >= ceil(n / step) + 2 (step = inRate/outRate)
 // so production is never truncated. RateBracket sizes its scratch with ample margin.
 //
+#include "KaiserBessel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -136,19 +138,6 @@ namespace factory_core
             if (std::abs (x) < 1.0e-9) return 1.0;
             const double px = 3.14159265358979323846 * x;
             return std::sin (px) / px;
-        }
-
-        static double besselI0 (double x) noexcept
-        {
-            double sum = 1.0, term = 1.0;
-            const double y = x * x / 4.0;
-            for (int k = 1; k < 60; ++k)
-            {
-                term *= y / (double) (k * k);
-                sum  += term;
-                if (term < 1.0e-14 * sum) break;
-            }
-            return sum;
         }
 
         std::vector<double> table;      // prototype, positive side, kDensity/input-sample

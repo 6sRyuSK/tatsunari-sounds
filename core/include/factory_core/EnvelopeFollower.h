@@ -8,6 +8,8 @@
 // A finiteness guard makes a single NaN/Inf input self-healing: a non-finite
 // sample is ignored (the state is held) rather than latched into the envelope.
 //
+#include "SmoothingCoeff.h"
+
 #include <cmath>
 
 namespace factory_core
@@ -45,12 +47,7 @@ namespace factory_core
         double value() const noexcept { return env; }
 
     private:
-        double coeffForMs (double ms) const noexcept
-        {
-            const double t = ms * 0.001;
-            if (t <= 0.0 || fs <= 0.0) return 0.0;
-            return std::exp (-1.0 / (t * fs));
-        }
+        double coeffForMs (double ms) const noexcept { return onePoleCoeffForMs (ms, fs); }
 
         double fs          = 44100.0;
         double attackMs    = 5.0;
