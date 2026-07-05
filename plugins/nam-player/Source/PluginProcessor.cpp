@@ -340,24 +340,16 @@ juce::AudioProcessorEditor* NamPlayerAudioProcessor::createEditor()
 
 void NamPlayerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // copyState() carries the "files" child tree (model / IR paths) intact; we
-    // only append the selected program index as a root attribute (append-only, so
-    // existing sessions without it read back as program 0 and stay compatible).
-    if (auto xml = apvts.copyState().createXml())
-    {
-        programs.writeStateAttribute (*xml);
+    // copyState() carries the "files" child tree (model / IR paths) intact; the
+    // shared helper appends the selected program index as a root attribute
+    // (append-only, so existing sessions without it read back as program 0).
+    if (auto xml = factory_presets::stateToXml (apvts, programs))
         copyXmlToBinary (*xml, destData);
-    }
 }
 
 void NamPlayerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-        {
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            programs.readStateAttribute (*xml);
-        }
+    factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
 
     // Re-load the referenced model / IR files (heavy) on the message thread.
     if (juce::MessageManager::getInstanceWithoutCreating() != nullptr

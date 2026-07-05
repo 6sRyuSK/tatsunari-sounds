@@ -54,9 +54,14 @@ Editor を読み直す必要はない。
 
 ## プリセットセレクタ
 
-`factory_ui::PresetSelector`(`ui/include/factory_ui/PresetSelector.h`、ComboBox +
-前/次矢印)を上段 26px 行のタイトルと Bypass の間に置くのが家スタイル。配色は
-本パレットのみ。ホスト↔コンボの双方向同期を含む配線は `add-preset` スキル。
+プリセットピッカーを上段 26px 行のタイトルと Bypass の間に置くのが家スタイル。配色は
+本パレットのみ。Editor は `factory_ui::PresetSelectorController`
+(`ui/include/factory_ui/PresetSelectorController.h`)をメンバに持ち
+(`presetController (*this, p)` で構築、`resized()` で
+`presetController.selector().setBounds(...)`)、これがホスト↔コンボの双方向同期を
+すべて担う。Editor 側に `AudioProcessorListener` 継承や `refreshPresetSelector` /
+`audioProcessorChanged` の手書きは不要。view 単体は `PresetSelector.h`
+(ComboBox + 前/次矢印)。配線の詳細は `add-preset` スキル。
 
 ## GUI 確認
 

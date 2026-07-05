@@ -4,14 +4,13 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 #include "ReverbVisualizer.h"
 
 #include <memory>
 #include <vector>
 
-class ShimmerReverbAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                                private juce::AudioProcessorListener
+class ShimmerReverbAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit ShimmerReverbAudioProcessorEditor (ShimmerReverbAudioProcessor&);
@@ -27,11 +26,6 @@ private:
 
     void addKnob (const char* id, const char* name, const char* suffix, int decimals);
     void setupPitchBox (juce::ComboBox&, juce::Label&, const char* name);
-    void refreshPresetSelector();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     ShimmerReverbAudioProcessor& processor;
     FactoryLookAndFeel lnf;
@@ -41,7 +35,7 @@ private:
     juce::ToggleButton bypassButton { "Bypass" };
     juce::ComboBox pitchABox, pitchBBox;
     juce::Label pitchALabel, pitchBLabel;
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
     ReverbVisualizer visualizer;
 
     std::vector<std::unique_ptr<juce::Slider>> knobs;

@@ -2,7 +2,7 @@
 #include "factory_ui/FactoryChrome.h"
 
 BusCompressorAudioProcessorEditor::BusCompressorAudioProcessorEditor (BusCompressorAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), meter (p)
+    : AudioProcessorEditor (&p), processor (p), presetController (*this, p), meter (p)
 {
     setLookAndFeel (&lnf);
 
@@ -31,19 +31,6 @@ BusCompressorAudioProcessorEditor::BusCompressorAudioProcessorEditor (BusCompres
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
-    // Preset selector: populate from the processor's program list and wire the
-    // two-way host sync. User selection drives the program API + notifies the
-    // host; host-driven changes come back via audioProcessorChanged.
-    refreshPresetSelector();
-    presetSelector.onChange = [this] (int idx)
-    {
-        processor.setCurrentProgram (idx);
-        processor.updateHostDisplay (
-            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
-    };
-    addAndMakeVisible (presetSelector);
-    processor.addListener (this);
-
     addAndMakeVisible (meter);
 
     auto& s = processor.apvts;
@@ -67,7 +54,6 @@ BusCompressorAudioProcessorEditor::BusCompressorAudioProcessorEditor (BusCompres
 
 BusCompressorAudioProcessorEditor::~BusCompressorAudioProcessorEditor()
 {
-    processor.removeListener (this);
     setLookAndFeel (nullptr);
 }
 
@@ -77,30 +63,6 @@ void BusCompressorAudioProcessorEditor::configureKnob (juce::Slider& slider, juc
     factory_ui::styleKnob (slider, label, name, suffix);
     addAndMakeVisible (slider);
     addAndMakeVisible (label);
-}
-
-void BusCompressorAudioProcessorEditor::refreshPresetSelector()
-{
-    juce::StringArray names;
-    for (int i = 0; i < processor.getNumPrograms(); ++i)
-        names.add (processor.getProgramName (i));
-    presetSelector.setItems (names, processor.getCurrentProgram());
-}
-
-void BusCompressorAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
-                                                               const ChangeDetails& details)
-{
-    if (! details.programChanged)
-        return;
-
-    // May arrive on any thread; marshal the selector update to the message thread.
-    juce::Component::SafePointer<BusCompressorAudioProcessorEditor> safe (this);
-    juce::MessageManager::callAsync ([safe]
-    {
-        if (safe != nullptr)
-            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
-                                                   juce::dontSendNotification);
-    });
 }
 
 void BusCompressorAudioProcessorEditor::paint (juce::Graphics& g)
@@ -117,7 +79,7 @@ void BusCompressorAudioProcessorEditor::resized()
     bypassButton.setBounds (top.removeFromRight (96));
     titleLabel.setBounds (top.removeFromLeft (170));
     top.removeFromLeft (8);
-    presetSelector.setBounds (top);
+    presetController.selector().setBounds (top);
 
     r.removeFromTop (10);
 

@@ -4,14 +4,13 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 #include "SuppressionCurveComponent.h"
 
 #include <memory>
 #include <vector>
 
-class ResonanceSuppressorAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                                      private juce::AudioProcessorListener
+class ResonanceSuppressorAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit ResonanceSuppressorAudioProcessorEditor (ResonanceSuppressorAudioProcessor&);
@@ -26,17 +25,12 @@ private:
     using CA = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void addKnob (juce::Slider&, juce::Label&, const juce::String& name, const juce::String& suffix, const juce::String& id);
-    void refreshPresetSelector();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     ResonanceSuppressorAudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
     juce::Label titleLabel;
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
     SuppressionCurveComponent curve;
 
     juce::Slider depthS, sharpS, atkS, relS, mixS;

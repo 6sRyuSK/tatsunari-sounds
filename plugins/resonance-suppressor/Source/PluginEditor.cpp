@@ -2,7 +2,7 @@
 #include "factory_ui/FactoryChrome.h"
 
 ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor (ResonanceSuppressorAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), curve (p, p.apvts)
+    : AudioProcessorEditor (&p), processor (p), presetController (*this, p), curve (p, p.apvts)
 {
     setLookAndFeel (&lnf);
 
@@ -10,19 +10,6 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     titleLabel.setFont (juce::Font (juce::FontOptions (22.0f, juce::Font::bold)));
     titleLabel.setColour (juce::Label::textColourId, FactoryLookAndFeel::accent());
     addAndMakeVisible (titleLabel);
-
-    // Preset selector: populate from the processor's program list and wire the
-    // two-way host sync. User selection drives the program API + notifies the
-    // host; host-driven changes come back via audioProcessorChanged.
-    refreshPresetSelector();
-    presetSelector.onChange = [this] (int idx)
-    {
-        processor.setCurrentProgram (idx);
-        processor.updateHostDisplay (
-            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
-    };
-    addAndMakeVisible (presetSelector);
-    processor.addListener (this);
 
     deltaB.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xff45b8acu)); // teal, matches the reduction trace
     addAndMakeVisible (deltaB);
@@ -60,32 +47,7 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
 
 ResonanceSuppressorAudioProcessorEditor::~ResonanceSuppressorAudioProcessorEditor()
 {
-    processor.removeListener (this);
     setLookAndFeel (nullptr);
-}
-
-void ResonanceSuppressorAudioProcessorEditor::refreshPresetSelector()
-{
-    juce::StringArray names;
-    for (int i = 0; i < processor.getNumPrograms(); ++i)
-        names.add (processor.getProgramName (i));
-    presetSelector.setItems (names, processor.getCurrentProgram());
-}
-
-void ResonanceSuppressorAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
-                                                                     const ChangeDetails& details)
-{
-    if (! details.programChanged)
-        return;
-
-    // May arrive on any thread; marshal the selector update to the message thread.
-    juce::Component::SafePointer<ResonanceSuppressorAudioProcessorEditor> safe (this);
-    juce::MessageManager::callAsync ([safe]
-    {
-        if (safe != nullptr)
-            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
-                                                   juce::dontSendNotification);
-    });
 }
 
 void ResonanceSuppressorAudioProcessorEditor::addKnob (juce::Slider& s, juce::Label& l,
@@ -125,7 +87,7 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     top.removeFromRight (10);
     titleLabel.setBounds (top.removeFromLeft (210));
     top.removeFromLeft (10);
-    presetSelector.setBounds (top);
+    presetController.selector().setBounds (top);
 
     r.removeFromTop (10);
     // Bottom control row at ~80% of its former height so the analyser gets the
