@@ -178,8 +178,13 @@ namespace factory_core
             bracket.process (inL, inR, outL, outR, n,
                              [this] (float* l, float* r, int m) { sectionProcess (l, r, m); });
 
-            // Once the bypass fade has fully landed, clear the nonlinear state so
-            // a squeal can never survive bypass and re-entry starts clean.
+            // Once the bypass fade has fully landed, clear the nonlinear state and
+            // latch clearedWhileBypassed: from here until un-bypass, processChannel
+            // holds the feedback loop dead (no readback, no noise, zero into the
+            // delay) so the squeal cannot silently regrow behind the muted output.
+            // The loop still runs during the fade itself (target set, value not yet
+            // below the floor), so the fade-out remains audible and click-free —
+            // and a squeal can never survive bypass, so re-entry starts clean.
             if (wetFade.target == 0.0 && wetFade.value < 1.0e-4 && ! clearedWhileBypassed)
             {
                 for (auto& c : ch)
@@ -271,14 +276,26 @@ namespace factory_core
 
             const double bEff = biasNow + gate.value * kGateDepth * kGateKnee / (c.env + kGateKnee);
 
-            double fb = c.fbHp.hp (c.fbLp.lp (c.fbDelay.readInterpolated (delaySamples)));
-            if (! std::isfinite (fb))
+            // While bypassed and already faded to silence (clearedWhileBypassed
+            // latched in process()), hold the feedback loop dead for the rest of
+            // the bypass: read nothing back, inject no noise, and write only zero
+            // into the delay. Otherwise kfb stays at squeal-onset gain and the
+            // noise seed keeps re-oscillating the loop behind the muted output, so
+            // the fully-regrown squeal reappears on un-bypass.
+            const bool feedbackSilent = clearedWhileBypassed;
+
+            double fb = 0.0;
+            if (! feedbackSilent)
             {
-                c.clearFeedback();
-                fb = 0.0;
+                fb = c.fbHp.hp (c.fbLp.lp (c.fbDelay.readInterpolated (delaySamples)));
+                if (! std::isfinite (fb))
+                {
+                    c.clearFeedback();
+                    fb = 0.0;
+                }
             }
 
-            const double u = driveNow * x + bEff + kfbNow * fb + noise;
+            const double u = driveNow * x + bEff + kfbNow * fb + (feedbackSilent ? 0.0 : noise);
             // ADAA slot: if the alias gate ever needs tightening, replace this
             // tanh with the 1st-order antiderivative form (F(u) = ln cosh u,
             // y = (F(u)−F(u₋₁))/(u−u₋₁)) — worth ~12 dB, at the cost of half a
@@ -289,7 +306,7 @@ namespace factory_core
                 c.clearFeedback();
                 y = 0.0;
             }
-            c.fbDelay.write (flushDenorm (y));
+            c.fbDelay.write (feedbackSilent ? 0.0 : flushDenorm (y));
 
             y = c.toneHigh.processSample (c.toneLow.processSample (y));
             y = c.dcHp.hp (y);
