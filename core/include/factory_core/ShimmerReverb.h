@@ -28,10 +28,19 @@ namespace factory_core
         {
             fs = sampleRate;
             const double scale = fs / 44100.0;
+            // The LFO tail modulation is a fixed *time* depth, not a fixed
+            // sample count: at 44.1 kHz it is exactly kModSamplesAt44k samples
+            // (~0.544 ms), and it tracks the sample rate so the modulation
+            // reaches the same physical delay swing at every rate (class G — a
+            // fixed sample count gave 1/4 the time-depth at 192 kHz). Sized here
+            // in prepare so process stays allocation-free (class D: the delay
+            // buffers below carry the matching rate-derived headroom).
+            maxModSamples = kModSamplesAt44k * scale;
             for (int i = 0; i < kLines; ++i)
             {
                 baseLen[i] = kBaseLen[i] * scale;
-                const int maxLen = (int) (baseLen[i] * kMaxSize) + kModMax + 8;
+                const int maxLen = (int) (baseLen[i] * kMaxSize)
+                                 + (int) std::ceil (maxModSamples) + 8;
                 lines[i].prepare (maxLen);
                 damp[i].reset();
             }
@@ -74,6 +83,12 @@ namespace factory_core
         void setModDepth   (double d) noexcept { modDepth = std::clamp (d, 0.0, 1.0); }
         void setMix        (double m) noexcept { mix = std::clamp (m, 0.0, 1.0); }
 
+        // Max LFO tail-modulation depth in samples at the prepared sample rate
+        // (test observability). It is a fixed *time* — kModSamplesAt44k / 44100 s
+        // (~0.544 ms) — so this scales with fs; the delay buffers reserve the
+        // matching ceil() headroom. Trivial const accessor, no DSP effect.
+        double maxModDepthSamples() const noexcept { return maxModSamples; }
+
         void processStereo (double& l, double& r) noexcept
         {
             const double dryL = l, dryR = r;
@@ -93,7 +108,7 @@ namespace factory_core
             std::array<double, kLines> s {};
             for (int i = 0; i < kLines; ++i)
             {
-                const double len = baseLen[i] * size + modDepth * kModMax * std::sin (2.0 * kPi * lfoPhase + i * 0.7);
+                const double len = baseLen[i] * size + modDepth * maxModSamples * std::sin (2.0 * kPi * lfoPhase + i * 0.7);
                 double sv = lines[(size_t) i].readInterpolated (std::max (1.0, len));
                 if (! std::isfinite (sv)) { sv = 0.0; lines[(size_t) i].reset(); }
                 s[(size_t) i] = sv;
@@ -133,7 +148,7 @@ namespace factory_core
     private:
         static constexpr double kPi = 3.14159265358979323846;
         static constexpr double kMaxSize = 1.6;
-        static constexpr int    kModMax = 24; // max LFO depth in samples
+        static constexpr double kModSamplesAt44k = 24.0; // max LFO depth @44.1kHz (~0.544 ms)
         static constexpr double kMaxPreDelayMs = 250.0;
 
         // Freeverb-style mutually-prime base comb lengths (samples @ 44.1k).
@@ -173,6 +188,7 @@ namespace factory_core
         }
 
         double fs = 44100.0;
+        double maxModSamples = kModSamplesAt44k; // rate-derived in prepare()
         std::array<double, kLines> baseLen {};
         std::array<DelayLine, kLines> lines;
         std::array<OnePole, kLines> damp;
