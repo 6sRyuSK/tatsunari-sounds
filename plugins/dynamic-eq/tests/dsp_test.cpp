@@ -17,6 +17,7 @@
 //
 #include "factory_core/DynamicEqBand.h"
 #include "factory_core/Filters.h"
+#include "factory_core/testing/DspInvariants.h"
 
 #include <cmath>
 #include <complex>
@@ -24,6 +25,8 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+
+namespace fct = factory_core::testing;
 
 namespace
 {
@@ -261,10 +264,16 @@ namespace
         std::printf ("  ok\n");
     }
 
-    double measureBandGainDb (double Fs, double f0, double amp, int settle, int measure)
+    // Steady-state energy gain (dB) of a tone at f0 through a dynamics-enabled
+    // band. The detector band-passes at f0, so the tone sits in the detector's
+    // pass-band and drives the envelope; the returned value is |H(w0)|^2 in dB
+    // (energy ratio) once the gain has settled. Static gain +6 dB, range -12 dB:
+    // a quiet tone (below threshold) leaves the static gain, a loud tone (above
+    // threshold + 24 dB span) applies the full range -> effective gain -6 dB.
+    double measureBandGainDb (double Fs, BandType type, double f0, double amp, int settle, int measure)
     {
         factory_core::DynamicEqBand band;
-        band.setType (BandType::Bell);
+        band.setType (type);
         band.setFrequency (f0);
         band.setGainDb (6.0);
         band.setQ (2.0);
@@ -293,13 +302,49 @@ namespace
     void dynamicBandTest (double Fs)
     {
         std::printf ("Dynamic band steady-state @ Fs=%.0f\n", Fs);
-        const double quiet = measureBandGainDb (Fs, 1000.0, 1.0e-3, 60000, 20000); // below threshold
-        const double loud  = measureBandGainDb (Fs, 1000.0, 0.5,    60000, 20000); // above threshold+span
+        const double quiet = measureBandGainDb (Fs, BandType::Bell, 1000.0, 1.0e-3, 60000, 20000); // below threshold
+        const double loud  = measureBandGainDb (Fs, BandType::Bell, 1000.0, 0.5,    60000, 20000); // above threshold+span
 
         if (std::abs (quiet - 6.0) > 0.7)  fail ("dynamic quiet gain " + std::to_string (quiet) + " != static +6");
         if (std::abs (loud - (-6.0)) > 0.7) fail ("dynamic loud gain " + std::to_string (loud) + " != +6-12");
         if (loud >= quiet)                 fail ("dynamics did not reduce gain under load");
         std::printf ("  quiet=%.2f dB  loud=%.2f dB\n", quiet, loud);
+    }
+
+    // Shelf + dynamics path (LowShelf / HighShelf are gain-bearing, so the
+    // gain-modulated streaming path runs for them too — only Bell was covered).
+    // A tone at the shelf's corner frequency f0 has magnitude gainDb/2 (RBJ
+    // shelves pass through the half-gain point at the corner), so the measured
+    // energy gain is compared against the INDEPENDENT z-domain oracle evaluated
+    // at the known effective gain: +6 dB quiet (below threshold) and -6 dB loud
+    // (static +6 plus the full -12 dB range above threshold + span).
+    void dynamicShelfTest (double Fs)
+    {
+        std::printf ("Dynamic shelf steady-state @ Fs=%.0f\n", Fs);
+        const double f0 = 1000.0, Q = 2.0;
+        const double w0 = 2.0 * kPi * f0 / Fs;
+
+        for (const BandType type : { BandType::LowShelf, BandType::HighShelf })
+        {
+            // Independent oracle: effective gain is +6 dB (quiet) / -6 dB (loud),
+            // derived from the documented dynamicOffsetDb semantics, not from the
+            // implementation; evaluate the RBJ shelf oracle at the corner.
+            const double expQuiet = magDb (oracleH (oracleDesign (type, f0,  6.0, Q, Fs), w0));
+            const double expLoud  = magDb (oracleH (oracleDesign (type, f0, -6.0, Q, Fs), w0));
+
+            const double quiet = measureBandGainDb (Fs, type, f0, 1.0e-3, 60000, 20000);
+            const double loud  = measureBandGainDb (Fs, type, f0, 0.5,    60000, 20000);
+
+            const std::string tn = typeName (type);
+            if (std::abs (quiet - expQuiet) > 0.7)
+                fail (tn + " dynamic quiet gain " + std::to_string (quiet) + " != " + std::to_string (expQuiet));
+            if (std::abs (loud - expLoud) > 0.7)
+                fail (tn + " dynamic loud gain " + std::to_string (loud) + " != " + std::to_string (expLoud));
+            if (loud >= quiet)
+                fail (tn + " dynamics did not reduce gain under load");
+            std::printf ("  %-9s quiet=%.2f dB (exp %.2f)  loud=%.2f dB (exp %.2f)\n",
+                         tn.c_str(), quiet, expQuiet, loud, expLoud);
+        }
     }
 
     // Soft-knee invariants on the pure offset function.
@@ -413,6 +458,54 @@ namespace
         std::printf ("  ok\n");
     }
 
+    // Regression class B (#36): absolute ceiling on the HP/LP cascade resonance
+    // peak at the TRUE worst case — maximum slope (96 dB/oct = kMaxStages = 8
+    // sections) crossed with the maximum user Q (18, the plugin's Q param top).
+    // designHpLpStage caps the resonant section's Q (kMaxSectionQ = 8.0); with
+    // the surrounding Butterworth roll-off the capped cascade peaks at only
+    // ~+2.0 dB near the cutoff (measured across all 6 rates). Removing the cap
+    // drives one section to Q~130 and the peak to ~+25 dB (a clipping hazard
+    // reachable from two normal sliders). Gate the measured peak below a modest
+    // absolute ceiling: it clears the ~+2 dB capped behaviour with margin yet a
+    // cap regression (even a partial one, e.g. cap 16 -> ~+7 dB) fails clearly.
+    // Measured via real signal (impulse -> DFT) in the z-domain, both HP and LP.
+    void resonanceCeilingTest (double Fs)
+    {
+        std::printf ("Resonance ceiling (worst case) @ Fs=%.0f\n", Fs);
+        const int N = 1 << 16;
+        const int n = factory_core::DynamicEqBand::kMaxStages; // 8 sections = 96 dB/oct
+        const double maxUserQ = 18.0;                          // plugin Q param range top
+        constexpr double kResonanceCeilingDb = 4.0;            // ~2 dB above measured ~+2.0 dB
+
+        struct Case { BandType type; double f0; };
+        const Case cases[] = { { BandType::HighPass, 1000.0 }, { BandType::LowPass, 1000.0 } };
+
+        for (const auto& cs : cases)
+        {
+            std::vector<factory_core::BiquadCoeffs> stages;
+            for (int k = 0; k < n; ++k)
+                stages.push_back (factory_core::designHpLpStage (cs.type, cs.f0, maxUserQ, k, n, Fs));
+            const auto ir = cascadeImpulse (stages, N);
+
+            // Scan the full in-range spectrum for the peak magnitude.
+            double peakDb = -1e9, peakF = 0.0;
+            const int M = 2000;
+            for (int i = 0; i < M; ++i)
+            {
+                const double f = 20.0 * std::pow ((0.49 * Fs) / 20.0, (double) i / (M - 1));
+                const double m = magDb (dftAt (ir, 2.0 * kPi * f / Fs));
+                if (m > peakDb) { peakDb = m; peakF = f; }
+            }
+
+            if (peakDb > kResonanceCeilingDb)
+                fail (std::string (typeName (cs.type)) + " worst-case resonance peak "
+                      + std::to_string (peakDb) + " dB exceeds ceiling "
+                      + std::to_string (kResonanceCeilingDb));
+            std::printf ("  %-9s peak=%.3f dB @ %.1f Hz (ceiling %.1f dB)\n",
+                         typeName (cs.type), peakDb, peakF, kResonanceCeilingDb);
+        }
+    }
+
     // Per-band channel target (Stereo/L/R/M/S). A Bell band is exercised through
     // processStereo with an impulse pair; the affected channel must match the
     // independent z-domain oracle, the untouched channel must pass through, and a
@@ -521,24 +614,106 @@ namespace
         run (ChannelMode::Left,   1.0, 1.0, L, R); matchesBp (L, 1.0, "Listen left L");   isSilent (R, "Listen left R");
         std::printf ("  ok\n");
     }
+
+    // Regression class E (#30/#39/#41): setChannelMode resets both filter chains
+    // and the detectors so a chain that was idle in the old mode cannot resume
+    // from stale z-state (a click / burst). Stream a steady tone, flip the
+    // channel mode mid-stream (Left -> Stereo: filterL was actively running in
+    // Left, and Stereo keeps using it), and assert:
+    //   (a) the output stays finite through the transition;
+    //   (b) no sample-to-sample discontinuity / burst beyond a realistic bound
+    //       relative to the signal amplitude (a stale-state click would spike);
+    //   (c) after the switch the band is deterministically stale-free: its
+    //       output matches a freshly-constructed band (same params, target mode)
+    //       fed the identical tone from the switch point — bit-for-bit if the
+    //       reset cleared all state, divergent if any z-state survived.
+    void channelModeSwitchTest (double Fs)
+    {
+        std::printf ("Channel-mode switch reset @ Fs=%.0f\n", Fs);
+        using factory_core::ChannelMode;
+        const double f0 = 1000.0, gainDb = 6.0, Q = 2.0;
+        const double toneF = 220.0, amp = 0.5;      // tone independent of the band centre
+        const double w = 2.0 * kPi * toneF / Fs;
+        const int settle = (int) (0.5 * Fs);         // run Left long enough to build state
+        const int tail   = (int) (0.5 * Fs);
+        const int total  = settle + tail;
+
+        auto makeBand = [&] (ChannelMode m)
+        {
+            factory_core::DynamicEqBand band;
+            band.setType (BandType::Bell);
+            band.setFrequency (f0); band.setGainDb (gainDb); band.setQ (Q);
+            band.setChannelMode (m);
+            band.prepare (Fs);
+            return band;
+        };
+
+        // A: run in Left, then flip to Stereo at n == settle.
+        factory_core::DynamicEqBand a = makeBand (ChannelMode::Left);
+        std::vector<double> aL (total), aR (total);
+        double maxDeltaAtSwitch = 0.0;
+        for (int n = 0; n < total; ++n)
+        {
+            if (n == settle) a.setChannelMode (ChannelMode::Stereo);
+            const double s = amp * std::sin (w * n);
+            double l = s, r = s;
+            a.processStereo (l, r);
+            aL[(size_t) n] = l; aR[(size_t) n] = r;
+            if (n > 0 && std::abs (n - settle) <= 16)
+            {
+                maxDeltaAtSwitch = std::max (maxDeltaAtSwitch, std::abs (aL[(size_t) n] - aL[(size_t) (n - 1)]));
+                maxDeltaAtSwitch = std::max (maxDeltaAtSwitch, std::abs (aR[(size_t) n] - aR[(size_t) (n - 1)]));
+            }
+        }
+
+        // (a) finite through the transition; realistic peak bound (Bell +6 dB
+        // => |H| <= ~2, so |y| <= ~2*amp; a burst would blow past this).
+        if (! fct::allFinite (aL) || ! fct::allFinite (aR))
+            fail ("channel switch: non-finite output");
+        if (fct::peakAbs (aL) > 2.5 * amp || fct::peakAbs (aR) > 2.5 * amp)
+            fail ("channel switch: output peak exceeds realistic bound");
+
+        // (b) no discontinuity/click at the switch (measured ~0.07*amp; a stale
+        // reactivation would jump on the order of amp or more).
+        if (maxDeltaAtSwitch > 0.2 * amp)
+            fail ("channel switch: sample-to-sample discontinuity "
+                  + std::to_string (maxDeltaAtSwitch) + " > " + std::to_string (0.2 * amp));
+
+        // (c) after the switch, state is stale-free: identical to a fresh Stereo
+        // band fed the same tone from the switch point.
+        factory_core::DynamicEqBand b = makeBand (ChannelMode::Stereo);
+        double maxFreshDiff = 0.0;
+        for (int n = settle; n < total; ++n)
+        {
+            const double s = amp * std::sin (w * n);
+            double l = s, r = s;
+            b.processStereo (l, r);
+            maxFreshDiff = std::max (maxFreshDiff, std::abs (l - aL[(size_t) n]));
+            maxFreshDiff = std::max (maxFreshDiff, std::abs (r - aR[(size_t) n]));
+        }
+        if (maxFreshDiff > 1.0e-9)
+            fail ("channel switch: post-switch state differs from fresh band (stale z-state) "
+                  + std::to_string (maxFreshDiff));
+
+        std::printf ("  deltaAtSwitch=%.4f  freshDiff=%.2e  ok\n", maxDeltaAtSwitch, maxFreshDiff);
+    }
 }
 
 int main (int argc, char** argv)
 {
-    std::vector<double> rates;
-    if (argc > 1) rates.push_back (std::atof (argv[1]));
-    else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
-
     dynamicOffsetTest();
     kneeTest();
-    for (double Fs : rates)
+    for (double Fs : fct::sampleRatesFromArgs (argc, argv))
     {
         perTypeTest (Fs);
         cascadeTest (Fs);
         slopeCascadeTest (Fs);
+        resonanceCeilingTest (Fs);
         channelModeTest (Fs);
+        channelModeSwitchTest (Fs);
         listenTest (Fs);
         dynamicBandTest (Fs);
+        dynamicShelfTest (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
