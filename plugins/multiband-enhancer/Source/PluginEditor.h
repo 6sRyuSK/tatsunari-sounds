@@ -6,7 +6,7 @@
 #include "AnalyzerComponent.h"
 #include "BandStripComponent.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 
 #include <array>
 #include <memory>
@@ -17,8 +17,7 @@
 // Solo toggle), with a right-hand control card (Mix, Output, Quality, Delta
 // Listen, Bypass). Uses factory_ui throughout.
 //
-class MultibandEnhancerAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                              private juce::AudioProcessorListener
+class MultibandEnhancerAudioProcessorEditor : public juce::AudioProcessorEditor
 {
 public:
     explicit MultibandEnhancerAudioProcessorEditor (MultibandEnhancerAudioProcessor&);
@@ -32,18 +31,13 @@ private:
     using ButtonAtt = juce::AudioProcessorValueTreeState::ButtonAttachment;
     using ComboAtt  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
-    void refreshPresetSelector();
     // Linear-phase crossover is HQ-only: grey the phase selector out in Zero-Latency.
     void updatePhaseEnablement();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     MultibandEnhancerAudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
     AnalyzerComponent analyzer;
     std::array<std::unique_ptr<BandStripComponent>, 5> strips;
 

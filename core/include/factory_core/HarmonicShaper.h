@@ -31,6 +31,8 @@
 // Mode changes crossfade the coefficients over ~30 ms (same topology -> no reset,
 // no click).
 //
+#include "SmoothingCoeff.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -45,7 +47,7 @@ namespace factory_core
         {
             fs = rate;
             const double rampSamples = std::max (1.0, 0.03 * fs);   // ~30 ms coeff crossfade
-            modeSmooth = 1.0 - std::exp (-1.0 / rampSamples);
+            modeSmooth = onePoleAlphaForTauSamples (rampSamples);
             for (int i = 0; i < 4; ++i) cc[i] = targetCoeffs (mode)[i];
             reset();
         }

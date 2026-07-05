@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/install"
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
@@ -16,7 +15,7 @@ import (
 // InstallRoots is empty on unsupported CI platforms (e.g. Linux), so tests
 // inject a temporary root to exercise the apply orchestration end-to-end. The
 // production value is unchanged from calling install.InstallRoots directly.
-var installRootsFn = func() []string { return install.InstallRoots(applyOS()) }
+var installRootsFn = func() []string { return install.InstallRoots(detectOS()) }
 
 // runApply is the privileged file-mover, re-invoked as
 // `__apply --plan <f> --result <f>` under OS elevation (macOS osascript /
@@ -82,17 +81,4 @@ func writeResult(path string, res model.ApplyResult) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
-}
-
-// applyOS maps the running platform to the model OS used for the install-root
-// allowlist. The helper always runs on the target machine.
-func applyOS() model.OS {
-	switch runtime.GOOS {
-	case "darwin":
-		return model.OSMacOS
-	case "windows":
-		return model.OSWindows
-	default:
-		return ""
-	}
 }

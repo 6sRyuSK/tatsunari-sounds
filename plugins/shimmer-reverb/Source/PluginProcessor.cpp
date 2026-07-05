@@ -1,21 +1,10 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-
-namespace
-{
-    const juce::StringArray kPitches { "+12", "+7", "+5", "+19", "-12" };
-}
+#include "PitchTable.h"
 
 double ShimmerReverbAudioProcessor::pitchSemis (int index) noexcept
 {
-    switch (index)
-    {
-        case 0:  return 12.0;
-        case 1:  return 7.0;
-        case 2:  return 5.0;
-        case 3:  return 19.0;
-        default: return -12.0;
-    }
+    return shimmer_pitch::semitones (index);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -43,10 +32,11 @@ ShimmerReverbAudioProcessor::createParameterLayout()
 
     layout.add (std::make_unique<F> (juce::ParameterID { "shimmer", 1 }, "Shimmer",
         juce::NormalisableRange<float> { 0.0f, 95.0f, 0.1f }, 35.0f, A().withLabel (" %")));
+    const auto pitchNames = shimmer_pitch::names();
     layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "pitcha", 1 }, "Pitch A", kPitches, 0));
+        juce::ParameterID { "pitcha", 1 }, "Pitch A", pitchNames, 0));
     layout.add (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "pitchb", 1 }, "Pitch B", kPitches, 1));
+        juce::ParameterID { "pitchb", 1 }, "Pitch B", pitchNames, 1));
     layout.add (std::make_unique<F> (juce::ParameterID { "voicemix", 1 }, "Voice Mix",
         juce::NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 0.0f, A().withLabel (" %")));
 
@@ -180,23 +170,13 @@ juce::AudioProcessorEditor* ShimmerReverbAudioProcessor::createEditor()
 
 void ShimmerReverbAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
-    {
-        // Append the selected program index (attribute only — existing sessions
-        // without it read back as program 0, so state stays compatible).
-        programs.writeStateAttribute (*xml);
+    if (auto xml = factory_presets::stateToXml (apvts, programs))
         copyXmlToBinary (*xml, destData);
-    }
 }
 
 void ShimmerReverbAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-        {
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            programs.readStateAttribute (*xml);
-        }
+    factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

@@ -3,7 +3,6 @@ package install
 import (
 	"archive/zip"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,20 +68,7 @@ func writeZipFile(f *zip.File, target string) error {
 		return err
 	}
 	defer rc.Close()
-
-	mode := f.Mode()
-	if mode == 0 {
-		mode = 0o644
-	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, rc); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	return writeFileFrom(target, rc, f.Mode())
 }
 
 // topBundle returns the first path component of name if it is a bundle

@@ -4,15 +4,14 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 
 #include <array>
 #include <memory>
 #include <vector>
 
 class NamPlayerAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                            private juce::Timer,
-                                            private juce::AudioProcessorListener
+                                            private juce::Timer
 {
 public:
     explicit NamPlayerAudioProcessorEditor (NamPlayerAudioProcessor&);
@@ -32,12 +31,7 @@ private:
     void openModelChooser (int slot);
     void openIrChooser();
     void refreshNames();
-    void refreshPresetSelector();
     void timerCallback() override;
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     // MERGE: pick a 48 kHz input WAV, then an output path, then render the reamp pair
     // on a background thread (never the message/audio thread).
@@ -49,7 +43,7 @@ private:
     FactoryLookAndFeel lnf;
 
     juce::Label title;
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
 
     std::array<juce::Label, kNumSlots>        slotHeader, slotNameLabel;
     std::array<juce::TextButton, kNumSlots>   slotLoad, slotClear;

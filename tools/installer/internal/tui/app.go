@@ -27,7 +27,7 @@ const (
 	screenSummary
 )
 
-// formatOrder / scopeOrder fix the on-screen ordering of toggles.
+// scopeOrder fixes the on-screen ordering of scope toggles.
 var scopeOrder = []model.Scope{model.ScopeSystem, model.ScopeUser}
 
 // progLine is one row in the progress log.

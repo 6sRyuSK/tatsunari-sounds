@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
 )
 
 // ManifestName is the release asset mapping slug -> dotted version.
@@ -28,15 +26,4 @@ func (c *Client) FetchManifest(ctx context.Context, rel *Release) (map[string]st
 		return nil, fmt.Errorf("decode %s: %w", ManifestName, err)
 	}
 	return m, nil
-}
-
-// versionToToken converts a dotted version ("0.2.1") to the underscore token
-// used in asset filenames ("v0_2_1"). Kept here because manifest versions are
-// the canonical dotted form used to build asset names.
-func versionToToken(v string) (string, error) {
-	sv, err := model.ParseSemVer(v)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("v%d_%d_%d", sv.Major, sv.Minor, sv.Patch), nil
 }

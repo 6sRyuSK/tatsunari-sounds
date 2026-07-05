@@ -2,7 +2,7 @@
 #include "factory_ui/FactoryChrome.h"
 
 NamPlayerAudioProcessorEditor::NamPlayerAudioProcessorEditor (NamPlayerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+    : AudioProcessorEditor (&p), processor (p), presetController (*this, p)
 {
     setLookAndFeel (&lnf);
 
@@ -10,19 +10,6 @@ NamPlayerAudioProcessorEditor::NamPlayerAudioProcessorEditor (NamPlayerAudioProc
     title.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     title.setColour (juce::Label::textColourId, FactoryLookAndFeel::accent());
     addAndMakeVisible (title);
-
-    // Preset selector: populate from the processor's program list and wire the
-    // two-way host sync. User selection drives the program API + notifies the
-    // host; host-driven changes come back via audioProcessorChanged.
-    refreshPresetSelector();
-    presetSelector.onChange = [this] (int idx)
-    {
-        processor.setCurrentProgram (idx);
-        processor.updateHostDisplay (
-            juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
-    };
-    addAndMakeVisible (presetSelector);
-    processor.addListener (this);
 
     for (int k = 0; k < kNumSlots; ++k)
     {
@@ -109,33 +96,8 @@ NamPlayerAudioProcessorEditor::NamPlayerAudioProcessorEditor (NamPlayerAudioProc
 
 NamPlayerAudioProcessorEditor::~NamPlayerAudioProcessorEditor()
 {
-    processor.removeListener (this);
     stopTimer();
     setLookAndFeel (nullptr);
-}
-
-void NamPlayerAudioProcessorEditor::refreshPresetSelector()
-{
-    juce::StringArray names;
-    for (int i = 0; i < processor.getNumPrograms(); ++i)
-        names.add (processor.getProgramName (i));
-    presetSelector.setItems (names, processor.getCurrentProgram());
-}
-
-void NamPlayerAudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
-                                                           const ChangeDetails& details)
-{
-    if (! details.programChanged)
-        return;
-
-    // May arrive on any thread; marshal the selector update to the message thread.
-    juce::Component::SafePointer<NamPlayerAudioProcessorEditor> safe (this);
-    juce::MessageManager::callAsync ([safe]
-    {
-        if (safe != nullptr)
-            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
-                                                   juce::dontSendNotification);
-    });
 }
 
 void NamPlayerAudioProcessorEditor::addKnob (juce::Slider& slider, juce::Label& label,
@@ -253,7 +215,7 @@ void NamPlayerAudioProcessorEditor::resized()
     top.removeFromRight (8);
     title.setBounds (top.removeFromLeft (150));
     top.removeFromLeft (8);
-    presetSelector.setBounds (top);
+    presetController.selector().setBounds (top);
     r.removeFromTop (8);
 
     auto knobIn = [] (juce::Rectangle<int> a, juce::Slider& s, juce::Label& l)

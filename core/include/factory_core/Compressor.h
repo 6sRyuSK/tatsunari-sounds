@@ -6,6 +6,8 @@
 // linked (one gain from max(|L|,|R|)). Header-only, JUCE-independent, headless-
 // testable. No allocation in the audio path.
 //
+#include "SmoothingCoeff.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -81,13 +83,7 @@ namespace factory_core
             releaseCoeff = coeffForMs (releaseMs);
         }
 
-        double coeffForMs (double ms) const noexcept
-        {
-            const double t = ms * 0.001;
-            if (t <= 0.0 || fs <= 0.0)
-                return 0.0;
-            return std::exp (-1.0 / (t * fs));
-        }
+        double coeffForMs (double ms) const noexcept { return onePoleCoeffForMs (ms, fs); }
 
         double fs          { 44100.0 };
         double thresholdDb { 0.0 };

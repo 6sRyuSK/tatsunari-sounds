@@ -29,6 +29,8 @@
 // by M with the decimation phase aligned to the input grid (OS index == 0 mod M).
 // M == 1 is a pure pass-through (identity, zero latency).
 //
+#include "KaiserBessel.h"
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -170,19 +172,6 @@ namespace factory_core
             // Normalise to unity DC gain (down path); up path adds the M factor.
             for (int j = 0; j < L; ++j)
                 coeffs[(size_t) j] = (float) (h[(size_t) j] / sum);
-        }
-
-        static double besselI0 (double x) noexcept
-        {
-            double s = 1.0, term = 1.0;
-            const double y = x * x / 4.0;
-            for (int k = 1; k < 64; ++k)
-            {
-                term *= y / (double) (k * k);
-                s += term;
-                if (term < 1.0e-14 * s) break;
-            }
-            return s;
         }
 
         int    M        = 1;

@@ -57,6 +57,7 @@
 #include "factory_core/Filters.h"
 #include "factory_core/OnePole.h"
 #include "factory_core/RateBracket.h"
+#include "factory_core/SmoothingCoeff.h"
 
 #include <algorithm>
 #include <array>
@@ -112,10 +113,10 @@ namespace factory_core
             modelR = modelRateFor (hostRate);
             bracket.prepare (hostRate, modelR, maxHostBlock);
 
-            smoothCoeff = 1.0 - std::exp (-1.0 / (kSmoothSec * modelR));
-            bypassCoeff = 1.0 - std::exp (-1.0 / (kBypassFadeSec * modelR));
-            envAttack   = 1.0 - std::exp (-1.0 / (kEnvAttackSec * modelR));
-            envRelease  = 1.0 - std::exp (-1.0 / (kEnvReleaseSec * modelR));
+            smoothCoeff = onePoleAlphaForTauSamples (kSmoothSec * modelR);
+            bypassCoeff = onePoleAlphaForTauSamples (kBypassFadeSec * modelR);
+            envAttack   = onePoleAlphaForTauSamples (kEnvAttackSec * modelR);
+            envRelease  = onePoleAlphaForTauSamples (kEnvReleaseSec * modelR);
 
             const int maxDelay = (int) std::ceil ((kFbDelayBaseMs + kFbDelaySpanMs) * 1.0e-3 * modelR) + 4;
             for (auto& c : ch)

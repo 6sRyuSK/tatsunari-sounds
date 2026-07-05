@@ -1,6 +1,7 @@
 package model
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -43,22 +44,11 @@ func ParseSemVer(s string) (SemVer, error) {
 func CompareSemVer(a, b SemVer) int {
 	switch {
 	case a.Major != b.Major:
-		return cmpInt(a.Major, b.Major)
+		return cmp.Compare(a.Major, b.Major)
 	case a.Minor != b.Minor:
-		return cmpInt(a.Minor, b.Minor)
+		return cmp.Compare(a.Minor, b.Minor)
 	default:
-		return cmpInt(a.Patch, b.Patch)
-	}
-}
-
-func cmpInt(a, b int) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
+		return cmp.Compare(a.Patch, b.Patch)
 	}
 }
 

@@ -4,11 +4,10 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 #include "GainReductionMeter.h"
 
-class BusCompressorAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                                private juce::AudioProcessorListener
+class BusCompressorAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit BusCompressorAudioProcessorEditor (BusCompressorAudioProcessor&);
@@ -23,11 +22,6 @@ private:
     using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     void configureKnob (juce::Slider&, juce::Label&, const juce::String& name, const juce::String& suffix);
-    void refreshPresetSelector();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     BusCompressorAudioProcessor& processor;
     FactoryLookAndFeel lnf;
@@ -36,7 +30,7 @@ private:
     juce::Label  thresholdLabel, attackLabel, releaseLabel, makeupLabel, mixLabel, ratioLabel, titleLabel;
     juce::ComboBox ratioBox;
     juce::ToggleButton bypassButton { "Bypass" };
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
     GainReductionMeter meter;
 
     std::unique_ptr<SliderAttachment>   thrAtt, atkAtt, relAtt, makeAtt, mixAtt;

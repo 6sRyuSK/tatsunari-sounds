@@ -18,6 +18,7 @@
 //
 #include "Biquad.h"
 #include "Filters.h"
+#include "SmoothingCoeff.h"
 
 #include <algorithm>
 #include <array>
@@ -275,12 +276,7 @@ namespace factory_core
             return c;
         }
 
-        double coeffForMs (double ms) const noexcept
-        {
-            const double t = ms * 0.001;
-            if (t <= 0.0 || fs <= 0.0) return 0.0;
-            return std::exp (-1.0 / (t * fs));
-        }
+        double coeffForMs (double ms) const noexcept { return onePoleCoeffForMs (ms, fs); }
 
         static constexpr int kDecimation = 32; // control-rate coeff updates
 

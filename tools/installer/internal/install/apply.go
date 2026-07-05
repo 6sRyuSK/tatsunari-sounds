@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
@@ -26,7 +27,7 @@ func ApplyPlan(plan model.InstallPlan) model.ApplyResult {
 		}
 		res.Installed = append(res.Installed, mv.Dst)
 		// Strip quarantine right after a successful move (macOS; no-op else).
-		if contains(plan.Quarantine, mv.Dst) {
+		if slices.Contains(plan.Quarantine, mv.Dst) {
 			_ = stripQuarantine(mv.Dst)
 		}
 	}
@@ -113,14 +114,22 @@ func copyFile(src, dst string, perm os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	if perm == 0 {
-		perm = 0o644
+	return writeFileFrom(dst, in, perm)
+}
+
+// writeFileFrom creates (truncating any existing file) dst with the given mode
+// and streams r into it, closing the file on both success and error. A zero
+// mode falls back to 0o644 so an entry with no recorded permissions still lands
+// readable.
+func writeFileFrom(dst string, r io.Reader, mode fs.FileMode) error {
+	if mode == 0 {
+		mode = 0o644
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, r); err != nil {
 		out.Close()
 		return err
 	}
@@ -133,19 +142,5 @@ func under(path, root string) bool {
 }
 
 func underAny(path string, roots []string) bool {
-	for _, r := range roots {
-		if under(path, r) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(roots, func(r string) bool { return under(path, r) })
 }

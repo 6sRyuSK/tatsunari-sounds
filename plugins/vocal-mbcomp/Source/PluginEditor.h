@@ -4,14 +4,13 @@
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 #include "BandMeter.h"
 
 #include <memory>
 #include <vector>
 
-class VocalMbCompAudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                              private juce::AudioProcessorListener
+class VocalMbCompAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
     explicit VocalMbCompAudioProcessorEditor (VocalMbCompAudioProcessor&);
@@ -26,18 +25,13 @@ private:
 
     void configureKnob (juce::Slider&, juce::Label&, const juce::String& name, const juce::String& suffix);
     std::unique_ptr<SliderAttachment> attach (const juce::String& id, juce::Slider&);
-    void refreshPresetSelector();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
 
     VocalMbCompAudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
     juce::Label titleLabel;
     juce::ToggleButton bypassButton { "Bypass" };
-    factory_ui::PresetSelector presetSelector;
+    factory_ui::PresetSelectorController presetController;
 
     BandMeter meterLow, meterMid, meterHigh;
     juce::Label nameLow, nameMid, nameHigh;

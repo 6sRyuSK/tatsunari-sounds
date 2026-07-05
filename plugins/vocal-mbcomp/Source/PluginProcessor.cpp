@@ -174,23 +174,13 @@ juce::AudioProcessorEditor* VocalMbCompAudioProcessor::createEditor()
 
 void VocalMbCompAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
-    {
-        // Append the selected program index (attribute only — existing sessions
-        // without it read back as program 0, so state stays compatible).
-        programs.writeStateAttribute (*xml);
+    if (auto xml = factory_presets::stateToXml (apvts, programs))
         copyXmlToBinary (*xml, destData);
-    }
 }
 
 void VocalMbCompAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-        {
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            programs.readStateAttribute (*xml);
-        }
+    factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

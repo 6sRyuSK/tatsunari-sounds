@@ -320,23 +320,16 @@ juce::AudioProcessorEditor* {camel}AudioProcessor::createEditor()
 
 void {camel}AudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {{
-    if (auto xml = apvts.copyState().createXml())
-    {{
-        // Append the selected program index (attribute only — existing sessions
-        // without it read back as program 0, so state stays compatible).
-        programs.writeStateAttribute (*xml);
+    // stateToXml appends the selected program index (append-only attribute — old
+    // sessions without it read back as program 0). copyXmlToBinary is a protected
+    // AudioProcessor static, so it must stay here in the member function.
+    if (auto xml = factory_presets::stateToXml (apvts, programs))
         copyXmlToBinary (*xml, destData);
-    }}
 }}
 
 void {camel}AudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {{
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-        {{
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-            programs.readStateAttribute (*xml);
-        }}
+    factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
 }}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
@@ -352,10 +345,9 @@ EDITOR_H = """\
 
 #include "PluginProcessor.h"
 #include "factory_ui/FactoryLookAndFeel.h"
-#include "factory_ui/PresetSelector.h"
+#include "factory_ui/PresetSelectorController.h"
 
-class {camel}AudioProcessorEditor final : public juce::AudioProcessorEditor,
-                                          private juce::AudioProcessorListener
+class {camel}AudioProcessorEditor final : public juce::AudioProcessorEditor
 {{
 public:
     explicit {camel}AudioProcessorEditor ({camel}AudioProcessor&);
@@ -368,19 +360,14 @@ private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
-    void refreshPresetSelector();
-
-    // AudioProcessorListener — follow host-driven program changes.
-    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override;
-    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {{}}
-
     {camel}AudioProcessor& processor;
     FactoryLookAndFeel lnf;
 
     juce::Slider outputSlider;
     juce::Label  outputLabel, titleLabel;
     juce::ToggleButton bypassButton {{ "Bypass" }};
-    factory_ui::PresetSelector presetSelector;
+    // Owns the preset picker + the two-way host<->editor program sync.
+    factory_ui::PresetSelectorController presetController;
 
     std::unique_ptr<SliderAttachment> outputAtt;
     std::unique_ptr<ButtonAttachment> bypassAtt;
@@ -394,7 +381,7 @@ EDITOR_CPP = """\
 #include "factory_ui/FactoryChrome.h"
 
 {camel}AudioProcessorEditor::{camel}AudioProcessorEditor ({camel}AudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+    : AudioProcessorEditor (&p), processor (p), presetController (*this, p)
 {{
     setLookAndFeel (&lnf);
 
@@ -410,18 +397,8 @@ EDITOR_CPP = """\
     bypassButton.setColour (juce::ToggleButton::textColourId, FactoryLookAndFeel::textDim());
     addAndMakeVisible (bypassButton);
 
-    // Preset selector: populate from the processor's program list and wire the
-    // two-way host sync. User selection drives the program API + notifies the
-    // host; host-driven changes come back via audioProcessorChanged.
-    refreshPresetSelector();
-    presetSelector.onChange = [this] (int idx)
-    {{
-        processor.setCurrentProgram (idx);
-        processor.updateHostDisplay (
-            juce::AudioProcessorListener::ChangeDetails{{}}.withProgramChanged (true));
-    }};
-    addAndMakeVisible (presetSelector);
-    processor.addListener (this);
+    // The preset selector + host<->editor program sync live in presetController
+    // (constructed above); nothing to wire here.
 
     auto& s = processor.apvts;
     outputAtt = std::make_unique<SliderAttachment> (s, "output", outputSlider);
@@ -436,32 +413,7 @@ EDITOR_CPP = """\
 
 {camel}AudioProcessorEditor::~{camel}AudioProcessorEditor()
 {{
-    processor.removeListener (this);
     setLookAndFeel (nullptr);
-}}
-
-void {camel}AudioProcessorEditor::refreshPresetSelector()
-{{
-    juce::StringArray names;
-    for (int i = 0; i < processor.getNumPrograms(); ++i)
-        names.add (processor.getProgramName (i));
-    presetSelector.setItems (names, processor.getCurrentProgram());
-}}
-
-void {camel}AudioProcessorEditor::audioProcessorChanged (juce::AudioProcessor*,
-                                                         const ChangeDetails& details)
-{{
-    if (! details.programChanged)
-        return;
-
-    // May arrive on any thread; marshal the selector update to the message thread.
-    juce::Component::SafePointer<{camel}AudioProcessorEditor> safe (this);
-    juce::MessageManager::callAsync ([safe]
-    {{
-        if (safe != nullptr)
-            safe->presetSelector.setSelectedIndex (safe->processor.getCurrentProgram(),
-                                                   juce::dontSendNotification);
-    }});
 }}
 
 void {camel}AudioProcessorEditor::paint (juce::Graphics& g)
@@ -477,7 +429,7 @@ void {camel}AudioProcessorEditor::resized()
     bypassButton.setBounds (top.removeFromRight (96));
     titleLabel.setBounds (top.removeFromLeft (120));
     top.removeFromLeft (8);
-    presetSelector.setBounds (top);
+    presetController.selector().setBounds (top);
 
     r.removeFromTop (14);
     auto knob = r.removeFromTop (110).removeFromLeft (r.getWidth() / 3);

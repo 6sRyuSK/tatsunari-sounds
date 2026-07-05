@@ -14,6 +14,9 @@ import (
 // receiptSchema versions the on-disk format so future changes can migrate.
 const receiptSchema = 1
 
+// receiptFileName is the receipt's basename within ConfigDir.
+const receiptFileName = "receipt.json"
+
 // Receipt records what the installer has placed on this machine, enabling
 // update detection and (later) uninstall. It is always written by the
 // unprivileged parent process into the per-user config dir, never by the
@@ -53,7 +56,7 @@ func ReceiptPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "receipt.json"), nil
+	return filepath.Join(dir, receiptFileName), nil
 }
 
 // LoadReceipt reads the receipt, returning an empty (non-nil) receipt when the
@@ -119,7 +122,7 @@ func (r *Receipt) Save() error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dir, "receipt.json")
+	path := filepath.Join(dir, receiptFileName)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err

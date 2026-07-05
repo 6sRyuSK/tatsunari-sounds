@@ -65,5 +65,6 @@ ctest --test-dir build -R <slug_snake>_dsp --output-on-failure
 - 音の良し悪し・トレランス変更・リリースは **Ask a human**。
 
 scaffold は factory presets の配線(Init のみの空バンク `FactoryPresets.h`、
-ProgramAdapter 委譲、`PresetSelector`、`preset_test.cpp`)を標準装備で生成する。
+ProgramAdapter 委譲、`factory_presets::stateToXml`/`applyStateXml` による state 保存、
+`factory_ui::PresetSelectorController`、`preset_test.cpp`)を標準装備で生成する。
 実際のプリセットを足すのは `add-preset` スキル(値は taste = Ask a human)。

@@ -5,6 +5,7 @@
 #include "factory_presets/PresetBank.h"
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
 //
@@ -149,4 +150,53 @@ namespace factory_presets
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProgramAdapter)
     };
+
+    //
+    // APVTS-state XML helpers — the get/setStateInformation boilerplate every
+    // processor otherwise duplicates. The persisted program index is a single
+    // `presetIndex` attribute appended to / read back from the state XML
+    // (append-only: existing sessions without it read back as program 0, so state
+    // stays compatible and no major version bump is needed).
+    //
+    // copyXmlToBinary / getXmlFromBinary are protected statics of
+    // juce::AudioProcessor, so those two calls must stay inside each processor's
+    // member functions; these helpers cover the XML round-trip on either side:
+    //
+    //     void X::getStateInformation (juce::MemoryBlock& destData)
+    //     {
+    //         if (auto xml = factory_presets::stateToXml (apvts, programs))
+    //             copyXmlToBinary (*xml, destData);
+    //     }
+    //     void X::setStateInformation (const void* data, int sizeInBytes)
+    //     {
+    //         factory_presets::applyStateXml (apvts, programs,
+    //                                         getXmlFromBinary (data, sizeInBytes).get());
+    //     }
+    //
+
+    // Serialise the APVTS state and append the current program index. Returns the
+    // XML (ready for copyXmlToBinary), or nullptr if the state could not be copied.
+    // apvts is non-const: copyState() flushes pending parameter values first.
+    inline std::unique_ptr<juce::XmlElement> stateToXml (juce::AudioProcessorValueTreeState& apvts,
+                                                         const ProgramAdapter& programs)
+    {
+        auto xml = apvts.copyState().createXml();
+        if (xml != nullptr)
+            programs.writeStateAttribute (*xml);
+        return xml;
+    }
+
+    // Restore a state previously produced by stateToXml (pass the result of
+    // getXmlFromBinary). Only a non-null XML carrying the APVTS root tag is applied;
+    // anything else leaves the current state untouched (keeps old/foreign blobs safe).
+    inline void applyStateXml (juce::AudioProcessorValueTreeState& apvts,
+                               ProgramAdapter& programs,
+                               const juce::XmlElement* xml)
+    {
+        if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+        {
+            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            programs.readStateAttribute (*xml);
+        }
+    }
 }

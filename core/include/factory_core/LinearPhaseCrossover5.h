@@ -34,6 +34,7 @@
 // active bank and never allocates, locks or blocks.
 //
 #include "PartitionedConvolver.h"
+#include "KaiserBessel.h"
 
 #include <algorithm>
 #include <atomic>
@@ -185,19 +186,6 @@ namespace factory_core
             }
             const double norm = (std::abs (sum) > 1.0e-300) ? (1.0 / sum) : 1.0; // unity DC gain
             for (int n = 0; n < N; ++n) ir[n] = (float) ((double) ir[n] * norm);
-        }
-
-        static double besselI0 (double x) noexcept
-        {
-            double s = 1.0, term = 1.0;
-            const double yy = x * x / 4.0;
-            for (int k = 1; k < 64; ++k)
-            {
-                term *= yy / (double) (k * k);
-                s += term;
-                if (term < 1.0e-14 * s) break;
-            }
-            return s;
         }
 
         double rate   = 44100.0;

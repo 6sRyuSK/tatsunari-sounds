@@ -1,10 +1,12 @@
 #pragma once
 //
 // factory_core/Resampler.h — streaming arbitrary-ratio resampler (Catmull-Rom
-// 4-point cubic). Used to run the NAM section at a fixed 48 kHz regardless of the
-// host rate. Push input samples and pull all output samples currently producible;
+// 4-point cubic). Push input samples and pull all output samples currently producible;
 // the fractional phase and the 4-sample history persist across calls so a stream
 // resamples seamlessly block to block. Allocation-free in process().
+//
+// Kept only as a headless comparison oracle for the PolyphaseResampler tests; no
+// shipping plugin routes audio through it (the NAM Player runs RateBracket<PolyphaseResampler>).
 //
 // Interpolating at the centre of the 4-tap window (between s1 and s2) gives a fixed
 // group delay of 2 input samples — deterministic, which lets the wrapper report an
