@@ -85,7 +85,15 @@ namespace factory_core
                 if (g.n >= g.duration) g.active = false;
             }
 
-            delay.write (inMono + feedback * wetMono);
+            // Finite guard (regression-policy class C, mirrors ShimmerReverb):
+            // the feedback write is the only recirculating node here, so a single
+            // NaN/Inf reaching the delay buffer would be read back by every grain
+            // and poison the loop permanently. Detect a non-finite write and
+            // flush the line so the loop self-recovers to silence rather than
+            // relying on an external reset(). Finite signals are untouched.
+            double fbWrite = inMono + feedback * wetMono;
+            if (! std::isfinite (fbWrite)) { fbWrite = 0.0; delay.reset(); }
+            delay.write (fbWrite);
 
             // Schedule new grains.
             schedulePhase += 1.0;
