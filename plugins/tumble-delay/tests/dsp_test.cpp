@@ -367,11 +367,14 @@ namespace
     // ================================================================= T4
     // Worst-case boundedness (class A/C/H): 4 slots x count 8, spin +2, refeed
     // 0.95, e=1, drag 0. One burst, hold 12 s -> allFinite + peakAbs < 4.0.
+    // lifeTime = 2 s (< hold) so balls DIE during the hold and the Refeed 0.95
+    // generation chain actually runs (gen ~6 by 12 s) — with a 16 s life no ball
+    // would die and the generation-stacking path would go untested.
     void t4 (double Fs)
     {
         Slot s = makeBaselineSlot();
         s.count = 8; s.speed = 1.0; s.directionDeg = 90.0; s.dirRandom = 0.0;
-        s.bounce = 1.0; s.drag = 0.0; s.lifeTimeSeconds = 16.0; s.grainMs = 90.0;
+        s.bounce = 1.0; s.drag = 0.0; s.lifeTimeSeconds = 2.0; s.grainMs = 90.0;
         s.panMode = Pan::Physics;
 
         TumbleDelay e;
@@ -385,7 +388,8 @@ namespace
 
         const auto burst = makeBurstKernel (Fs);
         const size_t N = (size_t) (12.0 * Fs);
-        double peak = 0.0; bool finite = true;
+        const size_t at10 = (size_t) (10.0 * Fs);   // gen ~5 of the refeed chain
+        double peak = 0.0; bool finite = true; int alive10 = -1;
         for (size_t i = 0; i < N; ++i)
         {
             const double in = (i < burst.size()) ? burst[i] : 0.0;
@@ -393,10 +397,14 @@ namespace
             e.processStereo (l, r);
             if (! std::isfinite (l) || ! std::isfinite (r)) finite = false;
             peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+            if (i == at10) alive10 = e.aliveBalls();
         }
         if (! finite)      fail ("T4: non-finite output during 12 s hold");
         if (peak >= 4.0)   fail ("T4: peak " + std::to_string (peak) + " >= 4.0 (worst-case bound)");
-        if (finite && peak < 4.0) note ("T4 ok: finite, peak " + std::to_string (peak) + " < 4.0");
+        if (alive10 <= 0)  fail ("T4: refeed chain dead at 10 s (alive=" + std::to_string (alive10)
+                                 + ") — generation-stacking path not exercised");
+        if (finite && peak < 4.0 && alive10 > 0)
+            note ("T4 ok: finite, peak " + std::to_string (peak) + " < 4.0, alive@10s=" + std::to_string (alive10));
     }
 
     // ================================================================= T5

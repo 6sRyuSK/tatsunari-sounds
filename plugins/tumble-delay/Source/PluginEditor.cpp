@@ -64,7 +64,7 @@ TumbleDelayAudioProcessorEditor::TumbleDelayAudioProcessorEditor (TumbleDelayAud
         b.setColour (juce::TextButton::buttonColourId,   FactoryLookAndFeel::panel());
         b.setColour (juce::TextButton::buttonOnColourId, FactoryLookAndFeel::bandColour (i));
         b.setColour (juce::TextButton::textColourOffId,  FactoryLookAndFeel::textDim());
-        b.setColour (juce::TextButton::textColourOnId,   juce::Colours::white);
+        b.setColour (juce::TextButton::textColourOnId,   FactoryLookAndFeel::panel());
         b.onClick = [this, i] { selectSlot (i); };
         addAndMakeVisible (b);
 
