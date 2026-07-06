@@ -383,7 +383,11 @@ namespace factory_core
             if (isCircle) return;
             for (int i = 0; i < shapeN; ++i)
             {
-                const double a = 2.0 * kPi * (double) i / (double) shapeN + 0.5 * kPi;
+                // Flat-bottom convention: at theta=0 one edge lies horizontal at the
+                // bottom (a resting Square reads as an upright box, and gravity gets
+                // a level floor). Vertex i sits at -pi/2 + pi/N + 2*pi*i/N.
+                const double a = 2.0 * kPi * (double) i / (double) shapeN
+                                 - 0.5 * kPi + kPi / (double) shapeN;
                 baseV[i] = { std::cos (a), std::sin (a) };
             }
         }
