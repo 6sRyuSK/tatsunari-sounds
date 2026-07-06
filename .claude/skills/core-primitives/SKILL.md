@@ -51,7 +51,7 @@ DSP は**既存プリミティブの合成**で作る。まずここから選び
 | ヘッダ | 内容 |
 |---|---|
 | `FFT.h` | radix-2 complex FFT(prepare で前計算、in-place) |
-| `FftConvolver.h` | ゼロレイテンシ FFT 畳み込み(IR を lock-free 差し替え) |
+| `FftConvolver.h` | ゼロレイテンシ FFT 畳み込み(IR を lock-free 差し替え)。**テスト用比較オラクル専用** — 出荷パスは `PartitionedConvolver` を使う |
 | `PartitionedConvolver.h` | 長い IR 用のゼロレイテンシ分割畳み込み |
 | `StftResolution.h` | **`fftOrderForSampleRate(fs)`** — 分解能をレート追従させる唯一の入口 |
 | `ResonanceSuppressor.h` | soothe 系動的レゾナンス抑制(STFT、75% overlap、完全再構成) |
@@ -62,7 +62,7 @@ DSP は**既存プリミティブの合成**で作る。まずここから選び
 | ヘッダ | 内容 |
 |---|---|
 | `Oversampler.h` | 整数比 1x/2x/4x(Kaiser windowed-sinc)。非線形段を包む用 |
-| `Resampler.h` | 任意比ストリーミング(Catmull-Rom) |
+| `Resampler.h` | 任意比ストリーミング(Catmull-Rom)。**テスト用比較オラクル専用**(帯域制限なし) — 出荷パスは `PolyphaseResampler` を使う |
 | `PolyphaseResampler.h` | 任意比ストリーミング(帯域制限 windowed-sinc)、Resampler と同じ契約 |
 | `ResamplerLatency.h` | host↔model 往復レイテンシの純関数 |
 | `RateBracket.h` | 「固定レート区間をホストレート内で走らせる」ブラケット |
