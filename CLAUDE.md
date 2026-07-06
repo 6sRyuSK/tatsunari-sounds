@@ -35,6 +35,9 @@ sources (or re-read workflow files / ui headers) to copy patterns:
   treated as a stable API; `testing/DspInvariants.h` holds the reusable
   regression checks. `ui/include/factory_ui/` — the shared **header-only**
   "kawaii" warm-white design system; don't fork per-plugin palettes.
+- `presets/include/factory_presets/` — shared **header-only** preset/program
+  model: `PresetBank.h` (JUCE-free tables), `ProgramAdapter.h` (JUCE program
+  API + the `stateToXml`/`applyStateXml` state helpers every processor uses).
 - `plugins/<slug>/` — one plugin each: `plugin.toml`, `Source/` (thin
   `AudioProcessor`/`Editor` wrapper), `tests/`, `CMakeLists.txt`.
 - `cmake/FactoryHelpers.cmake` (`factory_read_version`), `cmake/NamCore.cmake`
@@ -53,12 +56,21 @@ ctest --test-dir build --output-on-failure           # run all headless DSP test
 ```
 DSP tests link only `factory_core` (no JUCE, headless); each test exe takes the
 sample rate as argv[1] and CTest registers one case per standard rate.
+On a fresh Linux box the JUCE configure step needs the X11/ALSA dev packages
+first (`libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev
+libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev
+libfontconfig1-dev`); Linux builds are for local verification only — it is not
+a shipping target.
 
 ## Architecture rules
 - DSP lives in a plain C++ class **separable from `juce::AudioProcessor`**,
   testable headless; the `AudioProcessor` is a thin wrapper.
 - Compose `core/` primitives instead of reinventing DSP; editors compose
   `factory_ui` instead of bespoke look-and-feel.
+- Don't hand-write the shared plumbing: state save/load rides
+  `factory_presets::stateToXml`/`applyStateXml`, and the editor's preset
+  selector + host program sync ride `factory_ui::PresetSelectorController`
+  (the scaffold emits both; details in the `add-preset` skill).
 
 ## Adding / changing a plugin
 1. New plugin: `python tools/scaffold_plugin.py <slug> --name "…" --category …
