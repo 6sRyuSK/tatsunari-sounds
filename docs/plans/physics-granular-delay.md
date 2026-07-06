@@ -533,18 +533,26 @@ APVTS ID は `camelCase`、スロットは `a`–`d` プレフィックス。
 
 ---
 
-## 11. 実装アーキテクチャ方針(参考 — 本書では実装しない)
+## 11. 実装アーキテクチャ方針
 
-- `plugins/<slug>/Source/` に plain C++ の `TumbleDelayEngine`(仮)を置き、
-  `AudioProcessor` は薄いラッパ(工場ルール)。エンジン内部:
-  - `PhysicsWorld`(箱+ボール、1 kHz ティック、TOI 精密化)— **プラグイン
-    ローカル**。汎用性が実証されたら core 昇格を検討(その時は
-    regression-policy のゲート付きで。v1 では core を触らない)。
-  - `GrainEngine` — `core/DelayLine.h` を 2 本(ステレオ)+ `GranularDelay.h`
-    と同型の Grain プール/rate 読み/クランプ。
-  - `OnsetDetector` — `core/EnvelopeFollower.h` + floor。
-  - `Tone` — `core/OnePole.h`。平滑係数は `core/SmoothingCoeff.h`。
-- 新規 core ヘッダ追加は v1 では**なし**(既存プリミティブの合成で足りる)。
+- エンジン本体は **`core/include/factory_core/TumbleDelay.h`**(header-only・
+  JUCE 非依存・自己完結の 1 ヘッダ、class `factory_core::TumbleDelay`)。
+  工場規約どおり完成エンジンは core に置く(GranularDelay / FuzzEngine と同型。
+  v0 ドラフトの「プラグインローカル」記述は規約に合わせ修正 2026-07-06)。
+  `plugins/tumble-delay/Source/` は薄いラッパのみ。
+- エンジン内部の構成:
+  - PhysicsWorld(箱+ボール、1 kHz ティック、二分法 TOI 精密化 ≤8 反復)
+  - StereoRing — **float 格納**の自前ネストリング(§4.9 の 34 s × 192 kHz を
+    double で持つと 100 MB 超のため。`DelayLine.h` の読み出し規約(d クランプ・
+    線形補間)を踏襲した private 実装で、既存 core ヘッダは変更しない)
+  - Grain プール — `GranularDelay.h` と同型(固定 64、Hann、rate 読み、xorshift)
+  - OnsetDetector — `EnvelopeFollower.h` + 絶対 floor −80 dBFS
+  - Tone — `OnePole.h`。平滑係数は `SmoothingCoeff.h`
+- テンポシンクの解決(音価→秒)は**ラッパ側**の責務(`tempoSyncSeconds`)。
+  エンジンは解決済みの秒を受け取り、防御的クランプ(Time ≤2 s / PreDelay ≤1 s)
+  も自前で行う。
+- 既存 core ヘッダの**変更はなし**(新規 1 ヘッダの追加のみ)。core/ 追加につき
+  全プラグインの full ctest を回す(CLAUDE.md)。
 
 ## 12. 予算
 
