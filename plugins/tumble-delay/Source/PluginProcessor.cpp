@@ -1,20 +1,42 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <iterator>
+
 namespace
 {
-    // Tempo-sync note-value tables (beats; a quarter note = 1 beat), resolved to
-    // seconds in processBlock via factory_core::tempoSyncSeconds. Index 0 of each
-    // sync choice is "Off" (the free value wins), so these tables are indexed by
-    // (choiceIndex - 1). The order mirrors the choice item order in
-    // createParameterLayout exactly (state-compatibility-critical).
-    constexpr double kBoxSizeSyncBeats[]  = { 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0 };   // 1/32 .. 2 Bars
-    constexpr double kSpinSyncBeats[]     = { 1.0, 2.0, 4.0, 8.0, 16.0 };                // 1/4 .. 4 Bars (per revolution)
-    constexpr double kPreDelaySyncBeats[] = { 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0 };      // 1/64 .. 1/2
-    constexpr double kTimeSyncBeats[]     = { 0.125, 0.25, 0.25 * 2.0 / 3.0, 0.5,
-                                              0.5 * 2.0 / 3.0, 0.5 * 1.5, 1.0,
-                                              1.0 * 2.0 / 3.0, 1.0 * 1.5, 2.0, 4.0 };
-                                              // 1/32,1/16,1/16T,1/8,1/8T,1/8.,1/4,1/4T,1/4.,1/2,1 Bar
+    // Tempo-sync choice labels and their note values (beats; a quarter note = 1
+    // beat), resolved to seconds in processBlock via factory_core::
+    // tempoSyncSeconds. Index 0 of each choice list is "Off" (the free value
+    // wins), so the beats tables are indexed by (choiceIndex - 1). Labels and
+    // beats live side by side and the static_asserts pin their alignment
+    // (state-compatibility-critical: reordering one without the other would
+    // silently remap every saved session's sync choice).
+    constexpr const char* kBoxSizeSyncChoices[] = { "Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars" };
+    constexpr double      kBoxSizeSyncBeats[]   = { 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0 };
+
+    constexpr const char* kSpinSyncChoices[] = { "Off", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars" };
+    constexpr double      kSpinSyncBeats[]   = { 1.0, 2.0, 4.0, 8.0, 16.0 };   // per revolution
+
+    constexpr const char* kPreDelaySyncChoices[] = { "Off", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2" };
+    constexpr double      kPreDelaySyncBeats[]   = { 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0 };
+
+    constexpr const char* kTimeSyncChoices[] = { "Off", "1/32", "1/16", "1/16T", "1/8", "1/8T", "1/8.",
+                                                 "1/4", "1/4T", "1/4.", "1/2", "1 Bar" };
+    constexpr double      kTimeSyncBeats[]   = { 0.125, 0.25, 0.25 * 2.0 / 3.0, 0.5,
+                                                 0.5 * 2.0 / 3.0, 0.5 * 1.5, 1.0,
+                                                 1.0 * 2.0 / 3.0, 1.0 * 1.5, 2.0, 4.0 };
+
+    static_assert (std::size (kBoxSizeSyncChoices)  == std::size (kBoxSizeSyncBeats) + 1);
+    static_assert (std::size (kSpinSyncChoices)     == std::size (kSpinSyncBeats) + 1);
+    static_assert (std::size (kPreDelaySyncChoices) == std::size (kPreDelaySyncBeats) + 1);
+    static_assert (std::size (kTimeSyncChoices)     == std::size (kTimeSyncBeats) + 1);
+
+    template <std::size_t N>
+    juce::StringArray choiceList (const char* const (& items)[N])
+    {
+        return juce::StringArray (items, (int) N);
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -73,11 +95,9 @@ TumbleDelayAudioProcessor::createParameterLayout()
     addC ("boxShape", "Shape",
           SA { "Triangle", "Square", "Pentagon", "Hexagon", "Octagon", "Circle" }, 1);
     addF ("boxSize", "Box Size", logRange (0.05f, 4.0f, 0.001f), 0.40f, " s");
-    addC ("boxSizeSync", "Size Sync",
-          SA { "Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars" }, 0);
+    addC ("boxSizeSync", "Size Sync", choiceList (kBoxSizeSyncChoices), 0);
     addF ("spin", "Spin", linRange (-2.0f, 2.0f, 0.01f), 0.20f, " rev/s");
-    addC ("spinSync", "Spin Sync",
-          SA { "Off", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars" }, 0);
+    addC ("spinSync", "Spin Sync", choiceList (kSpinSyncChoices), 0);
     addF ("pivotX", "Pivot X", linRange (-1.0f, 1.0f, 0.01f), 0.0f, "");
     addF ("pivotY", "Pivot Y", linRange (-1.0f, 1.0f, 0.01f), 0.0f, "");
     addF ("gravity", "Gravity", linRange (0.0f, 100.0f, 0.1f), 0.0f, " %");
@@ -101,18 +121,15 @@ TumbleDelayAudioProcessor::createParameterLayout()
         const bool defOn = (s == 0); // A on, B–D off
 
         addB (p + "On",           d + "Enable", defOn);
-        addI (p + "Count",        d + "Balls", 1, 8, 1);
+        addI (p + "Count",        d + "Balls", 1, factory_core::TumbleDelay::kMaxBallsPerSlot, 1);
         addF (p + "BallSize",     d + "Ball Size", linRange (2.0f, 25.0f, 0.1f), 8.0f, " %");
         addF (p + "Speed",        d + "Speed", logRange (0.25f, 4.0f, 0.01f), 1.0f, " x");
         addF (p + "Direction",    d + "Direction", linRange (0.0f, 360.0f, 0.1f), 90.0f, deg);
         addF (p + "DirRandom",    d + "Dir Random", linRange (0.0f, 100.0f, 0.1f), 100.0f, " %");
         addF (p + "PreDelay",     d + "Pre-Delay", linRange (0.0f, 1000.0f, 0.1f), 0.0f, " ms");
-        addC (p + "PreDelaySync", d + "PD Sync",
-              SA { "Off", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2" }, 0);
+        addC (p + "PreDelaySync", d + "PD Sync", choiceList (kPreDelaySyncChoices), 0);
         addF (p + "Time",         d + "Time", logRange (10.0f, 2000.0f, 0.1f), 350.0f, " ms");
-        addC (p + "TimeSync",     d + "Time Sync",
-              SA { "Off", "1/32", "1/16", "1/16T", "1/8", "1/8T", "1/8.",
-                   "1/4", "1/4T", "1/4.", "1/2", "1 Bar" }, 0);
+        addC (p + "TimeSync",     d + "Time Sync", choiceList (kTimeSyncChoices), 0);
         addF (p + "Bounce",       d + "Bounce", linRange (20.0f, 100.0f, 0.1f), 70.0f, " %");
         addF (p + "Drag",         d + "Drag", linRange (0.0f, 100.0f, 0.1f), 10.0f, " %");
         addF (p + "DecayCurve",   d + "Curve", linRange (-100.0f, 100.0f, 0.1f), 0.0f, "");
@@ -206,6 +223,12 @@ void TumbleDelayAudioProcessor::prepareToPlay (double sampleRate, int /*samplesP
         juce::Decibels::decibelsToGain (outputParam->load()));
 
     wasBypassed = (bypassParam->load() > 0.5f);
+
+    // Push the current parameter state so a host querying getTailLengthSeconds()
+    // before the first (non-bypassed) block sees the real tail instead of the
+    // engine's all-disabled defaults. getPlayHead() is not valid outside
+    // processBlock, so 120 BPM stands in until the first block re-resolves sync.
+    pushParametersToEngine (120.0);
 }
 
 bool TumbleDelayAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -339,11 +362,13 @@ void TumbleDelayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     if (bypassed)
     {
         // Dry passthrough — skip the engine entirely; still ramp the output gain.
+        float* chp[2] = { numCh >= 1 ? buffer.getWritePointer (0) : nullptr,
+                          numCh >= 2 ? buffer.getWritePointer (1) : nullptr };
         for (int i = 0; i < n; ++i)
         {
             const float g = outputGain.getNextValue();
             for (int ch = 0; ch < numCh; ++ch)
-                buffer.getWritePointer (ch)[i] *= g;
+                chp[ch][i] *= g;
         }
         return;
     }

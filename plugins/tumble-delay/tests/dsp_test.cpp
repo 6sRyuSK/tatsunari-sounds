@@ -389,16 +389,18 @@ namespace
         const auto burst = makeBurstKernel (Fs);
         const size_t N = (size_t) (12.0 * Fs);
         const size_t at10 = (size_t) (10.0 * Fs);   // gen ~5 of the refeed chain
-        double peak = 0.0; bool finite = true; int alive10 = -1;
+        std::vector<double> oL (N), oR (N);
+        int alive10 = -1;
         for (size_t i = 0; i < N; ++i)
         {
             const double in = (i < burst.size()) ? burst[i] : 0.0;
             double l = in, r = in;
             e.processStereo (l, r);
-            if (! std::isfinite (l) || ! std::isfinite (r)) finite = false;
-            peak = std::max (peak, std::max (std::abs (l), std::abs (r)));
+            oL[i] = l; oR[i] = r;
             if (i == at10) alive10 = e.aliveBalls();
         }
+        const bool finite = fct::allFinite (oL) && fct::allFinite (oR);
+        const double peak = std::max (fct::peakAbs (oL), fct::peakAbs (oR));
         if (! finite)      fail ("T4: non-finite output during 12 s hold");
         if (peak >= 4.0)   fail ("T4: peak " + std::to_string (peak) + " >= 4.0 (worst-case bound)");
         if (alive10 <= 0)  fail ("T4: refeed chain dead at 10 s (alive=" + std::to_string (alive10)
@@ -524,16 +526,18 @@ namespace
         const size_t N = (size_t) (6.0 * Fs);
         const size_t at30 = (size_t) (3.0 * Fs);
         const size_t at45 = (size_t) (4.5 * Fs);
-        int alive30 = -1, alive45 = -1; bool finite = true;
+        std::vector<double> oL (N), oR (N);
+        int alive30 = -1, alive45 = -1;
         for (size_t i = 0; i < N; ++i)
         {
             const double in = (i < burst.size()) ? burst[i] : 0.0;
             double l = in, r = in;
             e.processStereo (l, r);
-            if (! std::isfinite (l) || ! std::isfinite (r)) finite = false;
+            oL[i] = l; oR[i] = r;
             if (i == at30) alive30 = e.aliveBalls();
             if (i == at45) alive45 = e.aliveBalls();
         }
+        const bool finite = fct::allFinite (oL) && fct::allFinite (oR);
         if (! finite)       fail ("T8a: non-finite output");
         if (alive30 <= 0)   fail ("T8a: ball already dead at 3.0 s (alive=" + std::to_string (alive30) + ")");
         if (alive45 != 0)   fail ("T8a: ball not horizon-retired by 4.5 s (alive=" + std::to_string (alive45) + ")");

@@ -343,7 +343,7 @@ private:
     juce::RangedAudioParameter* pivotXHandle = nullptr;
     juce::RangedAudioParameter* pivotYHandle = nullptr;
 
-    std::array<factory_core::TumbleDelay::BallView, 32> ballBuf {};
+    std::array<factory_core::TumbleDelay::BallView, factory_core::TumbleDelay::kMaxBalls> ballBuf {};
     int ballCount = 0;
     std::array<Flash, 64> flashes {};
 
