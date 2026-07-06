@@ -51,6 +51,11 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // UI mirror passthrough (message thread; lock-free inside the engine).
+    int    snapshotBalls (factory_core::TumbleDelay::BallView* dst, int maxCount) const noexcept { return engine.snapshotBalls (dst, maxCount); }
+    int    drainHits     (factory_core::TumbleDelay::HitEvent* dst, int maxCount) noexcept       { return engine.drainHits (dst, maxCount); }
+    double boxAngle()    const noexcept { return engine.boxAngle(); }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
