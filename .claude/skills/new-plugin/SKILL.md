@@ -58,7 +58,8 @@ ctest --test-dir build -R <slug_snake>_dsp --output-on-failure
 ## 5. 完了条件・コミット
 
 - コミット規約: `feat(<slug>): 日本語説明`(識別子・技術用語は英語のまま)。
-  version bump は対応する変更と**同一コミット**。
+  version bump はブランチ作業中は行わず **PR 作成時に 1 回だけ**
+  (squash-merge 前提。bump 忘れ=リリース対象外)。
 - CI ゲート: macOS/Windows ビルド + CTest 全レート + pluginval strictness 5
   (headless)。pluginval の allocation チェックを抑制しない。
 - スコープ厳守: 頼まれていないバンド/フォーマット/機能を足さない。

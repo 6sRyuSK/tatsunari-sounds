@@ -17,7 +17,10 @@ description: Prepare or run a release of the plugin factory (version bumps, cata
   → 出荷したいプラグインの version を上げることがトリガー。
 - semver: P0/P1 修正 → patch / 新機能・新パラメータ → minor /
   state・preset 互換を壊す → major。
-- **bump は対象の変更と同一コミット**(コミット規約: `feat(<slug>): 日本語説明`)。
+- **bump は PR 作成時に 1 回だけ**: ブランチ作業中は version を baseline のまま
+  触らず、PR を開くときに合意した semver へ一度で上げる(プラグイン PR は
+  squash-merge なので途中の bump は main に残らないノイズ)。
+  **bump 忘れ = そのプラグインはリリース対象外**になるので、PR 前に必ず確認。
 - bump 後 `python tools/gen_catalog.py` で README カタログ再生成
   (CI は `--check` で staleness を落とす)。
 
@@ -39,15 +42,19 @@ description: Prepare or run a release of the plugin factory (version bumps, cata
 アセット名の version トークンは `v<major>_<minor>_<patch>`(tag は `v<year>_<n>`)
 — `.` と `-` の衝突回避。
 
-公開後、`installer.yml` が `release: published` で自動起動し、TUI インストーラの
-バイナリと `catalog.json` を同じ Release に追加する(release.yml や manifest.json
-には触らない)。インストーラ側の開発は `tools/installer/` の自己完結 Go module
-(`go test ./...` / `go vet ./...`、ゲートは installer-ci.yml)。
+公開後、`installer.yml` が **`workflow_run`(Release workflow の completed)** で
+自動起動し、TUI インストーラのバイナリと `catalog.json` を同じ Release に追加する
+(release.yml や manifest.json には触らない)。`release: published` トリガーでは
+**ない**: GITHUB_TOKEN が公開した Release にはそのイベントが発火しない(再帰実行
+防止)ため。自動起動が失敗/欠落したときのバックフィルは
+`gh workflow run installer --ref main --field tag=<year>.<n>`(workflow_dispatch が
+そのために残してある)。インストーラ側の開発は `tools/installer/` の自己完結 Go
+module(`go test ./...` / `go vet ./...`、ゲートは installer-ci.yml)。
 
 ## リリース準備チェックリスト
 
 1. 出荷対象の `plugin.toml` version が変更内容に対して正しく bump 済みか
-   (同一コミット規約も確認)。
+   (bump は PR 作成時に 1 回 — マージ済み変更に bump が漏れていないか確認)。
 2. `python tools/gen_catalog.py --check` が緑。
 3. CI(ci.yml: macOS/Windows ビルド + CTest 全レート + pluginval strictness 5)
    が main で緑。

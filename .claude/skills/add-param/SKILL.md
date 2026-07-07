@@ -6,7 +6,7 @@ description: Add or change a parameter on an existing plugin in this repo (APVTS
 # 既存プラグインへのパラメータ追加
 
 変更箇所は 5 つで固定: layout → atomic 配線 → engine 接続 → editor → test。
-最後に version bump(**minor、同一コミット**)。
+最後に version bump(**minor、PR 作成時に 1 回**)。
 
 ## 1. createParameterLayout(Source/PluginProcessor.cpp)
 
@@ -67,7 +67,8 @@ factory_ui::setSliderDecimals (attackSlider, 2);   // 必ず attachment の後(#
 ## 6. 仕上げ
 
 1. `plugin.toml` の `version` を **minor** bump(新パラメータ=新機能)。
-   state 互換を壊した場合は major。bump は本変更と**同一コミット**。
+   state 互換を壊した場合は major。bump はブランチ作業中は行わず
+   **PR 作成時に 1 回だけ**(squash-merge 前提。bump 忘れ=リリース対象外)。
 2. `python tools/gen_catalog.py`
 3. ビルド + 対象プラグインの ctest 全レート緑(core/ を触ったら全プラグイン)。
 4. コミット: `feat(<slug>): Attackパラメータを追加` の形式。

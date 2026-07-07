@@ -14,8 +14,10 @@ delivers the built plugins to end users.
   docs: / refactor: / perf: / test: / chore: / ci: / build: / style:`, optional
   `(scope)`), then a Japanese description with identifiers and technical terms
   kept in English — e.g. `fix(resonance-suppressor): STFTオーダーをサンプルレート
-  連動にして192kHz対応`. Keep the version bump in the **same commit** as the
-  change it describes.
+  連動にして192kHz対応`. Do **not** bump `plugin.toml` versions per commit: leave
+  the version at baseline during branch work and bump **once, when opening the
+  PR** (plugin PRs are squash-merged, so intermediate bumps are noise; a missing
+  bump means the plugin won't ship — verify before the PR).
 
 ## Skills (read these INSTEAD of other sources as reference)
 The detailed conventions live in `.claude/skills/` — do not open other plugins'
@@ -56,6 +58,10 @@ ctest --test-dir build --output-on-failure           # run all headless DSP test
 ```
 DSP tests link only `factory_core` (no JUCE, headless); each test exe takes the
 sample rate as argv[1] and CTest registers one case per standard rate.
+On Windows without `-G Ninja`, CMake defaults to the Visual Studio
+**multi-config** generator, which ignores `CMAKE_BUILD_TYPE` — pick the config
+at build/test time instead: `cmake --build build --config Release` and
+`ctest --test-dir build -C Release`.
 On a fresh Linux box the JUCE configure step needs the X11/ALSA dev packages
 first (`libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev
 libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev

@@ -23,6 +23,24 @@ pluginval --strictness-level 5 --skip-gui-tests --validate-in-process --validate
 ローカル再現(macOS/Windows 実機がある場合)も同じコマンド。Linux では再現不可
 (サポート外)— ログから原因を特定する。
 
+### Windows でのローカル実行(落とし穴)
+
+pluginval.exe は **GUI-subsystem** の実行ファイル。シェルから直接実行
+(`& pluginval ...`)するとコンソールにアタッチせず即座に制御が返り、stdout も
+`$LASTEXITCODE` も取れない。必ず `Start-Process` 経由で起動する:
+
+```powershell
+$proc = Start-Process -NoNewWindow -Wait -PassThru `
+  -FilePath build\pluginval\pluginval.exe `
+  -ArgumentList '--strictness-level 5 --skip-gui-tests --validate-in-process --validate "<path>.vst3"' `
+  -RedirectStandardOutput out.log -RedirectStandardError err.log
+$proc.ExitCode   # 0 + ログ末尾 SUCCESS で合格
+```
+
+- `--validate-in-process` を付けないと検証が子プロセスに分離され、ログ捕捉が壊れる。
+- バイナリは github.com/Tracktion/pluginval の最新リリース zip を、gitignored な
+  `build/pluginval/` に展開して使う(リポジトリにはコミットしない)。
+
 ## 典型的な失敗と原因(このリポジトリでの頻出順)
 
 | pluginval の症状 | root cause / 直し方 |
