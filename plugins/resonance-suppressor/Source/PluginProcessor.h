@@ -49,7 +49,9 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    // The OLA output ring holds a real tail of the engine's latency (N samples),
+    // so report it (not 0) — the engine keeps running through bypass.
+    double getTailLengthSeconds() const override { return suppressor.latencySamples() / currentSampleRate; }
 
     // Program API rides factory_presets::ProgramAdapter (Init + factory bank).
     int getNumPrograms() override { return programs.getNumPrograms(); }
@@ -109,7 +111,6 @@ private:
     double currentSampleRate = kRefSampleRate;
     int    currentFftOrder   = kBaseFftOrder;
     std::atomic<int> activeBins { (1 << kBaseFftOrder) / 2 + 1 };
-    bool   wasBypassed       = false;
     std::array<double, kMaxBins> profileBuf {};
     std::array<double, kMaxBins> magScratch {};
 

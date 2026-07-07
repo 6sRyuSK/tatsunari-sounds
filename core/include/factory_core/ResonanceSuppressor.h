@@ -8,7 +8,14 @@
 // Depth, and a user reduction profile (a per-frequency multiplier — the "EQ-like"
 // curve). Reduction follows attack/release per bin. Detection can be stereo-linked
 // (same gain on L/R, preserving the image) or per-channel. Delta monitors the
-// removed signal; Mix blends with the latency-aligned dry.
+// removed signal, scaled by Mix (mix*(dry-wet)) so it matches exactly what Mix is
+// subtracting from the dry; Mix blends the reduction into the latency-aligned dry.
+//
+// Bypass (setBypassed) is latency-preserving: the engine keeps running (frames,
+// gains and display snapshots update as normal) and only the output stage
+// crossfades, over a short per-sample ramp, toward the latency-aligned dry -- so
+// the reported latency N is held and host PDC stays intact. Full bypass passes the
+// aligned dry through bit-transparently.
 //
 // Latency = window length N (report it to the host). Header-only, JUCE-independent,
 // allocation-free in process(): all buffers are sized in prepare().
@@ -38,6 +45,7 @@ namespace factory_core
             H     = N / 4;            // 75% overlap
             mask  = N - 1;
             fft.prepare (order);
+            bypassStep = 1.0 / (kBypassRampSec * fs); // per-sample bypass ramp step (no per-sample division)
 
             const int half = N / 2;
             win.assign ((size_t) N, 0.0);
@@ -83,6 +91,7 @@ namespace factory_core
             }
             idx = 0;
             hop = 0;
+            bypassMix = bypassTarget; // snap the crossfade (no fade right after prepare/reset)
         }
 
         // --- configuration ---
@@ -90,6 +99,9 @@ namespace factory_core
         void setSharpness (double oct) noexcept { smoothOct = std::clamp (oct, 0.05, 2.0); }
         void setMix       (double m)   noexcept { mix = std::clamp (m, 0.0, 1.0); }
         void setDelta     (bool b)     noexcept { delta = b; }
+        // Latency-preserving bypass: crossfades the output to the aligned dry
+        // without changing the reported latency (the engine keeps running).
+        void setBypassed  (bool b)     noexcept { bypassTarget = b ? 1.0 : 0.0; }
         void setStereoLink (bool b)    noexcept { link = b; }
         // Detection mode: 0 = Soft (adaptive threshold, level-independent),
         // 1 = Hard (absolute level threshold, level-dependent). See computeGains.
@@ -146,20 +158,51 @@ namespace factory_core
             idx = (idx + 1) & mask;
             if (++hop >= H) { hop = 0; processFrame(); }
 
+            // Normal (active) output: the mix-scaled removed signal in delta mode,
+            // otherwise the latency-aligned dry/wet blend. Delta is scaled by mix
+            // (mix*(dry-wet)) -- the exact IEEE sign inversion of the normal path's
+            // blend term mix*(wet-dry) -- so out_normal + out_delta reconstructs the
+            // dry (== dry in exact arithmetic; to within one rounding in floats).
+            double outL, outR;
             if (delta)
             {
-                l = dryL - wetL;
-                r = dryR - wetR;
+                outL = mix * (dryL - wetL);
+                outR = mix * (dryR - wetR);
             }
             else
             {
-                l = dryL + mix * (wetL - dryL);
-                r = dryR + mix * (wetR - dryR);
+                outL = dryL + mix * (wetL - dryL);
+                outR = dryR + mix * (wetR - dryR);
+            }
+
+            // Latency-preserving bypass: ramp bypassMix toward its target (0 =
+            // active, 1 = bypassed) by the step precomputed in prepare, then blend
+            // toward the aligned dry. The ramp clamps to the ends, so full bypass
+            // is bit-transparent and full active passes the normal output untouched.
+            if (bypassMix < bypassTarget)      bypassMix = std::min (bypassTarget, bypassMix + bypassStep);
+            else if (bypassMix > bypassTarget) bypassMix = std::max (bypassTarget, bypassMix - bypassStep);
+
+            if (bypassMix >= 1.0)
+            {
+                l = dryL; // fully bypassed: aligned dry, untouched
+                r = dryR;
+            }
+            else if (bypassMix <= 0.0)
+            {
+                l = outL; // fully active
+                r = outR;
+            }
+            else
+            {
+                // Linear crossfade (dry and wet are highly correlated: no equal-power).
+                l = outL + bypassMix * (dryL - outL);
+                r = outR + bypassMix * (dryR - outR);
             }
         }
 
     private:
         static constexpr double kPi = 3.14159265358979323846;
+        static constexpr double kBypassRampSec = 0.010; // latency-preserving bypass crossfade ramp
         static constexpr double kThreshDb = 3.0; // excess below this is not a resonance
         // Absolute detection floor (dBFS): a bin quieter than this is treated as
         // silence and never suppressed. kThreshDb is only a *relative* gate
@@ -327,5 +370,7 @@ namespace factory_core
         bool   delta = false;
         bool   link = true;
         int    mode = 0; // 0 = Soft (adaptive), 1 = Hard (absolute level)
+        // Latency-preserving bypass crossfade (0 = active, 1 = bypassed); step set in prepare.
+        double bypassMix = 0.0, bypassTarget = 0.0, bypassStep = 0.0;
     };
 } // namespace factory_core

@@ -210,24 +210,7 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     for (int ch = totalIn; ch < totalOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    const bool byp = bypassParam->load() > 0.5f;
-    if (byp)
-    {
-        wasBypassed = true;
-        return;
-    }
-
     const int bins = activeBins.load (std::memory_order_relaxed);
-
-    // On the bypass -> active transition, flush the stale STFT ring so we don't
-    // burst N samples of pre-bypass audio, and clear the display snapshots.
-    if (wasBypassed)
-    {
-        suppressor.reset();
-        for (auto& a : pubMag) a.store (-120.0f, std::memory_order_relaxed);
-        for (auto& a : pubRed) a.store (0.0f, std::memory_order_relaxed);
-        wasBypassed = false;
-    }
 
     suppressor.setDepth     ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
@@ -237,6 +220,11 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     suppressor.setDelta     (deltaParam->load() > 0.5f);
     suppressor.setStereoLink (linkParam->load() > 0.5f);
     suppressor.setMode      ((int) modeParam->load());
+    // Latency-preserving bypass: the engine runs every block (STFT ring, gains and
+    // display stay live and PDC-aligned) and setBypassed only crossfades the output
+    // toward the aligned dry. No early return, so the reported latency is honoured
+    // in bypass (no PDC shift against other tracks) and the editor keeps updating.
+    suppressor.setBypassed  (bypassParam->load() > 0.5f);
     rasterizeProfile();
 
     const int numSamples = buffer.getNumSamples();
