@@ -1,26 +1,44 @@
 #pragma once
 //
 // factory_core/ResonanceSuppressor.h — a Soothe-style dynamic resonance
-// suppressor. A streaming STFT (Hann analysis+synthesis, 75% overlap, perfect
-// reconstruction) estimates a local spectral envelope each frame in the
-// log-magnitude domain (a log-mean over a log-symmetric window with the window's
-// own centre excluded — a self-excluding notch — so a peak cannot lift its own
-// baseline and neighbouring resonances stop masking one another), measures the
-// per-bin "excess" of the magnitude over that envelope (i.e. resonant peaks), and
-// turns it into a per-bin gain reduction via a soft-knee contrast law (Selectivity
-// sweeps its threshold/knee) in Soft mode or a finite-slope absolute law in Hard
-// mode, scaled by the global Depth and a user reduction profile (a per-frequency
-// multiplier — the "EQ-like" curve). The per-bin reduction is smoothed across
-// frequency before being applied, then follows attack/release per bin. Detection
-// can be stereo-linked (same gain on L/R, preserving the image) or per-channel.
-// Mix rides the spectral gain rather than a time-domain dry/wet blend: the
-// effective per-bin gain is gEff = 1 + Mix*(g - 1) (g = the detector's per-bin
-// gain), applied in processFrame, so a Mix move is frame-rate quantised like
-// Depth, and the aligned dry never blends against the wet in the time domain --
-// the structural prerequisite for a later dual-resolution split (mixing dry and
-// wet in time would comb a low-res dry against a high-res wet). Delta monitors
-// the removed signal as dry - out (out already carries the Mix scaling, so the
-// delta's Mix scaling is automatic and out + delta reconstructs the aligned dry).
+// suppressor. A streaming STFT (Hann analysis+synthesis, perfect reconstruction)
+// estimates a local spectral envelope each frame in the log-magnitude domain (a
+// log-mean over a log-symmetric window with the window's own centre excluded — a
+// self-excluding notch — so a peak cannot lift its own baseline and neighbouring
+// resonances stop masking one another), measures the per-bin "excess" of the
+// magnitude over that envelope (i.e. resonant peaks), and turns it into a per-bin
+// gain reduction via a soft-knee contrast law (Selectivity sweeps its
+// threshold/knee) in Soft mode or a finite-slope absolute law in Hard mode, scaled
+// by the global Depth and a user reduction profile (a per-frequency multiplier —
+// the "EQ-like" curve). The per-bin reduction is smoothed across frequency before
+// being applied, then follows attack/release per bin. Detection can be
+// stereo-linked (same gain on L/R, preserving the image) or per-channel. Mix rides
+// the spectral gain rather than a time-domain dry/wet blend: the effective per-bin
+// gain is gEff = 1 + Mix*(g - 1) (g = the detector's per-bin gain), applied in
+// processFrame, so a Mix move is frame-rate quantised like Depth, and the aligned
+// dry never blends against the wet in the time domain. Delta monitors the removed
+// signal as dry - out (out already carries the Mix scaling, so out + delta
+// reconstructs the aligned dry).
+//
+// Per-bin ballistics + Tilt (B2-1): the attack/release time constants are a
+// per-bin array, not a scalar. Tilt (-1..+1) scales each bin's time constant by
+// s(k) = (f_k / 1 kHz)^(-Tilt * log10 4) about a 1 kHz pivot (Tilt = +1 makes
+// 10 kHz react 4x faster and 100 Hz 4x slower). With Tilt = 0 the array is uniform
+// (one code path). Tilt != 0 recomputes the array in 1024-bin chunks across
+// processFrame calls (old/new coefficients may coexist mid-rebuild) so no single
+// audio callback pays for a full-band pow() sweep; Tilt = 0 is a cheap synchronous
+// uniform fill.
+//
+// Overlap / Quality (B2-2): three quality settings trade CPU/latency for time
+// resolution. Fast (order N-1, 4x overlap), Normal (order N, 8x, default), High
+// (order N+1, 8x). The analysis/synthesis rings are sized to the maximum order and
+// the active window is the most recent N samples, so switching Quality keeps the
+// raw input history; only the OLA ring, per-bin gains and frame phase reset. A
+// Quality switch changes the reported latency (= active window length N), so it
+// holds the latency-aligned dry for N samples while the cleared OLA ring refills,
+// then fades the wet back in over the existing 10 ms bypass ramp. All three
+// (order, hop) configurations precompute their window + overlap-add normalisation
+// and FFT in prepare(), so a switch never allocates or computes a window.
 //
 // Bypass (setBypassed) is latency-preserving: the engine keeps running (frames,
 // gains and display snapshots update as normal) and only the output stage
@@ -28,8 +46,9 @@
 // the reported latency N is held and host PDC stays intact. Full bypass passes the
 // aligned dry through bit-transparently.
 //
-// Latency = window length N (report it to the host). Header-only, JUCE-independent,
-// allocation-free in process(): all buffers are sized in prepare().
+// Latency = active window length N (report it to the host). Header-only,
+// JUCE-independent, allocation-free in process(): all buffers are sized in
+// prepare() at the maximum order.
 //
 #include "FFT.h"
 #include "SmoothingCoeff.h"
@@ -47,50 +66,85 @@ namespace factory_core
     public:
         using cd = std::complex<double>;
 
-        // order: FFT order; N = 1<<order (default 2048). Overlap fixed at 4x.
-        void prepare (double sampleRate, int order = 11)
+        // order: the Normal-quality FFT order; N = 1<<order (default 2048). maxOrder
+        // caps the allocation and the High-quality order (0 -> order+1, clamped to
+        // 14). Fast = order-1 @ 4x overlap, Normal = order @ 8x, High = order+1 @ 8x
+        // (hop = N/overlap). Existing callers pass just (sampleRate, order) and get
+        // Normal with the reported latency N -- the same latency the 4x engine had.
+        void prepare (double sampleRate, int order = 11, int maxOrderIn = 0)
         {
-            fs    = sampleRate;
-            ord   = order;
-            N     = 1 << order;
-            H     = N / 4;            // 75% overlap
-            mask  = N - 1;
-            fft.prepare (order);
-            bypassStep = 1.0 / (kBypassRampSec * fs); // per-sample bypass ramp step (no per-sample division)
+            fs          = sampleRate;
+            normalOrder = order;
+            maxOrder    = (maxOrderIn > 0) ? maxOrderIn : (order + 1);
+            maxOrder    = std::clamp (maxOrder, order, kMaxAllowedOrder);
 
-            const int half = N / 2;
-            win.assign ((size_t) N, 0.0);
-            for (int i = 0; i < N; ++i)
-                win[(size_t) i] = 0.5 - 0.5 * std::cos (2.0 * kPi * i / N);
-
-            // Steady-state overlap-add normalisation (sum of win^2 at hop H).
-            double acc = 0.0;
-            for (int m = -(N / H); m <= (N / H); ++m)
+            // Per-quality (order, hop) configs; each precomputes its Hann window,
+            // steady-state overlap-add normalisation and FFT so a switch is a
+            // pointer swap (no allocation / window build on the audio thread).
+            for (int q = 0; q < kNumQuality; ++q)
             {
-                const int p = half - m * H;
-                if (p >= 0 && p < N) acc += win[(size_t) p] * win[(size_t) p];
+                const int oq = std::clamp (normalOrder + (q - 1), 1, maxOrder);
+                const int ov = (q == 0) ? 4 : 8;   // Fast = 4x, Normal/High = 8x
+                const int Nq = 1 << oq;
+                const int Hq = Nq / ov;
+                orderCfg[(size_t) q] = oq;
+                hopCfg[(size_t) q]   = Hq;
+                fftCfg[(size_t) q].prepare (oq);
+
+                auto& w = winCfg[(size_t) q];
+                w.assign ((size_t) Nq, 0.0);
+                for (int i = 0; i < Nq; ++i)
+                    w[(size_t) i] = 0.5 - 0.5 * std::cos (2.0 * kPi * i / Nq);
+
+                // Steady-state overlap-add normalisation (sum of win^2 at hop Hq).
+                double acc = 0.0;
+                for (int m = -(Nq / Hq); m <= (Nq / Hq); ++m)
+                {
+                    const int p = Nq / 2 - m * Hq;
+                    if (p >= 0 && p < Nq) acc += w[(size_t) p] * w[(size_t) p];
+                }
+                olaScaleCfg[(size_t) q] = (acc > 0.0) ? 1.0 / acc : 1.0;
             }
-            olaScale = (acc > 0.0) ? 1.0 / acc : 1.0;
+
+            bufLen  = 1 << maxOrder;
+            bufMask = bufLen - 1;
+            maxBins = bufLen / 2 + 1;
+            bypassStep = 1.0 / (kBypassRampSec * fs); // per-sample bypass ramp step
 
             for (int ch = 0; ch < 2; ++ch)
             {
-                in[ch].assign   ((size_t) N, 0.0);
-                out[ch].assign  ((size_t) N, 0.0);
-                spec[ch].assign ((size_t) N, cd {});
-                mag[ch].assign  ((size_t) (half + 1), 0.0);
-                gain[ch].assign ((size_t) (half + 1), 1.0);
+                in[ch].assign   ((size_t) bufLen, 0.0);
+                out[ch].assign  ((size_t) bufLen, 0.0);
+                spec[ch].assign ((size_t) bufLen, cd {});
+                mag[ch].assign  ((size_t) maxBins, 0.0);
+                gain[ch].assign ((size_t) maxBins, 1.0);
             }
-            det.assign  ((size_t) (half + 1), 0.0);
-            env.assign  ((size_t) (half + 1), 0.0);
-            logMag.assign   ((size_t) (half + 1), 0.0);
-            redDbBuf.assign ((size_t) (half + 1), 0.0);
-            prefix.assign ((size_t) (half + 2), 0.0);
-            dispMag.assign ((size_t) (half + 1), 0.0);
-            dispRedDb.assign ((size_t) (half + 1), 0.0);
-            profile.assign ((size_t) (half + 1), 1.0);
+            det.assign      ((size_t) maxBins, 0.0);
+            env.assign      ((size_t) maxBins, 0.0);
+            logMag.assign   ((size_t) maxBins, 0.0);
+            redDbBuf.assign ((size_t) maxBins, 0.0);
+            prefix.assign   ((size_t) (maxBins + 1), 0.0);
+            dispMag.assign  ((size_t) maxBins, 0.0);
+            dispRedDb.assign((size_t) maxBins, 0.0);
+            profile.assign  ((size_t) maxBins, 1.0);
 
-            setRange (20.0, 20000.0);
-            setTimes (8.0, 80.0);
+            // Per-bin ballistics coefficient arrays + the order-independent ln(k)
+            // table for the Tilt scaling (computed once here).
+            atkCoef.assign ((size_t) maxBins, 0.0);
+            relCoef.assign ((size_t) maxBins, 0.0);
+            lnK.assign     ((size_t) maxBins, 0.0);
+            for (int k = 1; k < maxBins; ++k) lnK[(size_t) k] = std::log ((double) k);
+
+            quality = qualityReq = 1; // Normal
+            applyActiveConfig();
+
+            rangeLoHz = 20.0; rangeHiHz = 20000.0;
+            updateRangeBins();
+
+            atkMsCur = 8.0; relMsCur = 80.0; tiltCur = 0.0;
+            coefFrameRate = fs / (double) H;
+            rebuildAllCoefNow();
+
             reset();
         }
 
@@ -104,6 +158,7 @@ namespace factory_core
             }
             idx = 0;
             hop = 0;
+            switchHold = 0;           // no refill hold pending
             bypassMix = bypassTarget; // snap the crossfade (no fade right after prepare/reset)
         }
 
@@ -128,20 +183,35 @@ namespace factory_core
         // musical noise. 0 disables it (bypass). See computeGains (A4).
         void setSmoothingWidth (double oct) noexcept { gainSmoothOct = std::clamp (oct, 0.0, 1.0 / 3.0); }
 
+        // Frequency-dependent time constant tilt (-1..+1, default 0). s(k) =
+        // (f_k / 1 kHz)^(-Tilt * log10 4): Tilt +1 makes highs react 4x faster and
+        // lows 4x slower about a 1 kHz pivot. Tilt 0 -> uniform ballistics.
+        void setTilt (double t) noexcept
+        {
+            t = std::clamp (t, -1.0, 1.0);
+            if (std::abs (t - tiltCur) > 1.0e-9) { tiltCur = t; requestCoefUpdate(); }
+        }
+
         void setRange (double lowHz, double highHz) noexcept
         {
-            const int half = N / 2;
-            lowBin  = std::clamp ((int) std::round (lowHz  * N / fs), 1, half);
-            highBin = std::clamp ((int) std::round (highHz * N / fs), 1, half);
-            if (highBin < lowBin) std::swap (lowBin, highBin);
+            rangeLoHz = lowHz; rangeHiHz = highHz;
+            updateRangeBins();
         }
 
         void setTimes (double attackMs, double releaseMs) noexcept
         {
-            const double frameRate = fs / H; // frames per second
-            atkCoeff = coeff (attackMs,  frameRate);
-            relCoeff = coeff (releaseMs, frameRate);
+            if (std::abs (attackMs - atkMsCur) > 1.0e-6 || std::abs (releaseMs - relMsCur) > 1.0e-6)
+            {
+                atkMsCur = attackMs; relMsCur = releaseMs;
+                requestCoefUpdate();
+            }
         }
+
+        // Quality: 0 = Fast (order-1, 4x), 1 = Normal (order, 8x), 2 = High
+        // (order+1, 8x). Latched; the swap happens at the next frame boundary in
+        // process() (config swap + OLA/gain/phase clear, input history kept, then a
+        // hold+ramp masks the latency change). No-op if unchanged.
+        void setQuality (int q) noexcept { qualityReq = std::clamp (q, 0, kNumQuality - 1); }
 
         // Per-bin reduction multiplier (>=0; 1 = nominal). Copied; call per block.
         void setProfile (const double* mul, int count) noexcept
@@ -151,14 +221,19 @@ namespace factory_core
         }
 
         int latencySamples() const noexcept { return N; }
+        int hopSamples()     const noexcept { return H; }
         int numBins()        const noexcept { return N / 2 + 1; }
+        int currentQuality() const noexcept { return quality; }
         double binToHz (int k) const noexcept { return (double) k * fs / N; }
 
-        // Display snapshots (GUI thread reads; benign race, like a meter).
+        // Display snapshots (GUI thread reads; benign race, like a meter). Only the
+        // active bins are written, so a caller scratch sized for the Normal order is
+        // never overrun by a larger allocation.
         const double* magnitudeDb (double* scratch) const noexcept
         {
-            for (size_t k = 0; k < dispMag.size(); ++k)
-                scratch[k] = 20.0 * std::log10 (dispMag[k] + 1.0e-12);
+            const int nb = N / 2 + 1;
+            for (int k = 0; k < nb; ++k)
+                scratch[k] = 20.0 * std::log10 (dispMag[(size_t) k] + 1.0e-12);
             return scratch;
         }
         const double* reductionDb() const noexcept { return dispRedDb.data(); }
@@ -166,42 +241,52 @@ namespace factory_core
         // Process one stereo sample in place. Output is latency-aligned dry/wet.
         void process (double& l, double& r) noexcept
         {
-            const double dryL = in[0][(size_t) idx]; // input from N samples ago (== wet latency)
-            const double dryR = in[1][(size_t) idx];
+            // Dry / OLA read positions sit N samples behind the write pointer (when
+            // N == the ring length this collapses to the classic read-before-write).
+            const int rd = (idx + bufLen - N) & bufMask;
+            const double dryL = in[0][(size_t) rd]; // input from N samples ago (== wet latency)
+            const double dryR = in[1][(size_t) rd];
             in[0][(size_t) idx] = l;
             in[1][(size_t) idx] = r;
 
-            const double ringL = out[0][(size_t) idx]; // OLA output: the Mix-scaled wet (gEff applied in processFrame)
-            const double ringR = out[1][(size_t) idx];
-            out[0][(size_t) idx] = 0.0;
-            out[1][(size_t) idx] = 0.0;
+            const double ringL = out[0][(size_t) rd]; // OLA output: the Mix-scaled wet
+            const double ringR = out[1][(size_t) rd];
+            out[0][(size_t) rd] = 0.0;
+            out[1][(size_t) rd] = 0.0;
 
-            idx = (idx + 1) & mask;
-            if (++hop >= H) { hop = 0; processFrame(); }
+            idx = (idx + 1) & bufMask;
+            bool didSwitch = false;
+            if (++hop >= H)
+            {
+                hop = 0;
+                if (qualityReq != quality) { applyQualitySwitch(); didSwitch = true; }
+                processFrame();
+            }
 
-            // Active output. Mix now rides the spectral gain (gEff in processFrame),
-            // so the OLA ring already holds the Mix-scaled output: the normal path
-            // is that ring value verbatim -- no time-domain dry/wet blend. Delta
-            // monitors the removed signal literally as dry - out, so out_normal +
-            // out_delta reconstructs the aligned dry (exact in real arithmetic; to
-            // within one rounding in floats) and the delta's Mix scaling is
-            // automatic (out is already Mix-scaled).
+            // Active output. The OLA ring already holds the Mix-scaled output, so the
+            // normal path is that ring value verbatim -- no time-domain dry/wet blend.
+            // Delta monitors the removed signal literally as dry - out.
             double outL, outR;
-            if (delta)
+            if (delta) { outL = dryL - ringL; outR = dryR - ringR; }
+            else       { outL = ringL;        outR = ringR;        }
+
+            // Quality-switch refill hold: while the freshly cleared OLA ring refills,
+            // force the latency-aligned dry (bit-exact ring read, N == the new
+            // latency), then hand off to the bypass ramp so the wet fades back in over
+            // the existing 10 ms crossfade. The switch sample itself is excluded (its
+            // dryL is still aligned to the old latency); the hold spans the following
+            // N samples, where dryL already reflects the new N.
+            if (switchHold > 0 && ! didSwitch)
             {
-                outL = dryL - ringL;
-                outR = dryR - ringR;
-            }
-            else
-            {
-                outL = ringL;
-                outR = ringR;
+                --switchHold;
+                if (switchHold == 0) bypassMix = 1.0; // start the ramp from fully dry
+                l = dryL; r = dryR;
+                return;
             }
 
-            // Latency-preserving bypass: ramp bypassMix toward its target (0 =
-            // active, 1 = bypassed) by the step precomputed in prepare, then blend
-            // toward the aligned dry. The ramp clamps to the ends, so full bypass
-            // is bit-transparent and full active passes the normal output untouched.
+            // Latency-preserving bypass: ramp bypassMix toward its target (0 = active,
+            // 1 = bypassed), then blend toward the aligned dry. Clamped ends keep full
+            // bypass bit-transparent and full active untouched.
             if (bypassMix < bypassTarget)      bypassMix = std::min (bypassTarget, bypassMix + bypassStep);
             else if (bypassMix > bypassTarget) bypassMix = std::max (bypassTarget, bypassMix - bypassStep);
 
@@ -227,36 +312,132 @@ namespace factory_core
         static constexpr double kPi = 3.14159265358979323846;
         static constexpr double kBypassRampSec = 0.010; // latency-preserving bypass crossfade ramp
         static constexpr double kLn10 = 2.30258509299404568402; // ln(10): nat-log excess -> dB
+        static constexpr int    kNumQuality = 3;
+        static constexpr int    kMaxAllowedOrder = 14;   // hard cap on the High-quality order
+        static constexpr int    kCoefChunk = 1024;       // per-bin ballistics rebuilt this many bins per frame
+        // Tilt exponent: log10(4). s(k) = (f_k/1kHz)^(-Tilt*kTiltExp), so Tilt=+1
+        // scales a decade of frequency by 4x (10 kHz 4x faster, 100 Hz 4x slower).
+        static constexpr double kTiltExp = 0.60205999132796239;
         // Absolute detection floor (dBFS): a bin quieter than this is treated as
-        // silence and never suppressed. The soft-knee contrast gate is only a
-        // *relative* one (peak-vs-local-envelope), so without an absolute floor the
-        // detector paints a reduction "curtain" on the near-silent idle output of
-        // some sources (e.g. a synth emitting ~-100 dBFS when a note is not held),
-        // even though nothing audible is happening (issue #24). 0 dBFS here is a
-        // full-scale sine, whose bin magnitude is N/4.
+        // silence and never suppressed. 0 dBFS here is a full-scale sine, whose bin
+        // magnitude is N/4. (issue #24)
         static constexpr double kFloorDb = -80.0;
         // Hard (level-dependent) mode: Depth doubles as the internal absolute
-        // threshold. Depth 0..1 sweeps the threshold from kHardThrHiDb (gentle,
-        // only the hottest peaks touched) down to kHardThrLoDb (aggressive, deep
-        // notches). Reduction is a finite-slope fraction of the resonant peak's
-        // absolute level over that threshold, so the engine reacts to absolute
-        // harmonic level (Soothe2 "Hard"), unlike Soft's adaptive/relative threshold.
+        // threshold, swept from kHardThrHiDb (gentle) down to kHardThrLoDb
+        // (aggressive). Reduction is a finite-slope fraction of the resonant peak's
+        // absolute level over that threshold.
         static constexpr double kHardThrHiDb = -6.0;
         static constexpr double kHardThrLoDb = -60.0;
         // Hard-mode finite slope (LISTENING CHECKPOINT — tune by ear, not by test):
-        // reduction is kHardSlopeFrac of the peak's excess over the absolute
-        // threshold, through a fixed kHardKneeDb soft knee. kHardSlopeFrac = 0.85
-        // is a ~6.7:1 ratio (leaves 15% of the excess) rather than pinning the peak
-        // to the threshold (the old infinite-ratio behaviour).
+        // kHardSlopeFrac of the peak's excess over the absolute threshold, through a
+        // fixed kHardKneeDb soft knee (~6.7:1, leaves 15% of the excess).
         static constexpr double kHardSlopeFrac = 0.85;
         static constexpr double kHardKneeDb    = 6.0;
 
-        static double coeff (double ms, double rate) noexcept { return onePoleCoeffForMs (ms, rate); }
+        // Point the active (ord, N, H, olaScale) at the current Quality config.
+        void applyActiveConfig() noexcept
+        {
+            ord      = orderCfg[(size_t) quality];
+            N        = 1 << ord;
+            H        = hopCfg[(size_t) quality];
+            olaScale = olaScaleCfg[(size_t) quality];
+        }
 
-        // Soft-knee excess above a threshold T with knee width W (a standard
-        // compressor knee, all in dB): 0 below the knee, a quadratic spline through
-        // it, linear (x - T) above. Drives the Soft/Hard resonance gate (T, W from
-        // Selectivity) and the Hard-mode finite slope (T = 0, W = kHardKneeDb).
+        void updateRangeBins() noexcept
+        {
+            const int half = N / 2;
+            lowBin  = std::clamp ((int) std::round (rangeLoHz * N / fs), 1, half);
+            highBin = std::clamp ((int) std::round (rangeHiHz * N / fs), 1, half);
+            if (highBin < lowBin) std::swap (lowBin, highBin);
+        }
+
+        // --- per-bin ballistics coefficients (Tilt) ------------------------------
+        // Tilt=0 is a uniform array: a cheap synchronous fill (2 exp + a std::fill,
+        // no per-bin transcendentals, so no audio-thread spike). Tilt!=0 needs a
+        // per-bin pow() sweep, spread over frames in kCoefChunk-sized chunks.
+        void requestCoefUpdate() noexcept
+        {
+            if (atkCoef.empty()) return; // not prepared yet
+            if (std::abs (tiltCur) < 1.0e-12)
+            {
+                fillCoefUniform();
+                coefRebuilding = false;
+            }
+            else
+            {
+                coefRebuildPos = 0;
+                coefRebuilding = true;
+            }
+        }
+
+        void fillCoefUniform() noexcept
+        {
+            const int half = N / 2;
+            const double a = onePoleCoeffForMs (std::clamp (atkMsCur, 0.05, 5000.0), coefFrameRate);
+            const double r = onePoleCoeffForMs (std::clamp (relMsCur, 0.05, 5000.0), coefFrameRate);
+            std::fill (atkCoef.begin(), atkCoef.begin() + (half + 1), a);
+            std::fill (relCoef.begin(), relCoef.begin() + (half + 1), r);
+        }
+
+        // atkCoef/relCoef for bins [lo, hi) from the committed (atk, rel, tilt,
+        // frameRate). ln(f_k/1kHz) = lnK[k] + ln(fs/(N*1000)), so the tilt scale is a
+        // single exp per bin (bin 0 is pinned to s = 1).
+        void computeCoefRange (int lo, int hi) noexcept
+        {
+            const double off = std::log (fs / ((double) N * 1000.0));
+            const double e   = -tiltCur * kTiltExp;
+            for (int k = lo; k < hi; ++k)
+            {
+                const double s = (k == 0) ? 1.0 : std::exp (e * (lnK[(size_t) k] + off));
+                atkCoef[(size_t) k] = onePoleCoeffForMs (std::clamp (atkMsCur * s, 0.05, 5000.0), coefFrameRate);
+                relCoef[(size_t) k] = onePoleCoeffForMs (std::clamp (relMsCur * s, 0.05, 5000.0), coefFrameRate);
+            }
+        }
+
+        // Synchronous full rebuild (prepare / quality-switch is not on the hot
+        // per-frame budget the chunking protects).
+        void rebuildAllCoefNow() noexcept
+        {
+            const int half = N / 2;
+            if (std::abs (tiltCur) < 1.0e-12) fillCoefUniform();
+            else                              computeCoefRange (0, half + 1);
+            coefRebuilding = false;
+        }
+
+        // Advance an in-progress Tilt rebuild by one chunk (called once per frame).
+        void stepCoefRebuild() noexcept
+        {
+            if (! coefRebuilding) return;
+            const int half = N / 2;
+            const int hi = std::min (coefRebuildPos + kCoefChunk, half + 1);
+            computeCoefRange (coefRebuildPos, hi);
+            coefRebuildPos = hi;
+            if (coefRebuildPos > half) coefRebuilding = false;
+        }
+
+        // Apply a latched Quality request at a frame boundary: swap the config, clear
+        // the OLA ring / per-bin gain / frame phase (KEEP the raw input history), and
+        // arm the N-sample refill hold. The frame-rate change re-derives the
+        // ballistics coefficients.
+        void applyQualitySwitch() noexcept
+        {
+            quality = qualityReq;
+            applyActiveConfig();
+            updateRangeBins();
+
+            const int half = N / 2;
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                std::fill (out[ch].begin(), out[ch].end(), 0.0);
+                std::fill (gain[ch].begin(), gain[ch].begin() + (half + 1), 1.0);
+            }
+            hop = 0;
+            switchHold = N;                 // hold the aligned dry while the OLA refills
+            coefFrameRate = fs / (double) H;
+            requestCoefUpdate();            // frame-rate change: rebuild ballistics
+        }
+
+        // Soft-knee excess above a threshold T with knee width W (all in dB).
         static double softKneeOver (double x, double T, double W) noexcept
         {
             const double d = x - T;
@@ -268,26 +449,15 @@ namespace factory_core
         }
 
         // Compute per-bin gain from a magnitude spectrum + persistent gain state.
-        //
-        // Detection runs in the log-magnitude domain (A1): the local envelope is a
-        // log-mean over the log-symmetric window [k/wf, k*wf], with the window's own
-        // centre [k/nf, k*nf] excluded (a self-excluding notch, nf = wf^(1/4)) so a
-        // strong peak does not lift its own baseline and adjacent resonances stop
-        // masking one another. The excess exDb = (L[k] - envLogMean) in dB then
-        // drives a soft-knee contrast law (A2, Selectivity sets threshold/knee) in
-        // Soft mode, or a finite-slope absolute law (A3) in Hard mode. The per-bin
-        // reduction is smoothed across frequency (A4) before it becomes a linear
-        // target for the attack/release smoother. Every step is O(1)/bin (prefix
-        // sums) and allocation-free (scratch sized in prepare()).
+        // (Detection A1..A4 unchanged; only the attack/release step reads the per-bin
+        // coefficient arrays instead of a scalar.)
         void computeGains (const std::vector<double>& mag, std::vector<double>& g) noexcept
         {
             const int half = N / 2;
             const double wf = std::pow (2.0, smoothOct);  // envelope half-width factor (log-freq)
             const double nf = std::pow (wf, 0.25);        // notch half-width factor (1/4 of the envelope width)
-            // Raw-magnitude equivalent of kFloorDb (a full-scale sine bin is N/4).
             const double floorMag = 0.25 * (double) N * std::pow (10.0, kFloorDb / 20.0);
 
-            // Log magnitude and its prefix sum (O(1) window means below).
             prefix[0] = 0.0;
             for (int k = 0; k <= half; ++k)
             {
@@ -295,7 +465,6 @@ namespace factory_core
                 prefix[(size_t) (k + 1)] = prefix[(size_t) k] + logMag[(size_t) k];
             }
 
-            // Log-mean envelope with a self-excluding central notch.
             for (int k = 0; k <= half; ++k)
             {
                 const int lo  = std::clamp ((int) std::floor (k / wf), 0, half);
@@ -305,8 +474,6 @@ namespace factory_core
                 const int winCount   = hi - lo + 1;
                 const int notchCount = hiN - loN + 1;
                 const double winSum  = prefix[(size_t) (hi + 1)] - prefix[(size_t) lo];
-                // Fall back to the whole-window mean when the window is tiny or the
-                // notch would leave too few bins to estimate a stable baseline.
                 if (winCount <= 6 || winCount - notchCount < 4)
                     env[(size_t) k] = winSum / (double) winCount;
                 else
@@ -316,31 +483,20 @@ namespace factory_core
                 }
             }
 
-            // Per-bin reduction target (dB), pre-smoothing / pre-ballistics.
             const double T = 1.0 + 5.0 * selectivity;   // soft-knee threshold (dB)
             const double W = 6.0 - 4.0 * selectivity;   // soft-knee width (dB)
             for (int k = 0; k <= half; ++k)
             {
                 double redDb = 0.0;
-                // Only act on in-range bins that carry audible energy: the
-                // absolute floor keeps the engine idle on near-silent input.
                 if (k >= lowBin && k <= highBin && depth > 0.0 && mag[(size_t) k] > floorMag)
                 {
                     const double exDb = (logMag[(size_t) k] - env[(size_t) k]) * (20.0 / kLn10);
                     if (mode == 0)
                     {
-                        // Soft: adaptive threshold. Reduction scales with Depth and
-                        // the soft-knee excess of the relative prominence, so it is
-                        // invariant to input level.
                         redDb = -depth * profile[(size_t) k] * softKneeOver (exDb, T, W); // negative = cut
                     }
                     else
                     {
-                        // Hard: absolute threshold set by Depth, finite slope.
-                        // Reduction is kHardSlopeFrac of the peak's absolute level
-                        // (dBFS, 0 dB = full-scale sine bin = N/4) over the threshold
-                        // through a fixed knee, so it tracks input level without
-                        // pinning the peak to the threshold.
                         const double magDb = 20.0 * std::log10 ((mag[(size_t) k] + 1.0e-12) / (0.25 * (double) N));
                         const double d     = std::clamp (depth / 1.5, 0.0, 1.0);
                         const double thrDb = kHardThrHiDb + d * (kHardThrLoDb - kHardThrHiDb);
@@ -352,11 +508,6 @@ namespace factory_core
                 redDbBuf[(size_t) k] = redDb;
             }
 
-            // A4: smooth the per-bin reduction across frequency (two cascaded
-            // variable-width box averages ~ a triangular window, constant width in
-            // log-frequency) to suppress single-bin comb artefacts / musical noise.
-            // gainSmoothOct == 0 bypasses it. O(1)/bin via prefix sums; edges clamp
-            // the window to [0, half] and renormalise by the actual bin count.
             if (gainSmoothOct > 0.0)
             {
                 const double smFac = std::pow (2.0, 0.5 * gainSmoothOct) - 1.0;
@@ -375,26 +526,33 @@ namespace factory_core
             }
 
             // Linearise the (smoothed) target and advance the per-bin ballistics.
+            // The coefficient is per bin (Tilt); with Tilt=0 the array is uniform.
             for (int k = 0; k <= half; ++k)
             {
                 const double target = std::pow (10.0, redDbBuf[(size_t) k] / 20.0);
-                const double c = (target < g[(size_t) k]) ? atkCoeff : relCoeff; // attack when cutting more
+                const double c = (target < g[(size_t) k]) ? atkCoef[(size_t) k] : relCoef[(size_t) k]; // attack when cutting more
                 g[(size_t) k] = c * g[(size_t) k] + (1.0 - c) * target;
             }
         }
 
         void processFrame() noexcept
         {
-            const int half = N / 2;
+            stepCoefRebuild(); // advance an in-progress Tilt rebuild (<=1024 bins)
 
-            // Windowed analysis frame (oldest sample at idx).
+            const int half = N / 2;
+            const auto& w  = winCfg[(size_t) quality];
+            auto& fftA     = fftCfg[(size_t) quality];
+
+            // Windowed analysis frame = the most recent N samples (ending at the
+            // sample just written), read from the ring N behind the write pointer.
+            const int base = (idx + bufLen - N) & bufMask;
             for (int k = 0; k < N; ++k)
             {
-                const int p = (idx + k) & mask;
+                const int p = (base + k) & bufMask;
                 for (int ch = 0; ch < 2; ++ch)
-                    spec[ch][(size_t) k] = cd (in[ch][(size_t) p] * win[(size_t) k], 0.0);
+                    spec[ch][(size_t) k] = cd (in[ch][(size_t) p] * w[(size_t) k], 0.0);
             }
-            for (int ch = 0; ch < 2; ++ch) fft.forward (spec[ch].data());
+            for (int ch = 0; ch < 2; ++ch) fftA.forward (spec[ch].data());
 
             for (int k = 0; k <= half; ++k)
                 for (int ch = 0; ch < 2; ++ch)
@@ -420,23 +578,13 @@ namespace factory_core
 
             // Analyser shows the post-processing (output) magnitude: the input
             // spectrum scaled by the per-bin detector gain g -- NOT the Mix-scaled
-            // gEff applied below. The reduction curtain is the amount the detector
-            // is trying to remove, a full-processing view independent of Mix (v1
-            // display semantics). Gain is real, so |spec * g| = mag * g.
+            // gEff applied below (v1 display semantics). Gain is real, so |spec*g| = mag*g.
             for (int k = 0; k <= half; ++k)
                 dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * gain[0][(size_t) k],
                                                 mag[1][(size_t) k] * gain[1][(size_t) k]) / (0.5 * (double) N);
 
-            // Apply the real per-bin gains, keeping the spectrum Hermitian. Mix
-            // rides the spectral gain: the effective gain is gEff = 1 + mix*(g - 1),
-            // with mix read once per frame, so a Mix move is frame-rate quantised
-            // (like Depth) and dry/wet never blend in the time domain -- the
-            // structural prerequisite for a later dual-resolution split. Strict
-            // endpoints: mix >= 1 uses g verbatim (1 + (g - 1) can round 1 ULP off
-            // g for g < 0.5, so the full-wet path stays bit-identical to the
-            // pre-Mix-in-gain engine); mix <= 0 needs no branch since 1 + 0*(g - 1)
-            // is exactly 1 in IEEE. gEff for bin k and its Hermitian mirror N-k
-            // share one value (as the underlying g does).
+            // Apply the real per-bin gains, keeping the spectrum Hermitian. Mix rides
+            // the spectral gain: gEff = 1 + mix*(g - 1), mix read once per frame.
             const double m = mix;
             const bool fullWet = (m >= 1.0);
             auto gEff = [m, fullWet] (double g) noexcept { return fullWet ? g : 1.0 + m * (g - 1.0); };
@@ -454,39 +602,57 @@ namespace factory_core
                 spec[1][(size_t) (N - k)] *= ge1;
             }
 
-            fft.inverse (spec[0].data());
-            fft.inverse (spec[1].data());
+            fftA.inverse (spec[0].data());
+            fftA.inverse (spec[1].data());
 
-            // Windowed overlap-add back to the output ring (same alignment).
+            // Windowed overlap-add back to the output ring (same alignment as analysis).
             for (int k = 0; k < N; ++k)
             {
-                const int p = (idx + k) & mask;
-                const double w = win[(size_t) k] * olaScale;
-                out[0][(size_t) p] += spec[0][(size_t) k].real() * w;
-                out[1][(size_t) p] += spec[1][(size_t) k].real() * w;
+                const int p = (base + k) & bufMask;
+                const double wk = w[(size_t) k] * olaScale;
+                out[0][(size_t) p] += spec[0][(size_t) k].real() * wk;
+                out[1][(size_t) p] += spec[1][(size_t) k].real() * wk;
             }
         }
 
-        FFT fft;
-        double fs = 44100.0;
-        int ord = 11, N = 2048, H = 512, mask = 2047;
+        // --- per-quality precomputed configs (window / hop / olaScale / FFT) ---
+        std::array<int, kNumQuality>                 orderCfg { 10, 11, 12 };
+        std::array<int, kNumQuality>                 hopCfg   { 256, 256, 512 };
+        std::array<double, kNumQuality>              olaScaleCfg { 1.0, 1.0, 1.0 };
+        std::array<std::vector<double>, kNumQuality> winCfg;
+        std::array<FFT, kNumQuality>                 fftCfg;
 
-        std::vector<double> win; double olaScale = 1.0;
-        std::array<std::vector<double>, 2> in, out;   // [ch] input / output rings
+        double fs = 44100.0;
+        int normalOrder = 11, maxOrder = 12;
+        int bufLen = 4096, bufMask = 4095, maxBins = 2049;
+
+        int quality = 1, qualityReq = 1;    // 0 Fast, 1 Normal, 2 High
+        int ord = 11, N = 2048, H = 256;    // active order / window / hop
+        double olaScale = 1.0;
+
+        std::array<std::vector<double>, 2> in, out;   // [ch] input / output rings (sized 1<<maxOrder)
         int idx = 0, hop = 0;
+        int switchHold = 0;                           // Quality-switch refill hold (samples of forced dry)
         std::array<std::vector<cd>, 2> spec;          // [ch] analysis/synthesis spectrum
 
         std::array<std::vector<double>, 2> mag, gain; // [ch] magnitude / per-bin gain
         std::vector<double> det, env, logMag, redDbBuf, prefix, profile;
         std::vector<double> dispMag, dispRedDb;
 
+        // per-bin ballistics
+        std::vector<double> atkCoef, relCoef, lnK;
+        double atkMsCur = 8.0, relMsCur = 80.0, tiltCur = 0.0;
+        double coefFrameRate = 0.0;
+        bool coefRebuilding = false;
+        int  coefRebuildPos = 0;
+
         // params
         double depth = 0.0;
         double smoothOct = 0.5;
         double selectivity = 0.5;          // soft-knee contrast sweep (A2)
         double gainSmoothOct = 1.0 / 12.0; // per-bin reduction smoothing width, octaves (A4)
+        double rangeLoHz = 20.0, rangeHiHz = 20000.0;
         int    lowBin = 1, highBin = 1024;
-        double atkCoeff = 0.0, relCoeff = 0.0;
         double mix = 1.0;
         bool   delta = false;
         bool   link = true;
