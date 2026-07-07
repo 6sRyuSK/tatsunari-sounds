@@ -26,13 +26,25 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (modeBox);
     modeAtt = std::make_unique<CA> (processor.apvts, "mode", modeBox);
 
+    // Quality selector, sitting left of Mode. Items added manually like modeBox;
+    // item IDs 1..3 map to parameter indices 0..2 (Fast, Normal, High). Tooltip
+    // only (no modal) — the trade-off is latency vs. low-frequency resolution.
+    qualityBox.addItemList ({ "Fast", "Normal", "High" }, 1);
+    qualityBox.setJustificationType (juce::Justification::centred);
+    qualityBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
+    qualityBox.setTooltip ("Fast: half latency, half low-frequency resolution. High: double resolution, double latency.");
+    addAndMakeVisible (qualityBox);
+    qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualityBox);
+
     addAndMakeVisible (curve);
 
-    addKnob (depthS, depthL, "Depth",     " %",  "depth");
-    addKnob (sharpS, sharpL, "Sharpness", " %",  "sharpness");
-    addKnob (atkS,   atkL,   "Attack",    " ms", "attack");
-    addKnob (relS,   relL,   "Release",   " ms", "release");
-    addKnob (mixS,   mixL,   "Mix",       " %",  "mix");
+    addKnob (depthS, depthL, "Depth",       " %",  "depth");
+    addKnob (sharpS, sharpL, "Sharpness",   " %",  "sharpness");
+    addKnob (selS,   selL,   "Selectivity", " %",  "selectivity");
+    addKnob (atkS,   atkL,   "Attack",      " ms", "attack");
+    addKnob (relS,   relL,   "Release",     " ms", "release");
+    addKnob (tiltS,  tiltL,  "Tilt",        " %",  "tilt");
+    addKnob (mixS,   mixL,   "Mix",         " %",  "mix");
 
     deltaAtt  = std::make_unique<BA> (processor.apvts, "delta",  deltaB);
     linkAtt   = std::make_unique<BA> (processor.apvts, "link",   linkB);
@@ -84,6 +96,10 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     deltaB.setBounds (top.removeFromRight (86));
     top.removeFromRight (10);
     modeBox.setBounds (top.removeFromRight (104));
+    top.removeFromRight (6);
+    // Quality sits just left of Mode; the preset selector takes whatever remains in
+    // the middle and shrinks to make room (minimal change — full layout is a later phase).
+    qualityBox.setBounds (top.removeFromRight (86));
     top.removeFromRight (10);
     titleLabel.setBounds (top.removeFromLeft (210));
     top.removeFromLeft (10);
@@ -97,8 +113,8 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     r.removeFromBottom (12);
     curve.setBounds (r);
 
-    juce::Slider* sl[] = { &depthS, &sharpS, &atkS, &relS, &mixS };
-    juce::Label*  lb[] = { &depthL, &sharpL, &atkL, &relL, &mixL };
+    juce::Slider* sl[] = { &depthS, &sharpS, &selS, &atkS, &relS, &tiltS, &mixS };
+    juce::Label*  lb[] = { &depthL, &sharpL, &selL, &atkL, &relL, &tiltL, &mixL };
     const int n = (int) std::size (sl);
     const int cw = juce::jmin (96, knobs.getWidth() / n);
     knobs = knobs.withSizeKeepingCentre (cw * n, knobs.getHeight());

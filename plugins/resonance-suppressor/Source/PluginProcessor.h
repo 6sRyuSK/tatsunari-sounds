@@ -25,11 +25,17 @@ public:
     // The STFT order tracks the sample rate so the analyser resolution and the
     // suppressor's detection window stay constant in Hz / seconds (see
     // factory_core::fftOrderForSampleRate). Buffers are sized for the top order;
-    // `activeBins` is the live bin count for the current sample rate.
-    static constexpr int    kBaseFftOrder  = 11;        // N = 2048 at the 48 kHz reference
-    static constexpr int    kMaxFftOrder   = 13;        // N = 8192, keeps ~23 Hz bins through 192 kHz
+    // `activeBins` is the live bin count for the current sample rate AND Quality
+    // (a Quality switch changes the active window length, so it is renegotiated in
+    // processBlock — see the Quality wiring there).
+    static constexpr int    kBaseFftOrder  = 11;        // N = 2048 at the 48 kHz reference (Normal quality)
+    // Buffers must cover the largest window the engine can reach: High quality is
+    // the Normal order + 1, and the Normal order tops out at 13 (N = 8192) around
+    // 176.4/192 kHz, so High reaches order 14 (N = 16384) there. Sizing for order
+    // 13 would overflow the display / profile arrays the moment High is selected.
+    static constexpr int    kMaxFftOrder   = 14;        // N = 16384 (High quality at 176.4/192 kHz)
     static constexpr double kRefSampleRate = 48000.0;
-    static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 4097
+    static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 8193
     static constexpr int    kNumBands      = 4; // + a low cut and a high cut
 
     ResonanceSuppressorAudioProcessor();
@@ -94,6 +100,9 @@ private:
     std::atomic<float>* linkParam   = nullptr;
     std::atomic<float>* bypassParam = nullptr;
     std::atomic<float>* modeParam   = nullptr;
+    std::atomic<float>* selParam    = nullptr; // Selectivity (0..100 %)
+    std::atomic<float>* tiltParam   = nullptr; // Tilt (-100..+100 %)
+    std::atomic<float>* qualityParam = nullptr; // Quality choice (0 Fast, 1 Normal, 2 High)
     juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
