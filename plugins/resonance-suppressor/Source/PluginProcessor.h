@@ -3,7 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "factory_core/ReductionProfile.h"
-#include "factory_core/ResonanceSuppressor.h"
+#include "factory_core/MultiResSuppressor.h"
 #include "factory_core/StftResolution.h"
 #include "factory_presets/ProgramAdapter.h"
 #include "FactoryPresets.h"
@@ -13,11 +13,15 @@
 
 //
 // Soothe-style dynamic resonance suppressor. The AudioProcessor is a thin
-// wrapper around factory_core::ResonanceSuppressor (STFT spectral engine): per
-// block it configures the engine from the parameters, rasterizes the per-band
-// "reduction profile" nodes into a per-bin multiplier, then processes. It
-// reports the engine's latency to the host and publishes the live magnitude /
-// reduction spectra to the editor lock-free. processBlock does not allocate.
+// wrapper around factory_core::MultiResSuppressor, a dual-resolution STFT engine:
+// an LR4 crossover at 3 kHz splits the signal into a low band (order O) and a
+// high band (order O-2, a 4x shorter window/hop that reacts 4x faster to airband
+// harshness), each suppressed by its own engine and summed at the shared latency
+// N_L. Per block it configures the engine from the parameters, rasterizes the
+// per-band "reduction profile" nodes into a per-bin multiplier on BOTH engines'
+// grids, then processes. It reports the low engine's latency to the host and
+// publishes the live magnitude / reduction spectra -- merged onto the low
+// (display) grid -- to the editor lock-free. processBlock does not allocate.
 //
 class ResonanceSuppressorAudioProcessor final : public juce::AudioProcessor
 {
@@ -116,12 +120,14 @@ private:
     // Assemble the node config from the cached audio-thread pointers.
     factory_core::ReductionNodes currentNodes() const noexcept;
 
-    factory_core::ResonanceSuppressor suppressor;
+    factory_core::MultiResSuppressor suppressor;
     double currentSampleRate = kRefSampleRate;
     int    currentFftOrder   = kBaseFftOrder;
     std::atomic<int> activeBins { (1 << kBaseFftOrder) / 2 + 1 };
-    std::array<double, kMaxBins> profileBuf {};
-    std::array<double, kMaxBins> magScratch {};
+    std::array<double, kMaxBins> profileBuf {};      // reduction profile on the low (display) grid
+    std::array<double, kMaxBins> profileBufHigh {};  // reduction profile on the high engine's grid
+    std::array<double, kMaxBins> magScratch {};      // merged-magnitude display scratch (low grid)
+    std::array<double, kMaxBins> redScratch {};      // merged-reduction display scratch (low grid)
 
     std::array<std::atomic<float>, kMaxBins> pubMag {};
     std::array<std::atomic<float>, kMaxBins> pubRed {};

@@ -215,22 +215,28 @@ bool ResonanceSuppressorAudioProcessor::isBusesLayoutSupported (const BusesLayou
 
 void ResonanceSuppressorAudioProcessor::rasterizeProfile()
 {
-    const double sr = currentSampleRate;
-    // Derive the bin grid from the engine's ACTIVE window, not currentFftOrder:
-    // Quality changes N (Fast = order-1, High = order+1), so the profile must be
-    // rasterised on whichever grid the engine is currently running (N = 2*(bins-1)).
-    const int bins = suppressor.numBins();
-    const int N    = suppressor.latencySamples();
     const auto nodes = currentNodes();
 
+    // The dual-resolution engine keeps a separate reduction profile per band, so
+    // rasterise the same nodes twice — once on each sub-engine's grid. binToHz()
+    // reflects that engine's ACTIVE window (Quality changes N: Fast = order-1,
+    // High = order+1), so a Quality switch re-bakes on the new grid on the block
+    // AFTER it takes effect at a frame boundary — same lazy behaviour the single
+    // engine had, now tracked independently per band (each engine switches at its
+    // own hop). The low grid is also the display grid; the high grid runs two
+    // orders shorter, so its bin count never exceeds the low grid's (kMaxBins).
+    const int nLow = suppressor.numBins();
     profileBuf[0] = 1.0; // DC: nominal (the engine leaves the range gate to the profile)
-    for (int k = 1; k < bins; ++k)
-    {
-        const double f = (double) k * sr / N;
-        profileBuf[(size_t) k] = factory_core::reductionProfileLinearAt (f, nodes);
-    }
+    for (int k = 1; k < nLow; ++k)
+        profileBuf[(size_t) k] = factory_core::reductionProfileLinearAt (suppressor.binToHz (k), nodes);
 
-    suppressor.setProfile (profileBuf.data(), bins);
+    const auto& high = suppressor.highEngine();
+    const int nHigh = high.numBins();
+    profileBufHigh[0] = 1.0; // DC: nominal (matches the low grid)
+    for (int k = 1; k < nHigh; ++k)
+        profileBufHigh[(size_t) k] = factory_core::reductionProfileLinearAt (high.binToHz (k), nodes);
+
+    suppressor.setProfile (profileBuf.data(), nLow, profileBufHigh.data(), nHigh);
 }
 
 void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -293,7 +299,7 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // preallocated (sized for the top order) to keep processBlock allocation-free.
     const int bins = suppressor.numBins();
     const double* magDb = suppressor.magnitudeDb (magScratch.data());
-    const double* redDb = suppressor.reductionDb();
+    const double* redDb = suppressor.reductionDb (redScratch.data());
     for (int k = 0; k < bins; ++k)
     {
         pubMag[(size_t) k].store ((float) magDb[k], std::memory_order_relaxed);
