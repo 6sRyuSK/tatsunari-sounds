@@ -2,7 +2,8 @@
 // dsp_test.cpp — headless verification of the tumble-delay DSP core.
 //
 // Spec-based tests T1–T12 (docs/plans/physics-granular-delay.md §10 and
-// docs/plans/tumble-delay-handoff.md §3). Every quantitative check uses an
+// docs/plans/tumble-delay-handoff.md §3) plus T13 (geometric Box Size /
+// absolute Ball Size). Every quantitative check uses an
 // INDEPENDENT closed-form oracle (billiard unfolding, projectile motion,
 // geometric decay, equal-power pan law) — never a value derived from the engine
 // under test. All signal lengths / times / frequencies are derived from Fs at
@@ -847,6 +848,64 @@ namespace
             note ("T12c ok: spray bit-identical across runs");
     }
 
+    // ================================================================= T13
+    // Geometric Box Size (absolute Ball Size): the box's scale is boxSize/0.40
+    // (reference restated here, independent of the engine constant) and ballSize
+    // is a fraction of the REFERENCE circumradius, so the normalized ball radius
+    // is r(B) = clamp(ballSize * 0.40/B, 0.002, 0.4*inradius) and the vertical-
+    // billiard interval is 2*(a - r(B)) / vRef(B) = B * (a - r(B)). A pure
+    // time-rescale implementation (radius independent of box size) fails the
+    // 0.80 / 0.20 cases; a missing fit clamp fails the 0.05 case.
+    void t13 (double Fs)
+    {
+        const double kRefBox = 0.40;                            // spec reference box (s)
+        const double a       = apothemSquare();                 // square inradius == apothem
+
+        for (const double B : { 0.80, 0.20, 0.05 })
+        {
+            Slot s = makeBaselineSlot();
+            s.speed = 1.0; s.bounce = 1.0; s.lifeTimeSeconds = 16.0; s.grainMs = 10.0;
+
+            TumbleDelay e;
+            e.prepare (Fs); applyGlobalBaseline (e);
+            e.setBoxSizeSeconds (B);
+            e.setSlotParams (0, s); e.reset();
+
+            const double r = std::clamp (s.ballSize * kRefBox / B, 0.002, 0.4 * a);
+            const double v = vRefFor (B);
+            const double expInt  = 2.0 * (a - r) / v;           // seconds; == B * (a - r)
+            const double expSamp = expInt * Fs;
+
+            const double dur = (a - r) / v + 7.5 * expInt + 0.5;
+            std::vector<double> inL (size_t (dur * Fs), 0.0), inR = inL, oL, oR;
+            addBurst (inL, inR, Fs, 0.0);
+            renderInto (e, inL, inR, oL, oR);
+
+            auto on = grainOnsets (oL);
+            if (on.size() < 7)
+            {
+                fail ("T13 B=" + std::to_string (B) + ": too few grain onsets ("
+                      + std::to_string (on.size()) + ")");
+                continue;
+            }
+            int bad = 0; double worst = 0.0;
+            for (int i = 0; i < 6; ++i)
+            {
+                const double meas = (double) (on[(size_t) i + 1] - on[(size_t) i]);
+                const double err  = std::abs (meas - expSamp);
+                worst = std::max (worst, err);
+                if (err > 2.5) ++bad;
+            }
+            if (bad > 0)
+                fail ("T13 B=" + std::to_string (B) + ": " + std::to_string (bad)
+                      + "/6 intervals off (worst " + std::to_string (worst)
+                      + " samp, expected " + std::to_string (expSamp) + ")");
+            else
+                note ("T13 B=" + std::to_string (B) + " ok: interval "
+                      + std::to_string (expSamp) + " samp, worst err " + std::to_string (worst));
+        }
+    }
+
     void coreTests (double Fs)
     {
         std::printf ("tumble-delay core @ Fs=%.0f\n", Fs);
@@ -854,6 +913,7 @@ namespace
         t4 (Fs);   t5 (Fs);  t6 (Fs);  t7 (Fs);
         t8a (Fs);  t8b (Fs); t9 (Fs);  t10 (Fs);
         t11 (Fs);  t12a (Fs); t12b (Fs); t12c (Fs);
+        t13 (Fs);
     }
 }
 

@@ -36,7 +36,7 @@ TumbleDelayAudioProcessorEditor::TumbleDelayAudioProcessorEditor (TumbleDelayAud
 
     // ---- right column: World / Detect / Out ----
     styleAndAdd (shape,    "Shape");
-    styleAndAdd (boxSize,  "Box Size", " s");
+    styleAndAdd (boxSize,  "Box Size", " x");
     styleAndAdd (sizeSync, "Size Sync");
     styleAndAdd (spin,     "Spin", " rev/s");
     styleAndAdd (spinSync, "Spin Sync");
@@ -104,6 +104,15 @@ TumbleDelayAudioProcessorEditor::TumbleDelayAudioProcessorEditor (TumbleDelayAud
 
     attachChoice (shape,    "boxShape");
     attachKnob   (boxSize,  "boxSize", 2);
+    // The #23 decimals helper reformats the RAW value (seconds); Box Size shows
+    // the geometric scale instead (1.00x = the 0.40 s reference box), so put the
+    // multiplier conversion back on top of it.
+    {
+        constexpr double ref = factory_core::TumbleDelay::kReferenceBoxSizeSeconds;
+        boxSize.slider.textFromValueFunction = [] (double v) { return juce::String (v / ref, 2); };
+        boxSize.slider.valueFromTextFunction = [] (const juce::String& t) { return t.getDoubleValue() * ref; };
+        boxSize.slider.updateText();
+    }
     attachChoice (sizeSync, "boxSizeSync");
     attachKnob   (spin,     "spin", 2);
     attachChoice (spinSync, "spinSync");

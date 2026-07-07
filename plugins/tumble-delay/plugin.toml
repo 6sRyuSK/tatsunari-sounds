@@ -3,6 +3,6 @@ name      = "Tumble Delay"
 slug      = "tumble-delay"
 category  = "Delay"
 status    = "in-progress"
-version   = "0.2.0"
+version   = "0.3.0"
 formats   = ["VST3", "AU"]
 reference = "OP-1 Tombola sequencer × granular echo"

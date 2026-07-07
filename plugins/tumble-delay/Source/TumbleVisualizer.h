@@ -271,10 +271,14 @@ private:
 
             const int   count  = (int) std::lround (countParam[(size_t) s]->load());
             const float timeMs = timeParam[(size_t) s]->load();
-            const float ballSz = ballSizeParam[(size_t) s]->load() * 0.01f; // % -> fraction of R
+            const float ballSz = ballSizeParam[(size_t) s]->load() * 0.01f; // % -> fraction of REFERENCE R
             const float speed  = juce::jmax (0.001f, speedParam[(size_t) s]->load());
             const float vRef   = 2.0f / boxSec;                             // 2R / boxSize, R = 1
-            const float flight = juce::jmax (0.0f, apothem - ballSz) / (speed * vRef); // seconds
+            // Ball radius in this box's normalized world (same formula + clamp as
+            // the engine's ballRadius(): absolute size / geometric box scale).
+            const float ref    = (float) factory_core::TumbleDelay::kReferenceBoxSizeSeconds;
+            const float ballR  = juce::jlimit (0.002f, 0.4f * apothem, ballSz * ref / boxSec);
+            const float flight = juce::jmax (0.0f, apothem - ballR) / (speed * vRef); // seconds
 
             int alive = 0;
             for (int i = 0; i < ballCount; ++i)
