@@ -78,6 +78,28 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "mode", 1 }, "Mode", StringArray { "Soft", "Hard" }, 0));
 
+    // --- Phase 1 detector controls (Selectivity / Tilt / Quality) ---
+    // Version hint 2: these arrived in v1.3.0, after the original v1.x set, so a
+    // v1.2.0 session (which lacks them) still loads — its state simply leaves them
+    // at the defaults below (verified by preset_test's v1.2.0 fixture). Applied
+    // every block in processBlock like depth/sharpness; the engine epsilon-compares
+    // and rebuilds lazily, so no SmoothedValue is needed.
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "selectivity", 2 }, "Selectivity",
+        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
+        AudioParameterFloatAttributes().withLabel (" %")));
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "tilt", 2 }, "Tilt",
+        NormalisableRange<float> { -100.0f, 100.0f, 1.0f }, 0.0f,
+        AudioParameterFloatAttributes().withLabel (" %")));
+
+    // Quality trades latency for low-frequency time resolution (Fast = half
+    // latency, High = double). Excluded from presets (FactoryPresets kExclude): a
+    // preset switch must not renegotiate host PDC or override the user's choice.
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "quality", 2 }, "Quality", StringArray { "Fast", "Normal", "High" }, 1)); // Normal
+
     // --- Reduction / depth-EQ nodes (soothe-style) ---
     // Two cuts bound where processing acts (rolling the profile off at a chosen
     // slope), four typed bands locally raise/lower the sensitivity. Defaults
@@ -131,6 +153,9 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     bypassParam = apvts.getRawParameterValue ("bypass");
     bypassParamPtr = apvts.getParameter ("bypass");
     modeParam   = apvts.getRawParameterValue ("mode");
+    selParam    = apvts.getRawParameterValue ("selectivity");
+    tiltParam   = apvts.getRawParameterValue ("tilt");
+    qualityParam = apvts.getRawParameterValue ("quality");
 
     for (int w = 0; w < 2; ++w)
     {
@@ -168,10 +193,14 @@ factory_core::ReductionNodes ResonanceSuppressorAudioProcessor::currentNodes() c
 void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     currentSampleRate = sampleRate;
+    // Normal-quality order for this rate; the engine allocates one order higher for
+    // High quality (its maxOrder defaults to order + 1, capped at kMaxFftOrder).
     currentFftOrder   = factory_core::fftOrderForSampleRate (sampleRate, kBaseFftOrder, kRefSampleRate, kMaxFftOrder);
-    activeBins.store ((1 << currentFftOrder) / 2 + 1, std::memory_order_relaxed);
     suppressor.prepare (sampleRate, currentFftOrder);
     setLatencySamples (suppressor.latencySamples());
+    // Normal quality is active after prepare; activeBins follows the engine's live
+    // window and is renegotiated in processBlock whenever a Quality switch changes it.
+    activeBins.store (suppressor.numBins(), std::memory_order_relaxed);
     for (auto& a : pubMag) a.store (-120.0f, std::memory_order_relaxed);
     for (auto& a : pubRed) a.store (0.0f, std::memory_order_relaxed);
 }
@@ -187,8 +216,11 @@ bool ResonanceSuppressorAudioProcessor::isBusesLayoutSupported (const BusesLayou
 void ResonanceSuppressorAudioProcessor::rasterizeProfile()
 {
     const double sr = currentSampleRate;
-    const int N = 1 << currentFftOrder;
-    const int bins = activeBins.load (std::memory_order_relaxed);
+    // Derive the bin grid from the engine's ACTIVE window, not currentFftOrder:
+    // Quality changes N (Fast = order-1, High = order+1), so the profile must be
+    // rasterised on whichever grid the engine is currently running (N = 2*(bins-1)).
+    const int bins = suppressor.numBins();
+    const int N    = suppressor.latencySamples();
     const auto nodes = currentNodes();
 
     profileBuf[0] = 1.0; // DC: nominal (the engine leaves the range gate to the profile)
@@ -210,21 +242,25 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     for (int ch = totalIn; ch < totalOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    const int bins = activeBins.load (std::memory_order_relaxed);
-
-    suppressor.setDepth     ((double) depthParam->load() / 100.0 * 1.5);
-    suppressor.setSharpness (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
-    suppressor.setRange     (20.0, 20000.0); // full band; the low/high cut nodes bound processing via the profile
-    suppressor.setTimes     (atkParam->load(), relParam->load());
-    suppressor.setMix       ((double) mixParam->load() / 100.0);
-    suppressor.setDelta     (deltaParam->load() > 0.5f);
-    suppressor.setStereoLink (linkParam->load() > 0.5f);
-    suppressor.setMode      ((int) modeParam->load());
+    suppressor.setDepth       ((double) depthParam->load() / 100.0 * 1.5);
+    suppressor.setSharpness   (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
+    suppressor.setSelectivity ((double) selParam->load() / 100.0);  // 0..100 % -> 0..1
+    suppressor.setTilt        ((double) tiltParam->load() / 100.0); // -100..+100 % -> -1..+1
+    suppressor.setRange       (20.0, 20000.0); // full band; the low/high cut nodes bound processing via the profile
+    suppressor.setTimes       (atkParam->load(), relParam->load());
+    suppressor.setMix         ((double) mixParam->load() / 100.0);
+    suppressor.setDelta       (deltaParam->load() > 0.5f);
+    suppressor.setStereoLink  (linkParam->load() > 0.5f);
+    suppressor.setMode        ((int) modeParam->load());
+    // Quality is latched here; the engine applies the config + latency change at its
+    // next frame boundary inside process() below, so PDC is renegotiated after the
+    // sample loop (see the setLatencySamples call there).
+    suppressor.setQuality     ((int) qualityParam->load());
     // Latency-preserving bypass: the engine runs every block (STFT ring, gains and
     // display stay live and PDC-aligned) and setBypassed only crossfades the output
     // toward the aligned dry. No early return, so the reported latency is honoured
     // in bypass (no PDC shift against other tracks) and the editor keeps updating.
-    suppressor.setBypassed  (bypassParam->load() > 0.5f);
+    suppressor.setBypassed    (bypassParam->load() > 0.5f);
     rasterizeProfile();
 
     const int numSamples = buffer.getNumSamples();
@@ -241,8 +277,21 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
         if (R != nullptr) R[i] = (float) r;
     }
 
-    // Publish the latest display spectra for the editor. magScratch is
+    // A Quality switch (applied at a frame boundary in the loop above) changes the
+    // engine's window length N, hence its reported latency and bin grid. Renegotiate
+    // host PDC and the live bin count when it moves. JUCE 8 accepts setLatencySamples
+    // from processBlock (it defers the restart), so this is audio-thread safe.
+    const int lat = suppressor.latencySamples();
+    if (lat != getLatencySamples())
+    {
+        setLatencySamples (lat);
+        activeBins.store (suppressor.numBins(), std::memory_order_relaxed);
+    }
+
+    // Publish the latest display spectra for the editor, on the now-current bin grid
+    // (a Quality switch this block may have grown/shrunk it). magScratch is
     // preallocated (sized for the top order) to keep processBlock allocation-free.
+    const int bins = suppressor.numBins();
     const double* magDb = suppressor.magnitudeDb (magScratch.data());
     const double* redDb = suppressor.reductionDb();
     for (int k = 0; k < bins; ++k)

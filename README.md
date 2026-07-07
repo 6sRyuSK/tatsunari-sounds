@@ -12,7 +12,7 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
 | Dynamic Tatsunari EQ | EQ | 1.2.0 | VST3, AU | FabFilter Pro-Q 4 |
-| Resonance TatSuppressor | EQ | 1.2.1 | VST3, AU | oeksound soothe2 |
+| Resonance TatSuppressor | EQ | 1.3.0 | VST3, AU | oeksound soothe2 |
 
 
 ### In progress (9)
