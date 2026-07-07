@@ -112,6 +112,35 @@
 // to the pre-rework engine (the mix>=1 branch applies g verbatim), so no other gate
 // moves. bypassAlignment/bypassToggle/deltaTest/reconstruction hold unchanged.
 //
+// Pass B-2 re-derivation note (Tilt + 8x overlap + Quality). The default Normal
+// quality moved from 4x to 8x overlap, so the STFT frame rate DOUBLED (hop N/4 ->
+// N/8, frameRate fs/H doubled). The physical meaning of the ballistics gates (a
+// time constant in ms) is unchanged; only the FRAME COUNT changes, because a frame
+// is now half as long. The release/attack ballistics tests measure at the true
+// engine frame stride (H = N/8) and predict with frameTime = H/Fs = 1/frameRate,
+// so the one-pole check is self-consistent at the new rate. Correspondence at
+// 48 kHz / order 11 (measure stride, gate = fast-vs-slow ordering + one-pole
+// trajectory, tolerances UNCHANGED):
+//   releaseBallisticsTest: measured per-frame recovery hops roughly double with the
+//     frame rate. hopsFast 3 -> 6 (fast release 20 ms); hopsSlow stays capped at
+//     measureHops (40) (slow release 400 ms doesn't recover within the window at
+//     either rate). predErr stays ~0 (silence target is exactly 1.0). Ordering and
+//     tolerance gates UNCHANGED.
+//   attackBallisticsTest:  hopsSlow ~14 -> 29 (slow attack 300 ms); hopsFast ~0
+//     (fast attack 5 ms converges within the window fill at either rate). predErr
+//     unchanged (~0.008). Ordering and tolerance gates UNCHANGED.
+//   depthSharpnessMidStreamTest: no frame-count expectation (a slew-bound sanity
+//     gate keyed off N, not H); it holds unchanged at 8x.
+// Two new tests: tiltBallisticsTest (per-bin time constants match the one-pole
+// formula onePoleCoeffForMs(baseMs*s(f), frameRate) and the tilt direction: at +1
+// the 8 kHz bin reacts faster, the 100 Hz bin slower) and qualityTest (per-quality
+// latency table, depth=0 reconstruction, bypass bit-transparency, and a mid-stream
+// Normal->Fast->High switch: finite, forced-dry during the refill hold, and depth=0
+// reconstruction after each switch settles). The Pass A snapshot tests
+// (envelopeNotch/selectivityContrast/gainSmoothing) keep M = 2^15 a multiple of the
+// new hop N/8 at every order (11..13 -> 256/512/1024), so their frame alignment and
+// steady-state values are unchanged.
+//
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
 // order the plugin would pick (factory_core::fftOrderForSampleRate), so the
@@ -1217,7 +1246,7 @@ namespace
         std::printf ("Release ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
         const int order = orderFor (Fs);
         const int N = 1 << order;
-        const int H = N / 4;
+        const int H = N / 8; // Normal quality = 8x overlap (hop N/8); B2-2 doubled the frame rate
         const double f0 = alignedFreq (Fs, 2000.0);
         const int kf = (int) std::round (f0 * (double) N / Fs);
         const double atkMs = 2.0; // fast & common to both runs: fully converged before switch-off
@@ -1326,7 +1355,7 @@ namespace
         std::printf ("Attack ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
         const int order = orderFor (Fs);
         const int N = 1 << order;
-        const int H = N / 4;
+        const int H = N / 8; // Normal quality = 8x overlap (hop N/8); B2-2 doubled the frame rate
         const double f0 = alignedFreq (Fs, 2000.0);
         const int kf = (int) std::round (f0 * (double) N / Fs);
         const double relMs = 50.0; // fixed release; irrelevant while the attack branch is active
@@ -1540,6 +1569,283 @@ namespace
                      peak, baseline, transition, bound);
     }
 
+    // Pass B-2 / B2-1: per-bin ballistics with frequency Tilt. Tilt scales each
+    // bin's time constant by s(f) = (f/1kHz)^(-Tilt*log10 4) about a 1 kHz pivot, so
+    // Tilt +1 makes highs 4x faster and lows 4x slower. Measured on the RELEASE
+    // (tone -> silence, so once the analysis window is flushed the target is exactly
+    // 1.0 and the smoother is a clean one-pole g[m] = c^m*(g0-1)+1). The oracle is
+    // the spec formula onePoleCoeffForMs(clamp(baseMs*s(f_k), 0.05, 5000), frameRate)
+    // computed test-side from the bin's exact frequency f_k = k*Fs/N -- it never
+    // reads the engine's coefficient array. Two gates per (freq, tilt): (i) the
+    // measured recovery trajectory matches the one-pole prediction (predErr <= tol),
+    // and (ii) direction -- at Tilt +1 the 8 kHz bin recovers in FEWER hops than at
+    // Tilt 0 and the 100 Hz bin in MORE (mirror at Tilt -1). baseRelMs is slow enough
+    // that every tilted time constant stays longer than the N/H = 8-hop window fill,
+    // so the flushed one-pole is clean.
+    void tiltBallisticsTest (double Fs)
+    {
+        std::printf ("Tilt ballistics (per-bin time constants) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, H = N / 8; // Normal 8x
+        const double baseAtkMs = 5.0;    // fast attack: converges well before the switch-off
+        const double baseRelMs = 200.0;  // slow-ish release: the quantity actually measured
+        const int flushHops = N / H + 2; // flush the tone out of the window before target == 1
+        const double kExp = 0.60205999132796239; // log10(4)
+        auto sOf = [kExp] (double f, double t) { return std::pow (f / 1000.0, -t * kExp); };
+
+        struct Meas { double gBefore, g0; std::vector<double> traj; };
+        auto measureRelease = [&] (double freqHz, double tilt) -> Meas
+        {
+            const double f0 = alignedFreq (Fs, freqHz);
+            const int kf = (int) std::round (f0 * (double) N / Fs);
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.0); s.setSharpness (0.5); s.setTilt (tilt); s.setTimes (baseAtkMs, baseRelMs);
+
+            std::mt19937 rng (17);
+            std::normal_distribution<double> g (0.0, 0.05);
+            const int settleSamples = (int) (0.4 * Fs);
+            for (int n = 0; n < settleSamples; ++n)
+            {
+                double l = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs), r = l;
+                s.process (l, r);
+            }
+            const double gBefore = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            for (int h = 0; h < flushHops; ++h)
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+            const double g0 = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            const int measureHops = 100;
+            std::vector<double> traj ((size_t) measureHops);
+            for (int h = 0; h < measureHops; ++h)
+            {
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+                traj[(size_t) h] = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+            }
+            return { gBefore, g0, traj };
+        };
+
+        auto predict = [&] (double freqHz, double tilt, double g0, int hops)
+        {
+            // Independent one-pole oracle: c = exp(-frameTime/tau) with the spec tilt
+            // scale tau = clamp(baseMs*s(f_k), 0.05, 5000) ms, computed test-side from
+            // the bin's exact frequency (never reads the engine's coefficient array).
+            const double f0 = alignedFreq (Fs, freqHz);
+            const double tauSec = std::clamp (baseRelMs * sOf (f0, tilt), 0.05, 5000.0) * 1.0e-3;
+            const double frameTime = (double) H / Fs; // = 1/frameRate
+            const double c = std::exp (-frameTime / tauSec);
+            std::vector<double> p ((size_t) hops);
+            double gg = g0;
+            for (int i = 0; i < hops; ++i) { gg = c * gg + (1.0 - c) * 1.0; p[(size_t) i] = gg; }
+            return p;
+        };
+        auto hopsToRecover = [] (const std::vector<double>& t, double thr)
+        {
+            for (size_t i = 0; i < t.size(); ++i) if (t[i] >= thr) return (int) i;
+            return (int) t.size();
+        };
+
+        struct Dir { int hopsM, hops0, hopsP; };
+        auto runFreq = [&] (double freqHz) -> Dir
+        {
+            int hops[3]; int ti = 0;
+            for (double tilt : { -1.0, 0.0, 1.0 })
+            {
+                const Meas m = measureRelease (freqHz, tilt);
+                if (m.gBefore > 0.6)
+                    fail ("tilt: resonance not suppressed before release (freq=" + std::to_string (freqHz)
+                          + " tilt=" + std::to_string (tilt) + ") g=" + std::to_string (m.gBefore)
+                          + " at Fs=" + std::to_string (Fs));
+                const auto pred = predict (freqHz, tilt, m.g0, (int) m.traj.size());
+                double err = 0.0;
+                for (size_t i = 0; i < m.traj.size(); ++i) err = std::max (err, std::abs (m.traj[i] - pred[i]));
+                if (err > 0.05)
+                    fail ("tilt: release trajectory vs one-pole oracle err " + std::to_string (err)
+                          + " (freq=" + std::to_string (freqHz) + " tilt=" + std::to_string (tilt)
+                          + ") at Fs=" + std::to_string (Fs));
+                hops[ti++] = hopsToRecover (m.traj, 0.9);
+            }
+            return { hops[0], hops[1], hops[2] };
+        };
+
+        const Dir hi = runFreq (8000.0);
+        const Dir lo = runFreq (100.0);
+
+        // Direction: Tilt +1 speeds highs (fewer recovery hops) and slows lows (more);
+        // Tilt -1 mirrors. Each with a >= 2-hop margin so frame quantisation can't flip it.
+        if (! (hi.hopsP + 2 <= hi.hops0))
+            fail ("tilt: 8 kHz not faster at +1 (hopsP=" + std::to_string (hi.hopsP) + " hops0="
+                  + std::to_string (hi.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (hi.hopsM >= hi.hops0 + 2))
+            fail ("tilt: 8 kHz not slower at -1 (hopsM=" + std::to_string (hi.hopsM) + " hops0="
+                  + std::to_string (hi.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (lo.hopsP >= lo.hops0 + 2))
+            fail ("tilt: 100 Hz not slower at +1 (hopsP=" + std::to_string (lo.hopsP) + " hops0="
+                  + std::to_string (lo.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (lo.hopsM + 2 <= lo.hops0))
+            fail ("tilt: 100 Hz not faster at -1 (hopsM=" + std::to_string (lo.hopsM) + " hops0="
+                  + std::to_string (lo.hops0) + ") at Fs=" + std::to_string (Fs));
+
+        std::printf ("  8k hops(-1,0,+1)=(%d,%d,%d)  100 hops(-1,0,+1)=(%d,%d,%d)\n",
+                     hi.hopsM, hi.hops0, hi.hopsP, lo.hopsM, lo.hops0, lo.hopsP);
+    }
+
+    // Pass B-2 / B2-2: Quality (Fast/Normal/High) + 8x overlap + latency-changing
+    // switch. order_q = normalOrder + (q-1), overlap_q = 4 (Fast) else 8, so latency
+    // N_q = 1<<order_q and hop H_q = N_q/overlap_q. Per quality: (a) latencySamples()
+    // and hopSamples() equal the spec table; (b) depth=0 reconstruction to the
+    // latency-aligned dry (<= 1e-9); (c) bypass is bit-transparent to the aligned dry.
+    // Then a mid-stream Normal->Fast->High switch: (d) all samples finite, the N_q
+    // refill hold outputs the aligned dry bit-exactly (checked with depth on, so wet
+    // != dry makes the hold observable), and with depth=0 the reconstruction returns
+    // to <= 1e-9 once each switch settles.
+    void qualityTest (double Fs)
+    {
+        std::printf ("Quality switch (Fast/Normal/High, 8x overlap) @ Fs=%.0f\n", Fs);
+        const int normalOrder = orderFor (Fs);
+        const int maxOrder = normalOrder + 1; // engine default maxOrder
+        auto orderForQ = [&] (int q) { return std::clamp (normalOrder + (q - 1), 1, maxOrder); };
+        auto Nq = [&] (int q) { return 1 << orderForQ (q); };
+        auto Hq = [&] (int q) { return Nq (q) / ((q == 0) ? 4 : 8); };
+
+        // (a) latency/hop table + (b) depth=0 reconstruction, per quality.
+        for (int q = 0; q < 3; ++q)
+        {
+            const int nq = Nq (q), hq = Hq (q);
+            const int M = std::max (1 << 15, 8 * nq);
+            std::mt19937 rng (71);
+            std::uniform_real_distribution<double> u (-0.5, 0.5);
+            std::vector<double> x ((size_t) M);
+            for (auto& v : x) v = u (rng);
+
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setQuality (q); s.setDepth (0.0); s.setMix (1.0);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = x[(size_t) n]; s.process (l, r); y[(size_t) n] = l; }
+
+            if (s.latencySamples() != nq)
+                fail ("quality " + std::to_string (q) + ": latency " + std::to_string (s.latencySamples())
+                      + " != " + std::to_string (nq) + " at Fs=" + std::to_string (Fs));
+            if (s.hopSamples() != hq)
+                fail ("quality " + std::to_string (q) + ": hop " + std::to_string (s.hopSamples())
+                      + " != " + std::to_string (hq) + " at Fs=" + std::to_string (Fs));
+
+            double e = 0.0;
+            for (int n = M / 2; n < M; ++n) e = std::max (e, std::abs (y[(size_t) n] - x[(size_t) (n - nq)]));
+            if (e > 1.0e-9)
+                fail ("quality " + std::to_string (q) + ": depth0 reconstruction err " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  q=%d N=%d H=%d reconErr=%.2e\n", q, nq, hq, e);
+        }
+
+        // (c) bypass bit-transparency per quality (engine active underneath).
+        for (int q = 0; q < 3; ++q)
+        {
+            const int nq = Nq (q);
+            const int M = std::max (1 << 15, 8 * nq);
+            std::mt19937 rng (83);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * 1200.0 * n / Fs);
+
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setQuality (q); s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.7); s.setBypassed (true);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = x[(size_t) n]; s.process (l, r); y[(size_t) n] = l; }
+
+            // Tail (past the bypass ramp + switch + refill hold): full bypass reads
+            // the input ring with no arithmetic, so it is bit-exact to the aligned dry.
+            for (int n = M / 2; n < M; ++n)
+                if (y[(size_t) n] != x[(size_t) (n - nq)])
+                { fail ("quality " + std::to_string (q) + ": bypass not bit-transparent at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); break; }
+        }
+
+        // (d) mid-stream Normal -> Fast -> High switch. settle covers the N_q refill
+        // hold (N_q <= bufLen) + the 10 ms ramp; segments are wide enough to leave a
+        // large checked region after it (asserted non-vacuous below).
+        const int bufLen = 1 << maxOrder;
+        const int settle = bufLen + (int) std::ceil (0.010 * Fs) + 256;
+        const int t1 = 2 * bufLen, t2 = 6 * bufLen, M = 10 * bufLen;
+        std::mt19937 rng (97);
+        std::normal_distribution<double> g (0.0, 0.25);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+
+        // Pass 1 (depth on): finite everywhere; forced-dry (bit-exact) during each hold.
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.9);
+            std::vector<double> y ((size_t) M);
+            int prevLat = s.latencySamples(), holdRem = 0, holdNq = 0;
+            int switches = 0, holdChecked = 0;
+            bool holdBad = false;
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) s.setQuality (0);
+                if (n == t2) s.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                s.process (l, r);
+                y[(size_t) n] = l;
+                const int lat = s.latencySamples();
+                if (lat != prevLat) { holdRem = lat; holdNq = lat; prevLat = lat; ++switches; } // switch sample (excluded)
+                else if (holdRem > 0)
+                {
+                    if (! holdBad && (l != x[(size_t) (n - holdNq)] || r != x[(size_t) (n - holdNq)]))
+                    { fail ("quality mid-switch: refill hold not aligned dry at n=" + std::to_string (n)
+                            + " Fs=" + std::to_string (Fs)); holdBad = true; }
+                    ++holdChecked;
+                    --holdRem;
+                }
+            }
+            if (! factory_core::testing::allFinite (y))
+                fail ("quality mid-switch produced non-finite output at Fs=" + std::to_string (Fs));
+            if (switches != 2)                 // both Normal->Fast and Fast->High must apply
+                fail ("quality mid-switch: expected 2 latency changes, saw " + std::to_string (switches)
+                      + " at Fs=" + std::to_string (Fs));
+            if (holdChecked <= bufLen)         // guard: the forced-dry hold check must not be vacuous
+                fail ("quality mid-switch: hold check vacuous (holdChecked=" + std::to_string (holdChecked)
+                      + ") at Fs=" + std::to_string (Fs));
+        }
+
+        // Pass 2 (depth=0): reconstruction returns to <= 1e-9 once each switch settles.
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setDepth (0.0); s.setMix (1.0);
+            std::vector<double> y ((size_t) M), lat ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) s.setQuality (0);
+                if (n == t2) s.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                s.process (l, r);
+                y[(size_t) n] = l; lat[(size_t) n] = (double) s.latencySamples();
+            }
+            int curLat = (int) lat[0], lastChange = 0, checked = 0;
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            {
+                if ((int) lat[(size_t) n] != curLat) { curLat = (int) lat[(size_t) n]; lastChange = n; }
+                if (n - lastChange > settle && n >= curLat + settle)
+                {
+                    e = std::max (e, std::abs (y[(size_t) n] - x[(size_t) (n - curLat)]));
+                    ++checked;
+                }
+            }
+            if (checked < bufLen) // guard: the settled-region check must not be vacuous
+                fail ("quality mid-switch: depth0 check vacuous (checked=" + std::to_string (checked)
+                      + ") at Fs=" + std::to_string (Fs));
+            if (e > 1.0e-9)
+                fail ("quality mid-switch: depth0 reconstruction across switches err " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  mid-switch reconErr=%.2e checked=%d (t1=%d t2=%d M=%d)\n", e, checked, t1, t2, M);
+        }
+    }
+
     // ---- Reduction-profile (soothe-style depth EQ) shape invariants ----------
     // Independent, oracle-free checks of the per-frequency sensitivity curve
     // (factory_core::ReductionProfile), the single source of truth shared by the
@@ -1687,6 +1993,8 @@ int main (int argc, char** argv)
         resetStateTest (Fs);
         releaseBallisticsTest (Fs);
         attackBallisticsTest (Fs);
+        tiltBallisticsTest (Fs);
+        qualityTest (Fs);
         rangeGatingTest (Fs);
         depthSharpnessMidStreamTest (Fs);
     }
