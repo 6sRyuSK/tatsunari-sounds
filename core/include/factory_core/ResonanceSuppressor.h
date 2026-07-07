@@ -12,7 +12,12 @@
 // by the global Depth and a user reduction profile (a per-frequency multiplier —
 // the "EQ-like" curve). The per-bin reduction is smoothed across frequency before
 // being applied, then follows attack/release per bin. Detection can be
-// stereo-linked (same gain on L/R, preserving the image) or per-channel. Mix rides
+// stereo-linked (same gain on L/R, preserving the image), per-channel, or a
+// continuous blend between the two (setLinkAmount: a log-domain lerp of the
+// per-channel gains toward a shared max-detection gain); it can also run off a
+// separate external-detector input (setExternalDetector / the 4-arg process),
+// whose spectrum drives the gains while they are still applied to the main
+// signal (detection and the suppressed signal are decoupled). Mix rides
 // the spectral gain rather than a time-domain dry/wet blend: the effective per-bin
 // gain is gEff = 1 + Mix*(g - 1) (g = the detector's per-bin gain), applied in
 // processFrame, so a Mix move is frame-rate quantised like Depth, and the aligned
@@ -113,12 +118,17 @@ namespace factory_core
 
             for (int ch = 0; ch < 2; ++ch)
             {
-                in[ch].assign   ((size_t) bufLen, 0.0);
-                out[ch].assign  ((size_t) bufLen, 0.0);
-                spec[ch].assign ((size_t) bufLen, cd {});
-                mag[ch].assign  ((size_t) maxBins, 0.0);
-                gain[ch].assign ((size_t) maxBins, 1.0);
+                in[ch].assign    ((size_t) bufLen, 0.0);
+                inDet[ch].assign ((size_t) bufLen, 0.0);
+                out[ch].assign   ((size_t) bufLen, 0.0);
+                spec[ch].assign  ((size_t) bufLen, cd {});
+                mag[ch].assign   ((size_t) maxBins, 0.0);
+                magDet[ch].assign((size_t) maxBins, 0.0);
+                gain[ch].assign  ((size_t) maxBins, 1.0);
+                gOut[ch].assign  ((size_t) maxBins, 1.0);
             }
+            specDet.assign  ((size_t) bufLen, cd {});
+            gainM.assign    ((size_t) maxBins, 1.0);
             det.assign      ((size_t) maxBins, 0.0);
             env.assign      ((size_t) maxBins, 0.0);
             logMag.assign   ((size_t) maxBins, 0.0);
@@ -152,10 +162,12 @@ namespace factory_core
         {
             for (int ch = 0; ch < 2; ++ch)
             {
-                std::fill (in[ch].begin(),   in[ch].end(),   0.0);
-                std::fill (out[ch].begin(),  out[ch].end(),  0.0);
-                std::fill (gain[ch].begin(), gain[ch].end(), 1.0);
+                std::fill (in[ch].begin(),    in[ch].end(),    0.0);
+                std::fill (inDet[ch].begin(), inDet[ch].end(), 0.0);
+                std::fill (out[ch].begin(),   out[ch].end(),   0.0);
+                std::fill (gain[ch].begin(),  gain[ch].end(),  1.0);
             }
+            std::fill (gainM.begin(), gainM.end(), 1.0);
             idx = 0;
             hop = 0;
             switchHold = 0;           // no refill hold pending
@@ -171,6 +183,16 @@ namespace factory_core
         // without changing the reported latency (the engine keeps running).
         void setBypassed  (bool b)     noexcept { bypassTarget = b ? 1.0 : 0.0; }
         void setStereoLink (bool b)    noexcept { link = b; }
+        // Continuous stereo-link amount (0..1, default 1). Effective link amount
+        // lambda = link ? linkAmount : 0, so setStereoLink(false) still forces
+        // per-channel. lambda == 1 is the v1 linked path, lambda == 0 the v1
+        // per-channel path (both bit-for-bit preserved); 0 < lambda < 1 blends.
+        void setLinkAmount (double amt) noexcept { linkAmount = std::clamp (amt, 0.0, 1.0); }
+        // External-detector input (default off). When on, detection reads a separate
+        // detector-input spectrum (fed via the 4-arg process) instead of the main
+        // signal, while the gains still apply to the main l/r. Off is bit-identical
+        // to v1 (the detector FFT never runs).
+        void setExternalDetector (bool b) noexcept { extDet = b; }
         // Detection mode: 0 = Soft (adaptive threshold, level-independent),
         // 1 = Hard (absolute level threshold, level-dependent). See computeGains.
         void setMode      (int m)      noexcept { mode = std::clamp (m, 0, 1); }
@@ -239,7 +261,16 @@ namespace factory_core
         const double* reductionDb() const noexcept { return dispRedDb.data(); }
 
         // Process one stereo sample in place. Output is latency-aligned dry/wet.
-        void process (double& l, double& r) noexcept
+        // The 2-arg form detects on the main signal; it delegates to the 4-arg form
+        // with dl = l, dr = r, so it is behaviour- and bit-identical to v1.
+        void process (double& l, double& r) noexcept { process (l, r, l, r); }
+
+        // 4-arg form: (dl, dr) is a separate detector input. It is always written to
+        // the detector ring, but that ring is only READ (windowed FFT) when
+        // setExternalDetector(true); otherwise detection uses the main spectrum and
+        // this is a zero-FFT, bit-identical path. When external detection is on, the
+        // gains derived from (dl, dr) are applied to the main (l, r).
+        void process (double& l, double& r, double dl, double dr) noexcept
         {
             // Dry / OLA read positions sit N samples behind the write pointer (when
             // N == the ring length this collapses to the classic read-before-write).
@@ -248,6 +279,8 @@ namespace factory_core
             const double dryR = in[1][(size_t) rd];
             in[0][(size_t) idx] = l;
             in[1][(size_t) idx] = r;
+            inDet[0][(size_t) idx] = dl; // detector-input ring (read only when extDet)
+            inDet[1][(size_t) idx] = dr;
 
             const double ringL = out[0][(size_t) rd]; // OLA output: the Mix-scaled wet
             const double ringR = out[1][(size_t) rd];
@@ -431,6 +464,7 @@ namespace factory_core
                 std::fill (out[ch].begin(), out[ch].end(), 0.0);
                 std::fill (gain[ch].begin(), gain[ch].begin() + (half + 1), 1.0);
             }
+            std::fill (gainM.begin(), gainM.begin() + (half + 1), 1.0);
             hop = 0;
             switchHold = N;                 // hold the aligned dry while the OLA refills
             coefFrameRate = fs / (double) H;
@@ -556,11 +590,41 @@ namespace factory_core
 
             for (int k = 0; k <= half; ++k)
                 for (int ch = 0; ch < 2; ++ch)
-                    mag[ch][(size_t) k] = std::abs (spec[ch][(size_t) k]);
+                    mag[ch][(size_t) k] = std::abs (spec[ch][(size_t) k]); // MAIN magnitude (analyser + default detection)
 
-            if (link)
+            // External detector (3A-2): when enabled, DETECTION magnitudes come from a
+            // separate detector-input frame's own windowed FFT; mag[] stays the MAIN
+            // magnitude (used for the analyser display below), so extDet == false runs
+            // no extra FFT and is bit-identical to v1. The gains still apply to spec[].
+            if (extDet)
             {
-                for (int k = 0; k <= half; ++k) det[(size_t) k] = std::max (mag[0][(size_t) k], mag[1][(size_t) k]);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    for (int k = 0; k < N; ++k)
+                    {
+                        const int p = (base + k) & bufMask;
+                        specDet[(size_t) k] = cd (inDet[ch][(size_t) p] * w[(size_t) k], 0.0);
+                    }
+                    fftA.forward (specDet.data());
+                    for (int k = 0; k <= half; ++k) magDet[ch][(size_t) k] = std::abs (specDet[(size_t) k]);
+                }
+            }
+            const std::vector<double>& dmag0 = extDet ? magDet[0] : mag[0];
+            const std::vector<double>& dmag1 = extDet ? magDet[1] : mag[1];
+
+            // Continuous stereo link (3A-1): effective lambda in [0,1]. lambda == 1 is
+            // the v1 linked path (one max-detection gain on both channels), lambda == 0
+            // the v1 per-channel path -- both preserved bit-for-bit. 0 < lambda < 1
+            // blends the per-channel gains gL/gR with a linked reference gM (its own
+            // ballistics state gainM) in the log domain, once per frame after
+            // ballistics: g'ch = exp((1-lambda)*ln(gch) + lambda*ln(gM)) (gains are in
+            // (0,1], clamped to a 1e-6 floor so the logs are finite).
+            const double lambda = link ? linkAmount : 0.0;
+            const std::vector<double>* gA = &gain[0]; // effective per-channel output gains
+            const std::vector<double>* gB = &gain[1];
+            if (lambda >= 1.0)
+            {
+                for (int k = 0; k <= half; ++k) det[(size_t) k] = std::max (dmag0[(size_t) k], dmag1[(size_t) k]);
                 computeGains (det, gain[0]);
                 for (int k = 0; k <= half; ++k)
                 {
@@ -568,20 +632,41 @@ namespace factory_core
                     dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (gain[0][(size_t) k], 1.0e-6));
                 }
             }
-            else
+            else if (lambda <= 0.0)
             {
-                computeGains (mag[0], gain[0]);
-                computeGains (mag[1], gain[1]);
+                computeGains (dmag0, gain[0]);
+                computeGains (dmag1, gain[1]);
                 for (int k = 0; k <= half; ++k)
                     dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (std::min (gain[0][(size_t) k], gain[1][(size_t) k]), 1.0e-6));
             }
+            else
+            {
+                computeGains (dmag0, gain[0]);   // per-channel gL (own ballistics state)
+                computeGains (dmag1, gain[1]);   // per-channel gR (own ballistics state)
+                for (int k = 0; k <= half; ++k) det[(size_t) k] = std::max (dmag0[(size_t) k], dmag1[(size_t) k]);
+                computeGains (det, gainM);        // linked reference gM (own ballistics state)
+                const double om = 1.0 - lambda;
+                for (int k = 0; k <= half; ++k)
+                {
+                    const double lnM = std::log (std::max (gainM[(size_t) k], 1.0e-6));
+                    const double g0 = std::exp (om * std::log (std::max (gain[0][(size_t) k], 1.0e-6)) + lambda * lnM);
+                    const double g1 = std::exp (om * std::log (std::max (gain[1][(size_t) k], 1.0e-6)) + lambda * lnM);
+                    gOut[0][(size_t) k] = g0;
+                    gOut[1][(size_t) k] = g1;
+                    dispRedDb[(size_t) k] = 20.0 * std::log10 (std::max (std::min (g0, g1), 1.0e-6));
+                }
+                gA = &gOut[0];
+                gB = &gOut[1];
+            }
+            const std::vector<double>& g0Eff = *gA;
+            const std::vector<double>& g1Eff = *gB;
 
             // Analyser shows the post-processing (output) magnitude: the input
             // spectrum scaled by the per-bin detector gain g -- NOT the Mix-scaled
             // gEff applied below (v1 display semantics). Gain is real, so |spec*g| = mag*g.
             for (int k = 0; k <= half; ++k)
-                dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * gain[0][(size_t) k],
-                                                mag[1][(size_t) k] * gain[1][(size_t) k]) / (0.5 * (double) N);
+                dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * g0Eff[(size_t) k],
+                                                mag[1][(size_t) k] * g1Eff[(size_t) k]) / (0.5 * (double) N);
 
             // Apply the real per-bin gains, keeping the spectrum Hermitian. Mix rides
             // the spectral gain: gEff = 1 + mix*(g - 1), mix read once per frame.
@@ -589,13 +674,13 @@ namespace factory_core
             const bool fullWet = (m >= 1.0);
             auto gEff = [m, fullWet] (double g) noexcept { return fullWet ? g : 1.0 + m * (g - 1.0); };
 
-            spec[0][0] *= gEff (gain[0][0]);               spec[1][0] *= gEff (gain[1][0]);
-            spec[0][(size_t) half] *= gEff (gain[0][(size_t) half]);
-            spec[1][(size_t) half] *= gEff (gain[1][(size_t) half]);
+            spec[0][0] *= gEff (g0Eff[0]);               spec[1][0] *= gEff (g1Eff[0]);
+            spec[0][(size_t) half] *= gEff (g0Eff[(size_t) half]);
+            spec[1][(size_t) half] *= gEff (g1Eff[(size_t) half]);
             for (int k = 1; k < half; ++k)
             {
-                const double ge0 = gEff (gain[0][(size_t) k]);
-                const double ge1 = gEff (gain[1][(size_t) k]);
+                const double ge0 = gEff (g0Eff[(size_t) k]);
+                const double ge1 = gEff (g1Eff[(size_t) k]);
                 spec[0][(size_t) k]       *= ge0;
                 spec[0][(size_t) (N - k)] *= ge0;
                 spec[1][(size_t) k]       *= ge1;
@@ -631,11 +716,16 @@ namespace factory_core
         double olaScale = 1.0;
 
         std::array<std::vector<double>, 2> in, out;   // [ch] input / output rings (sized 1<<maxOrder)
+        std::array<std::vector<double>, 2> inDet;     // [ch] external-detector input rings (read only when extDet)
         int idx = 0, hop = 0;
         int switchHold = 0;                           // Quality-switch refill hold (samples of forced dry)
         std::array<std::vector<cd>, 2> spec;          // [ch] analysis/synthesis spectrum
+        std::vector<cd> specDet;                      // detector-frame FFT scratch (extDet only)
 
-        std::array<std::vector<double>, 2> mag, gain; // [ch] magnitude / per-bin gain
+        std::array<std::vector<double>, 2> mag, gain; // [ch] MAIN magnitude / per-bin gain
+        std::array<std::vector<double>, 2> magDet;    // [ch] detector magnitude (extDet only)
+        std::array<std::vector<double>, 2> gOut;      // [ch] blended effective output gain (0<lambda<1)
+        std::vector<double> gainM;                    // linked-reference ballistics state (0<lambda<1)
         std::vector<double> det, env, logMag, redDbBuf, prefix, profile;
         std::vector<double> dispMag, dispRedDb;
 
@@ -656,6 +746,8 @@ namespace factory_core
         double mix = 1.0;
         bool   delta = false;
         bool   link = true;
+        double linkAmount = 1.0;         // continuous link amount (effective lambda = link ? linkAmount : 0)
+        bool   extDet = false;           // external-detector input enabled (3A-2)
         int    mode = 0; // 0 = Soft (adaptive), 1 = Hard (absolute level)
         // Latency-preserving bypass crossfade (0 = active, 1 = bypassed); step set in prepare.
         double bypassMix = 0.0, bypassTarget = 0.0, bypassStep = 0.0;

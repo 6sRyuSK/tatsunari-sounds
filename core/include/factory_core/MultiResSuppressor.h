@@ -45,6 +45,19 @@
 // dryPure (the raw delayed input) over the same 10 ms ramp the single engine
 // uses, and full bypass passes dryPure through bit-transparently.
 //
+// Channel mode, sidechain and link (Pass 3A routing). setChannelMode(1) switches
+// to Mid/Side: dryPure keeps the RAW l/r (so bypass stays bit-transparent in both
+// modes), while the LR4 split, both sub-engines and the Delta reference run on the
+// encoded M = (l+r)/2, S = (l-r)/2; the composite output is decoded (l = M+S,
+// r = M-S) before the bypass blend. The 4-arg process takes a sidechain (scL, scR):
+// setSidechain(true) routes it through the SAME topology (encode -> LR4 split ->
+// high pre-delay D) into each sub-engine's external detector, so detection keys off
+// the sidechain while suppression stays on the main signal; with the sidechain off
+// the SC split/pre-delay never run and the only added cost is a raw-SC ring write.
+// setScListen(true) monitors the raw sidechain delayed by N_L (its own integer-delay
+// ring, returned undecoded even in M/S) and outranks Delta; the bypass ramp is
+// always topmost. setStereoLink / setLinkAmount are forwarded to both sub-engines.
+//
 // Quality switching: setQuality is forwarded to both sub-engines (each latches
 // and swaps at its next frame boundary, holding its own latency-aligned dry while
 // its OLA ring refills). The high-band pre-delay is recomputed per sample from
@@ -100,16 +113,21 @@ namespace factory_core
             highEng.prepare (fs, highOrd, highMax);
 
             for (int ch = 0; ch < 2; ++ch)
-                splitLR[(size_t) ch].setCutoff (kSplitHz, fs);
+            {
+                splitLR[(size_t) ch].setCutoff   (kSplitHz, fs);
+                scSplitLR[(size_t) ch].setCutoff (kSplitHz, fs); // sidechain band split (same crossover)
+            }
 
             // Rings sized to hold up to the maximum low-band latency (the largest
             // pre-delay D = N_L - N_S and the largest dry delay N_L both fit).
             const int ringSize = (1 << lowMax) + 16;
             for (int ch = 0; ch < 2; ++ch)
             {
-                dryPure[(size_t) ch].prepare   (ringSize);
-                dryRef[(size_t) ch].prepare    (ringSize);
-                highDelay[(size_t) ch].prepare (ringSize);
+                dryPure[(size_t) ch].prepare     (ringSize);
+                dryRef[(size_t) ch].prepare      (ringSize);
+                highDelay[(size_t) ch].prepare   (ringSize);
+                scHighDelay[(size_t) ch].prepare (ringSize); // sidechain high pre-delay (D)
+                scRaw[(size_t) ch].prepare       (ringSize); // raw sidechain delayed N_L (scListen)
             }
 
             // Display-merge scratch on the HIGH engine's grid, sized for its
@@ -127,9 +145,12 @@ namespace factory_core
             for (int ch = 0; ch < 2; ++ch)
             {
                 splitLR[(size_t) ch].reset();
+                scSplitLR[(size_t) ch].reset();
                 dryPure[(size_t) ch].reset();
                 dryRef[(size_t) ch].reset();
                 highDelay[(size_t) ch].reset();
+                scHighDelay[(size_t) ch].reset();
+                scRaw[(size_t) ch].reset();
             }
             bypassMix = bypassTarget; // snap the crossfade (transparent right after prepare/reset)
         }
@@ -142,6 +163,7 @@ namespace factory_core
         void setTilt           (double t)   noexcept { lowEng.setTilt (t);             highEng.setTilt (t); }
         void setMode           (int m)      noexcept { lowEng.setMode (m);             highEng.setMode (m); }
         void setStereoLink     (bool b)     noexcept { lowEng.setStereoLink (b);       highEng.setStereoLink (b); }
+        void setLinkAmount     (double amt) noexcept { lowEng.setLinkAmount (amt);     highEng.setLinkAmount (amt); }
         void setRange (double lowHz, double highHz) noexcept
         {
             lowEng.setRange (lowHz, highHz);
@@ -160,6 +182,14 @@ namespace factory_core
         // --- composite-level controls (sub-engine Delta/Bypass stay false) ------
         void setDelta    (bool b) noexcept { delta = b; }
         void setBypassed (bool b) noexcept { bypassTarget = b ? 1.0 : 0.0; }
+        // Channel mode: 0 = Stereo (default), 1 = Mid/Side. Encode/decode wraps the
+        // split + engines; dryPure stays raw so bypass is bit-transparent in both.
+        void setChannelMode (int m) noexcept { chMode = std::clamp (m, 0, 1); }
+        // Sidechain: route the 4-arg process's (scL, scR) into both sub-engines'
+        // external detectors (same topology as the main signal). Off is transparent.
+        void setSidechain (bool b) noexcept { sidechain = b; lowEng.setExternalDetector (b); highEng.setExternalDetector (b); }
+        // Monitor the raw sidechain (delayed by N_L, undecoded); outranks Delta.
+        void setScListen (bool b) noexcept { scListen = b; }
         // Forwarded to both sub-engines; each swaps at its next frame boundary and
         // holds its aligned dry while its OLA ring refills. The high-band pre-delay
         // tracks the live latencies per sample, so the paths re-align automatically.
@@ -207,50 +237,97 @@ namespace factory_core
         }
 
         // Process one stereo sample in place. Output is latency-aligned (N_L).
-        void process (double& l, double& r) noexcept
+        // The 2-arg form has no sidechain; it delegates with scL = l, scR = r, so
+        // it is behaviour- and bit-identical to v1 (the sidechain rings only feed).
+        void process (double& l, double& r) noexcept { process (l, r, l, r); }
+
+        // 4-arg form: (scL, scR) is the sidechain input. It is always written to the
+        // raw-SC ring (so scListen is click-free), but the SC split/pre-delay only run
+        // when setSidechain(true) -- otherwise each sub-engine detects on its own band
+        // and this is bit-identical to the 2-arg form.
+        void process (double& l, double& r, double scL, double scR) noexcept
         {
             const int NL = lowEng.latencySamples();
             const int NS = highEng.latencySamples();
             const int D  = NL - NS; // high-band pre-delay so both paths total N_L
 
-            // dryPure: the raw input delayed by N_L — the bit-transparent bypass
-            // source (integer delay -> the fractional read is exact).
+            // dryPure: the RAW input delayed by N_L — the bit-transparent bypass
+            // source (kept raw in both channel modes; integer delay -> exact read).
             dryPure[0].write (l); dryPure[1].write (r);
             const double dryPureL = dryPure[0].readInterpolated ((double) NL);
             const double dryPureR = dryPure[1].readInterpolated ((double) NL);
 
-            // LR4 split. low/high feed the two bands; their sum is allpass(in).
-            double lowL, highL, lowR, highR;
-            splitLR[0].process (l, lowL, highL);
-            splitLR[1].process (r, lowR, highR);
+            // Raw sidechain delayed by N_L — the scListen source (always fed so
+            // enabling scListen is click-free and bit-exact; integer delay -> exact).
+            scRaw[0].write (scL); scRaw[1].write (scR);
+            const double scListenL = scRaw[0].readInterpolated ((double) NL);
+            const double scListenR = scRaw[1].readInterpolated ((double) NL);
 
-            // dryRef: allpass(in) delayed by N_L — the Delta reference (equals the
+            // Channel-mode encode (Mid/Side): the split, engines and Delta reference
+            // all run in the encoded domain; dryPure above stays raw so bypass is
+            // bit-transparent in both modes. Stereo mode is the identity encode.
+            double c0 = l, c1 = r;
+            if (chMode == 1) { c0 = 0.5 * (l + r); c1 = 0.5 * (l - r); }
+
+            // LR4 split (encoded). low/high sum is allpass(encoded).
+            double low0, high0, low1, high1;
+            splitLR[0].process (c0, low0, high0);
+            splitLR[1].process (c1, low1, high1);
+
+            // dryRef: allpass(encoded) delayed by N_L — the Delta reference (equals the
             // depth-0 summed output up to the STFTs' reconstruction residual).
-            dryRef[0].write (lowL + highL); dryRef[1].write (lowR + highR);
-            const double dryRefL = dryRef[0].readInterpolated ((double) NL);
-            const double dryRefR = dryRef[1].readInterpolated ((double) NL);
+            dryRef[0].write (low0 + high0); dryRef[1].write (low1 + high1);
+            const double dryRef0 = dryRef[0].readInterpolated ((double) NL);
+            const double dryRef1 = dryRef[1].readInterpolated ((double) NL);
 
             // High band pre-delayed by D so its total latency matches N_L.
-            highDelay[0].write (highL); highDelay[1].write (highR);
-            const double hdL = highDelay[0].readInterpolated ((double) D);
-            const double hdR = highDelay[1].readInterpolated ((double) D);
+            highDelay[0].write (high0); highDelay[1].write (high1);
+            const double hd0 = highDelay[0].readInterpolated ((double) D);
+            const double hd1 = highDelay[1].readInterpolated ((double) D);
 
-            // Sub-engines (stereo, in place). Their Delta/Bypass stay false.
-            double loOutL = lowL, loOutR = lowR;
-            lowEng.process (loOutL, loOutR);
-            double hiOutL = hdL, hiOutR = hdR;
-            highEng.process (hiOutL, hiOutR);
+            // Detector inputs. Default = each band's own main signal, so with the
+            // sidechain OFF the 4-arg engine call is bit-identical to the 2-arg one
+            // (and the SC split/pre-delay never run -- the only SC cost is the raw-SC
+            // ring write above). With the sidechain ON the detector is the SC signal
+            // through the SAME topology (encode -> LR4 split -> high pre-delay D).
+            double d0L = low0, d1L = low1, d0H = hd0, d1H = hd1;
+            if (sidechain)
+            {
+                double s0 = scL, s1 = scR;
+                if (chMode == 1) { s0 = 0.5 * (scL + scR); s1 = 0.5 * (scL - scR); }
+                double scLo0, scHi0, scLo1, scHi1;
+                scSplitLR[0].process (s0, scLo0, scHi0);
+                scSplitLR[1].process (s1, scLo1, scHi1);
+                scHighDelay[0].write (scHi0); scHighDelay[1].write (scHi1);
+                d0L = scLo0; d1L = scLo1;
+                d0H = scHighDelay[0].readInterpolated ((double) D);
+                d1H = scHighDelay[1].readInterpolated ((double) D);
+            }
 
-            const double sumL = loOutL + hiOutL;
-            const double sumR = loOutR + hiOutR;
+            // Sub-engines (encoded, in place). The detector input separates detection
+            // from the suppressed signal; their Delta/Bypass stay false.
+            double loOut0 = low0, loOut1 = low1;
+            lowEng.process (loOut0, loOut1, d0L, d1L);
+            double hiOut0 = hd0, hiOut1 = hd1;
+            highEng.process (hiOut0, hiOut1, d0H, d1H);
 
-            // Delta at the composite level: dryRef - sum keeps only the removed part.
-            double outL, outR;
-            if (delta) { outL = dryRefL - sumL; outR = dryRefR - sumR; }
-            else       { outL = sumL;           outR = sumR;           }
+            const double sum0 = loOut0 + hiOut0;
+            const double sum1 = loOut1 + hiOut1;
 
-            // Latency-preserving bypass: ramp toward dryPure (bit-transparent at
-            // the fully-bypassed end, untouched at the fully-active end).
+            // Composite Delta (encoded domain): dryRef - sum keeps only the removed part.
+            double o0, o1;
+            if (delta) { o0 = dryRef0 - sum0; o1 = dryRef1 - sum1; }
+            else       { o0 = sum0;           o1 = sum1;           }
+
+            // Decode back to L/R (identity in Stereo mode).
+            double outL = o0, outR = o1;
+            if (chMode == 1) { outL = o0 + o1; outR = o0 - o1; }
+
+            // scListen monitors the raw sidechain (undecoded) and outranks Delta.
+            if (scListen) { outL = scListenL; outR = scListenR; }
+
+            // Latency-preserving bypass: ramp toward dryPure (bit-transparent at the
+            // fully-bypassed end, untouched at the fully-active end) — always topmost.
             if (bypassMix < bypassTarget)      bypassMix = std::min (bypassTarget, bypassMix + bypassStep);
             else if (bypassMix > bypassTarget) bypassMix = std::max (bypassTarget, bypassMix - bypassStep);
 
@@ -308,13 +385,19 @@ namespace factory_core
         double fs = 44100.0;
 
         ResonanceSuppressor lowEng, highEng;
-        std::array<LinkwitzRiley, 2> splitLR;   // [ch] band split (its low+high = allpass(in))
-        std::array<DelayLine, 2>     dryPure;   // [ch] raw input delayed N_L (bypass source)
-        std::array<DelayLine, 2>     dryRef;    // [ch] allpass(in) delayed N_L (Delta reference)
-        std::array<DelayLine, 2>     highDelay; // [ch] high band pre-delay (D = N_L - N_S)
+        std::array<LinkwitzRiley, 2> splitLR;     // [ch] band split (its low+high = allpass(in))
+        std::array<LinkwitzRiley, 2> scSplitLR;   // [ch] sidechain band split (same crossover)
+        std::array<DelayLine, 2>     dryPure;     // [ch] raw input delayed N_L (bypass source)
+        std::array<DelayLine, 2>     dryRef;      // [ch] allpass(encoded) delayed N_L (Delta reference)
+        std::array<DelayLine, 2>     highDelay;   // [ch] high band pre-delay (D = N_L - N_S)
+        std::array<DelayLine, 2>     scHighDelay; // [ch] sidechain high band pre-delay (D)
+        std::array<DelayLine, 2>     scRaw;       // [ch] raw sidechain delayed N_L (scListen source)
 
         mutable std::vector<double> mergeHi;    // high-grid display scratch (GUI thread)
 
+        int    chMode = 0;        // 0 = Stereo, 1 = Mid/Side
+        bool   sidechain = false; // route the SC input into the sub-engine detectors
+        bool   scListen = false;  // monitor the raw sidechain (delayed N_L)
         bool   delta = false;
         double bypassMix = 0.0, bypassTarget = 0.0, bypassStep = 0.0;
     };

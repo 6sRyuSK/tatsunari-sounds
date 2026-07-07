@@ -2506,6 +2506,350 @@ namespace
                      worstMag, worstRed, red[(size_t) k8l], maxAboveDiff);
     }
 
+    // ---- Pass 3A: routing (continuous link, external detector, M/S + sidechain) ---
+
+    // linkBlendTest: continuous stereo link on the single engine. L carries a
+    // resonance at f0 over a floor common to both channels; R carries only the
+    // floor (a flat comb: no excess at f0, so per-channel R is uncut). Sweeping the
+    // link amount lambda in {0, 0.5, 1} (link on) blends R's reduction at f0 between
+    // its per-channel value (lambda 0: ~0, R has no resonance there) and the linked
+    // value (lambda 1: R gets L's cut to preserve the stereo image). The blend is a
+    // log-domain lerp, so R's reduction IN dB is exactly affine in lambda; the
+    // midpoint identity red_R(0.5) == 0.5*(red_R(0)+red_R(1)) is an independent
+    // oracle (each endpoint measured through the real DSP, no formula from the
+    // engine). A deterministic bin-aligned comb + smoothing-off makes R's f0 a clean
+    // carrier, so the measured reduction is the true applied gain at every rate. And
+    // lambda 1 applies identical L/R gains (symmetric probe: L==R in -> L==R out).
+    void linkBlendTest (double Fs)
+    {
+        std::printf ("Link blend (continuous stereo link, affine identity) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const int kf = (int) std::round (2000.0 * N / Fs);
+        const int jlo = (int) std::ceil (kf / 1.6), jhi = (int) std::floor (kf * 1.6);
+        const double b = 0.02, big = 0.12; // floor line / L's resonance at kf (excess ~15 dB)
+        const double f0 = (double) kf * Fs / (double) N;
+
+        // R = flat comb floor (kf line == neighbours == b); L = same floor + a
+        // strong resonance at kf. The non-kf lines share amplitude AND phase, so the
+        // floor is common; L differs only by (big-b) at kf.
+        const auto xr = combSignal (order, M, [&] (int k) { return (k >= jlo && k <= jhi) ? b : 0.0; });
+        const auto xl = combSignal (order, M, [&] (int k) { if (k < jlo || k > jhi) return 0.0; return (k == kf) ? big : b; });
+
+        auto renderR = [&] (double lambda, double depth)
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, orderFor (Fs));
+            s.setStereoLink (true); s.setLinkAmount (lambda);
+            s.setDepth (depth); s.setSharpness (0.5); s.setSmoothingWidth (0.0); // clean single-bin read
+            std::vector<double> outR ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = xl[(size_t) n], r = xr[(size_t) n]; s.process (l, r); outR[(size_t) n] = r; }
+            return outR;
+        };
+        const auto dryR = renderR (1.0, 0.0); // depth 0: gain 1 (link irrelevant)
+        const auto wR0  = renderR (0.0, 1.0);
+        const auto wR5  = renderR (0.5, 1.0);
+        const auto wR1  = renderR (1.0, 1.0);
+        const int a = M / 2, b2 = M;          // window length M/2 is an integer multiple of N (clean bins)
+        const double dRef = magAt (dryR, a, b2, f0, Fs);
+        const double r0 = 20.0 * std::log10 (magAt (wR0, a, b2, f0, Fs) / dRef);
+        const double r5 = 20.0 * std::log10 (magAt (wR5, a, b2, f0, Fs) / dRef);
+        const double r1 = 20.0 * std::log10 (magAt (wR1, a, b2, f0, Fs) / dRef);
+
+        const double mid = 0.5 * (r0 + r1);
+        if (std::abs (r5 - mid) > 0.5)
+            fail ("link blend: R reduction not affine in lambda: r0=" + std::to_string (r0)
+                  + " r5=" + std::to_string (r5) + " r1=" + std::to_string (r1)
+                  + " mid=" + std::to_string (mid) + " at Fs=" + std::to_string (Fs));
+        if (r1 > -6.0)
+            fail ("link blend: lambda=1 did not cut R at f0 (image not linked): " + std::to_string (r1)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (r0 < -1.0)
+            fail ("link blend: lambda=0 cut R without a resonance there: " + std::to_string (r0)
+                  + " dB at Fs=" + std::to_string (Fs));
+
+        // lambda=1 applies identical L/R gains (symmetric probe -> exact L==R out).
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, orderFor (Fs));
+            s.setStereoLink (true); s.setLinkAmount (1.0); s.setDepth (1.0); s.setSharpness (0.5);
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            { double v = xl[(size_t) n]; double l = v, r = v; s.process (l, r); e = std::max (e, std::abs (l - r)); }
+            if (e > 1.0e-9)
+                fail ("link blend: lambda=1 L/R gains diverged err " + std::to_string (e) + " at Fs=" + std::to_string (Fs));
+        }
+        std::printf ("  redR(0,0.5,1)=(%.2f, %.2f, %.2f) dB  mid=%.2f (affine +/-0.5)\n", r0, r5, r1, mid);
+    }
+
+    // msRoundtripTest: M/S mode on the composite. (a) At depth 0 the output equals
+    // a TEST-SIDE oracle (encode M/S -> LR4 twin allpass per component -> decode,
+    // delayed N_L) to 1e-9 -- the encode/decode wraps the split cleanly. (b) M/S
+    // bypass is still bit-transparent to the raw input delayed N_L. (c) A resonance
+    // placed purely in M (l==r tone) is cut while the S component (l-r noise) is
+    // preserved within +/-0.5 dB (unlinked + high selectivity so the S floor is
+    // untouched) -- M and S are processed independently.
+    void msRoundtripTest (double Fs)
+    {
+        std::printf ("M/S roundtrip (encode/split/decode + separation) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order;
+
+        // (a) depth-0 reconstruction vs the M/S allpass twin oracle.
+        {
+            const int M = std::max (1 << 15, 8 * NL);
+            std::mt19937 rng (7);
+            std::uniform_real_distribution<double> u (-0.5, 0.5);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n) { xl[(size_t) n] = u (rng); xr[(size_t) n] = u (rng); }
+
+            // Oracle: encode -> LR4 twin allpass on M and S separately -> decode.
+            factory_core::LinkwitzRiley twM, twS;
+            twM.setCutoff (3000.0, Fs); twS.setCutoff (3000.0, Fs);
+            std::vector<double> oL ((size_t) M), oR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                const double mid = 0.5 * (xl[(size_t) n] + xr[(size_t) n]);
+                const double sid = 0.5 * (xl[(size_t) n] - xr[(size_t) n]);
+                const double aM = twM.allpass (mid), aS = twS.allpass (sid);
+                oL[(size_t) n] = aM + aS; oR[(size_t) n] = aM - aS;
+            }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setDepth (0.0); m.setMix (1.0);
+            std::vector<double> yL ((size_t) M), yR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = xl[(size_t) n], r = xr[(size_t) n]; m.process (l, r); yL[(size_t) n] = l; yR[(size_t) n] = r; }
+
+            double e = 0.0;
+            for (int n = M / 2; n < M; ++n)
+                e = std::max (e, std::max (std::abs (yL[(size_t) n] - oL[(size_t) (n - NL)]),
+                                           std::abs (yR[(size_t) n] - oR[(size_t) (n - NL)])));
+            if (e > 1.0e-9)
+                fail ("M/S depth0 reconstruction vs twin oracle err " + std::to_string (e) + " at Fs=" + std::to_string (Fs));
+            std::printf ("  depth0 reconErr=%.2e (spec 1e-9)\n", e);
+        }
+
+        // (b) M/S bypass bit-transparency to the raw input delayed N_L.
+        {
+            const int M = std::max (1 << 14, 4 * NL);
+            std::mt19937 rng (29);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n) { xl[(size_t) n] = g (rng); xr[(size_t) n] = g (rng); }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setDepth (1.2); m.setSharpness (0.5); m.setMix (0.7);
+            m.setBypassed (true); m.reset();
+            for (int n = 0; n < M; ++n)
+            {
+                double l = xl[(size_t) n], r = xr[(size_t) n];
+                m.process (l, r);
+                const double el = (n >= NL) ? xl[(size_t) (n - NL)] : 0.0;
+                const double er = (n >= NL) ? xr[(size_t) (n - NL)] : 0.0;
+                if (l != el || r != er)
+                { fail ("M/S bypass not bit-transparent at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); break; }
+            }
+        }
+
+        // (c) M/S separation: resonance in M cut, S (noise) preserved.
+        {
+            const int M = 1 << 15;
+            const double f0 = alignedFreq (Fs, 2000.0);
+            std::mt19937 rng (53);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                const double tone = 0.5 * std::sin (2.0 * kPi * f0 * n / Fs); // in M (l==r part)
+                const double ns   = g (rng);                                  // in S (l-r part)
+                xl[(size_t) n] = tone + ns; xr[(size_t) n] = tone - ns;
+            }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setStereoLink (false);
+            // Unlinked so M/S are processed independently; high selectivity + modest
+            // depth so the broadband S floor is not nibbled (only M's tone is a peak).
+            m.setDepth (0.5); m.setSharpness (0.5); m.setSelectivity (1.0);
+            std::vector<double> yL ((size_t) M), yR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = xl[(size_t) n], r = xr[(size_t) n]; m.process (l, r); yL[(size_t) n] = l; yR[(size_t) n] = r; }
+
+            const int a = M / 2, b = M;
+            double sIn = 0.0, sOut = 0.0;
+            for (int n = a; n < b; ++n)
+            {
+                const double si = 0.5 * (xl[(size_t) (n - NL)] - xr[(size_t) (n - NL)]);
+                const double so = 0.5 * (yL[(size_t) n] - yR[(size_t) n]);
+                sIn += si * si; sOut += so * so;
+            }
+            const double sDb = 10.0 * std::log10 (sOut / (sIn + 1e-30));
+            if (std::abs (sDb) > 0.5)
+                fail ("M/S: S component not preserved: " + std::to_string (sDb) + " dB at Fs=" + std::to_string (Fs));
+
+            std::vector<double> mIn ((size_t) M), mOut ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { mIn[(size_t) n] = 0.5 * (xl[(size_t) n] + xr[(size_t) n]); mOut[(size_t) n] = 0.5 * (yL[(size_t) n] + yR[(size_t) n]); }
+            const double mDb = 20.0 * std::log10 (magAt (mOut, a, b, f0, Fs) / magAt (mIn, a, b, f0, Fs));
+            if (mDb > -6.0)
+                fail ("M/S: M resonance not cut: " + std::to_string (mDb) + " dB at Fs=" + std::to_string (Fs));
+            std::printf ("  S preserved %.3f dB (+/-0.5)  M cut %.2f dB (<= -6)\n", sDb, mDb);
+        }
+    }
+
+    // sidechainTest: external-detector (sidechain) routing on the composite.
+    // (a) With the sidechain OFF, feeding a different SC signal to the 4-arg
+    // process is BIT-IDENTICAL to the 2-arg form (the SC only feeds rings, never
+    // read). (b) With it ON, a strong SC tone notches the main (broadband) output
+    // at that frequency -- on the low side (2 kHz) and the high side (6 kHz), keyed
+    // off the correct sub-engine -- and the notch vanishes when the SC is silent.
+    // (c) Toggling the sidechain stays finite and peak-bounded.
+    void sidechainTest (double Fs)
+    {
+        std::printf ("Sidechain (external detector routing) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+
+        // (a) sidechain OFF: 4-arg with a different SC == 2-arg twin, bit-exact.
+        {
+            const int M = std::max (1 << 14, 4 * N);
+            std::mt19937 rng (61);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> xm ((size_t) M), xs ((size_t) M);
+            for (int n = 0; n < M; ++n) { xm[(size_t) n] = g (rng); xs[(size_t) n] = g (rng); }
+
+            factory_core::MultiResSuppressor A, B;
+            A.prepare (Fs, order); A.setDepth (1.2); A.setSharpness (0.5);
+            B.prepare (Fs, order); B.setDepth (1.2); B.setSharpness (0.5); // sidechain OFF (default)
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            {
+                double la = xm[(size_t) n], ra = xm[(size_t) n];
+                double lb = xm[(size_t) n], rb = xm[(size_t) n];
+                A.process (la, ra);                                 // 2-arg
+                B.process (lb, rb, xs[(size_t) n], xs[(size_t) n]); // 4-arg, different SC
+                e = std::max (e, std::max (std::abs (la - lb), std::abs (ra - rb)));
+            }
+            if (e > 0.0)
+                fail ("sidechain OFF: 4-arg SC feed changed the output (err " + std::to_string (e)
+                      + ") at Fs=" + std::to_string (Fs));
+        }
+
+        // (b) sidechain ON: SC tone notches the main output at its frequency.
+        auto suppressionAt = [&] (double fSc)
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (67);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> main ((size_t) M), sc ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                main[(size_t) n] = g (rng);                                   // broadband floor
+                sc[(size_t) n]   = 0.3 * std::sin (2.0 * kPi * fSc * n / Fs)  // strong SC tone
+                                 + 0.03 * g (rng);
+            }
+            auto run = [&] (bool scActive)
+            {
+                factory_core::MultiResSuppressor m;
+                m.prepare (Fs, order);
+                m.setSidechain (true); m.setDepth (1.2); m.setSharpness (0.5);
+                std::vector<double> y ((size_t) M);
+                for (int n = 0; n < M; ++n)
+                {
+                    double l = main[(size_t) n], r = main[(size_t) n];
+                    const double s = scActive ? sc[(size_t) n] : 0.0;
+                    m.process (l, r, s, s);
+                    y[(size_t) n] = 0.5 * (l + r);
+                }
+                return y;
+            };
+            const auto on  = run (true);
+            const auto off = run (false);
+            const int a = M / 2, b = M;
+            return 20.0 * std::log10 (magAt (on, a, b, fSc, Fs) / magAt (off, a, b, fSc, Fs));
+        };
+        const double loDb = suppressionAt (alignedFreq (Fs, 2000.0));
+        const double hiDb = suppressionAt (alignedFreq (Fs, 6000.0));
+        if (loDb > -6.0)
+            fail ("sidechain: low-side SC tone did not suppress the main: " + std::to_string (loDb) + " dB at Fs=" + std::to_string (Fs));
+        if (hiDb > -6.0)
+            fail ("sidechain: high-side SC tone did not suppress the main: " + std::to_string (hiDb) + " dB at Fs=" + std::to_string (Fs));
+
+        // (c) on/off transition: finite + peak-bounded.
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (73);
+            std::normal_distribution<double> g (0.0, 0.2);
+            std::vector<double> main ((size_t) M), sc ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                main[(size_t) n] = g (rng) + 0.3 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+                sc[(size_t) n]   = 0.4 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+            }
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order); m.setDepth (1.2); m.setSharpness (0.5);
+            std::vector<double> y ((size_t) M);
+            const double inPeak = factory_core::testing::peakAbs (main);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == M / 3)     m.setSidechain (true);
+                if (n == 2 * M / 3) m.setSidechain (false);
+                double l = main[(size_t) n], r = main[(size_t) n];
+                m.process (l, r, sc[(size_t) n], sc[(size_t) n]);
+                y[(size_t) n] = l;
+            }
+            if (! factory_core::testing::allFinite (y))
+                fail ("sidechain toggle produced non-finite output at Fs=" + std::to_string (Fs));
+            if (factory_core::testing::peakAbs (y) > 1.5 * inPeak)
+                fail ("sidechain toggle exceeded 1.5x input peak: " + std::to_string (factory_core::testing::peakAbs (y))
+                      + " vs " + std::to_string (inPeak) + " at Fs=" + std::to_string (Fs));
+        }
+        std::printf ("  suppression lo(2k)=%.1f dB hi(6k)=%.1f dB (spec <= -6)\n", loDb, hiDb);
+    }
+
+    // scListenTest: monitoring the raw sidechain. With scListen on the output is
+    // EXACTLY the SC input delayed by N_L (integer delay, bit-exact ring read), it
+    // outranks Delta, and in M/S mode it still returns the RAW (undecoded) SC.
+    void scListenTest (double Fs)
+    {
+        std::printf ("SC listen (raw sidechain, N_L delay, exact) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order;
+        const int M = std::max (1 << 14, 4 * NL);
+        std::mt19937 rng (89);
+        std::normal_distribution<double> g (0.0, 0.3);
+        std::vector<double> ml ((size_t) M), mr ((size_t) M), sl ((size_t) M), sr ((size_t) M);
+        for (int n = 0; n < M; ++n)
+        {
+            ml[(size_t) n] = g (rng); mr[(size_t) n] = g (rng);
+            sl[(size_t) n] = g (rng); sr[(size_t) n] = g (rng);
+        }
+
+        auto checkExact = [&] (int chMode, bool delta, const char* what)
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (chMode); m.setScListen (true); m.setDelta (delta);
+            m.setDepth (1.2); m.setSharpness (0.5);
+            for (int n = 0; n < M; ++n)
+            {
+                double l = ml[(size_t) n], r = mr[(size_t) n];
+                m.process (l, r, sl[(size_t) n], sr[(size_t) n]);
+                const double el = (n >= NL) ? sl[(size_t) (n - NL)] : 0.0;
+                const double er = (n >= NL) ? sr[(size_t) (n - NL)] : 0.0;
+                if (l != el || r != er)
+                { fail (std::string ("scListen ") + what + ": out != raw SC delayed N_L at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); return; }
+            }
+        };
+        checkExact (0, false, "stereo");
+        checkExact (0, true,  "stereo+delta"); // scListen outranks Delta
+        checkExact (1, false, "M/S-raw");      // undecoded even in M/S
+        std::printf ("  ok (out == SC[n-%d], exact: stereo / delta / M/S)\n", NL);
+    }
+
     // ---- Reduction-profile (soothe-style depth EQ) shape invariants ----------
     // Independent, oracle-free checks of the per-frequency sensitivity curve
     // (factory_core::ReductionProfile), the single source of truth shared by the
@@ -2664,6 +3008,10 @@ int main (int argc, char** argv)
         dualCrossoverTest (Fs);
         dualQualityTest (Fs);
         dualDisplayTest (Fs);
+        linkBlendTest (Fs);
+        msRoundtripTest (Fs);
+        sidechainTest (Fs);
+        scListenTest (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
