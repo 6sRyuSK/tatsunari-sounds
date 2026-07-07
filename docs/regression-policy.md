@@ -37,7 +37,7 @@
 | L | ドライ×ウェット並列合成のコムフィルタ（位相不整合） | multiband-enhancer | direct と wet の位相/レイテンシ不一致で並列混合時にコムフィルタが出る | direct を帯域と同一の allpass カスケードに通し、同一 OS ブラケット内で処理。フラットネス（0dB / +6dB）を全レートで assert |
 | M | 線形位相クロスオーバーの再構成崩れ / RT違反 | multiband-enhancer #72 | FIR 分割の帯域和が純遅延にならない（再構成誤差・位相分散）／ FIR 再設計をオーディオスレッドで行う（allocation）／固定タップ長 | 帯域は隣接ローパスの差で構成し **帯域和==純遅延**（インパルス→FFT 平坦）。タップ対称＋群遅延平坦（線形位相）。レイテンシ=(N-1)/2+OS を申告。**タップ数はレート連動**（固定禁止）。FIR 再設計はオーディオスレッド外＋lock-free swap |
 | N | バイパスが申告レイテンシを破壊（PDC崩れ） | resonance-suppressor | processBlock がバイパスで早期 return し、未遅延ドライを申告レイテンシ N のまま出力 → 他トラックと N サンプルずれる（クラス E のレイテンシ版） | バイパス中もエンジンを回し続け、**出力段だけ**を申告レイテンシ整列済みドライへ短いランプで**線形クロスフェード**。完全バイパスはドライを**ビット透過**（`out[n]==in[n−N]`）。ゲート: bypassAlignmentTest / bypassToggleTest（全6レート） |
-| O | Delta モニタが Mix を無視（Delta·Mix 恒等の欠如） | resonance-suppressor | delta 出力が dry−wet 全量で Mix と非連動 → Mix<1 のとき実際に除かれている音より大きい音を聴く（normal+delta が dry を再構成しない） | delta 出力は **mix*(dry−wet)**（normal の blend 項 mix*(wet−dry) の正確な符号反転）。ゲート: deltaMixIdentityTest — (i) normal+delta == 整列 dry（**相対 1e-12**、2Sum 丸め ≤1 ULP のみ吸収するスペック許容）、(ii) delta(mix) == fl(mix·delta(1)) を**厳密等価（トレランス0）**（全6レート） |
+| O | Delta モニタが Mix を無視（Delta·Mix 恒等の欠如） | resonance-suppressor | delta 出力が dry−wet 全量で Mix と非連動 → Mix<1 のとき実際に除かれている音より大きい音を聴く（normal+delta が dry を再構成しない） | Mix は**スペクトラルゲイン領域**に乗せる（`gEff = 1 + mix·(g−1)`、後続のデュアル解像度化で dry/wet 位相コムを防ぐ構造的前提）。delta 出力は **`dry − out`**（out は Mix 済み出力なので Mix スケールは自動）。ゲート: deltaMixIdentityTest — (i) normal+delta == 整列 dry（**相対 1e-12**）、(ii) アフィン恒等 `delta(m)==m·delta(1)+(1−m)·delta(0)`（**相対 1e-12**）、(iii) 再構成残差 `peakAbs(delta(0)) <= 1e-9`（全6レート） |
 
 ---
 
@@ -175,22 +175,39 @@
   **厳密一致**、ランプ区間も両端値のポイントワイズ凸結合境界内、かつ全サンプル有限。
 
 ### O. Delta モニタは Mix と相補（Delta·Mix 恒等）
-- Delta（removed-signal モニタ）を持つプラグインは、delta 出力を **mix*(dry−wet)**
-  にスケールし、normal 出力 `dry + mix*(wet−dry)` と**相補**にすること。dry−wet
-  全量を出すと、Mix<1 のとき実際に除かれている音より大きい音を聴くことになり、
-  「delta で聴いたものがそのまま Mix で消えている」というモニタの意味が壊れる。
-- `mix*(wet−dry)` と `mix*(dry−wet)` は IEEE 浮動小数点で正確な符号反転なので、
-  normal+delta は実数演算では dry に厳密一致する。ただし normal 側の外側の加算
-  `dry + P` が一度丸むため（2Sum 非恒等）、double では最大 1 ULP の残差が残る
-  （実測最大 2.22e−16）。恒等ゲートの許容はこの丸めのみを吸収する値にする。
+- Delta（removed-signal モニタ）を持つプラグインは、normal 出力と**相補**な
+  removed 信号を出すこと。dry−wet 全量を出すと、Mix<1 のとき実際に除かれている音
+  より大きい音を聴くことになり、「delta で聴いたものがそのまま Mix で消えている」
+  というモニタの意味が壊れる。
+- **Mix はスペクトラルゲイン領域に乗せる**（時間領域 dry/wet ブレンドにしない）:
+  実効ゲイン `gEff[k] = 1 + mix·(g[k]−1)`（g = バリスティクス済み per-bin ゲイン）を
+  フレーム毎に適用する。これは後続のデュアル解像度化（低解像 dry × 高解像 wet）で
+  dry と wet の位相差コムを**構造的に**防ぐ前提（Mix を時間領域で混ぜると別解像度・
+  別位相のドライを足すことになりコムが出る、クラス L/M の STFT 版）。端点は厳密分岐:
+  `mix>=1` は g をそのまま使い（`1+(g−1)` の 1 ULP 丸めを避け wet パスをビット保存）、
+  `mix<=0` は `1+0·(g−1)` が IEEE で厳密 1 なので分岐不要。表示（reductionDb /
+  magnitudeDb）は g のまま（カーテンは検出器が削ろうとしている量で Mix 非依存）。
+  これにより Mix の変化は depth 等と同じフレームレート量子化になる。
+- delta 出力は **`dry − out`**（out は Mix 済みの OLA 出力）。out が Mix スケール
+  済みなので delta の Mix スケールは自動的に正しく、normal `out` と delta `dry − out`
+  の和は実数演算で dry に厳密一致する（IEEE では外側の減算/加算が一度丸む、2Sum
+  非恒等、最大 1 ULP 残差）。
+- gEff は mix についてアフィン、STFT/OLA は線形なので、実数演算で
+  `delta(m) = m·delta(1) + (1−m)·delta(0)` が厳密成立する（delta(1)=dry−full_wet、
+  delta(0)=dry−dry_recon=OLA 再構成残差）。**ビット恒等は成立しない**（`(1−m)·delta(0)`
+  の再構成残差項が乗るため）ので、旧「delta(mix)==fl(mix·delta(1)) トレランス0」
+  ゲートはアフィン恒等＋残差ゲートに置換した（同じ「Mix 非連動 delta」バグを捕捉）。
 - **テスト（必須・全6レート）**: 双子（normal / delta、同一 mix・同一入力）で
   mix ∈ {0, 0.3, 0.8, 1} の各設定、全 n について:
   (i) `|normal+delta − dryAligned| <= 1e-12 · max(1, |dryAligned|)`（dryAligned は
-  テスト側の自前 N 遅延。**相対 1e-12 はスペック値** — 全量 delta の残差
-  ~(1−mix)·|dry−wet| は桁違いに大きく必ず落ちる）;
-  (ii) delta 出力の Mix スケールを**トレランス 0** で: `delta(mix)[n] ==
-  fl(mix · delta(1)[n])`（mix は STFT 状態に影響しないので両辺は同一の
-  dry−wet 差分への単一乗算 — ビット一致が構造的に成立する）。
+  テスト側の自前 N 遅延。**相対 1e-12 はスペック値**。実測最大 ~1.1e−16）;
+  (ii) アフィン恒等 `|delta(m) − (m·delta(1)+(1−m)·delta(0))| <= 1e-12 ·
+  max(1, |dryAligned|)`（FFT 丸め蓄積 ~1e-15 相対を吸収するスペック値。実測最大
+  ~5e−16。delta(1)/delta(0) は専用双子で実測）; (iii) 再構成残差
+  `peakAbs(delta(0)) <= 1e-9`（steady-state n>=2N。delta(0) は OLA 再構成残差で
+  実測 ~6.7e−16）。**(ii) はアフィン非線形な Mix 連動崩れを、(iii) は Mix を無視する
+  全量 delta（delta(0) が removed 信号全体になる）を捕捉する** — 両者で
+  「Mix 非連動 delta」クラスを封じる。
 
 ---
 
