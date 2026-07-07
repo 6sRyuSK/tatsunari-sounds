@@ -257,6 +257,7 @@ void TumbleDelayAudioProcessor::pushParametersToEngine (double bpm) noexcept
             ? factory_core::tempoSyncSeconds (bpm, kBoxSizeSyncBeats[sync - 1])
             : (double) boxSizeParam->load();
         engine.setBoxSizeSeconds (sec);
+        effBoxSizeSec.store (sec, std::memory_order_relaxed);
     }
 
     // Spin: a non-Off sync value is seconds-per-revolution -> rev/s; its sign is
