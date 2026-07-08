@@ -91,6 +91,7 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
 
 ResonanceSuppressorAudioProcessorEditor::~ResonanceSuppressorAudioProcessorEditor()
 {
+    processor.setListenNode (-1); // Phase 5a-2: never leave Listen soloed after the editor closes
     setLookAndFeel (nullptr);
 }
 
