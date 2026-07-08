@@ -40,6 +40,21 @@
 //
 class ResonanceSuppressorAudioProcessor final : public juce::AudioProcessor
 {
+private:
+    // Declared before `apvts` below (deliberately in its own private: block
+    // ahead of the public: one): C++ constructs members in DECLARATION order
+    // regardless of the initialiser-list order, and the APVTS ctor takes
+    // &undoManager, so undoManager must already exist. Parameter gestures ride
+    // this via the APVTS's own value -> ValueTree flush timer (JUCE standard
+    // behaviour: every parameter write becomes an undoable ValueTree property
+    // change); the editor groups continuous edits into discrete undo steps with
+    // a periodic beginNewTransaction() (Phase 5b-2, see PluginEditor.cpp). Note
+    // apvts.replaceState() (used by A/B slot loading and host state restore)
+    // calls undoManager->clearUndoHistory() internally -- switching A/B or
+    // loading a session wipes undo history by design (a different state
+    // context, not an edit to undo through).
+    juce::UndoManager undoManager;
+
 public:
     // The STFT order tracks the sample rate so the analyser resolution and the
     // suppressor's detection window stay constant in Hz / seconds (see
@@ -90,6 +105,9 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
     double getSampleRateForDisplay() const noexcept { return currentSampleRate; }
+    // Phase 5b-2: Undo/Redo. The editor drives undo()/redo() and segments
+    // continuous edits into transactions; message-thread only (GUI buttons).
+    juce::UndoManager& getUndoManager() noexcept { return undoManager; }
 
     // Parameter-ID helpers (also used by the editor). Cuts: which 0 = low, 1 =
     // high. Bands: 0..kNumBands-1.
@@ -118,9 +136,24 @@ public:
     void setListenNode (int id) noexcept { listenNode.store (id, std::memory_order_relaxed); }
     int  getListenNode() const noexcept { return listenNode.load (std::memory_order_relaxed); }
 
+    // A/B compare (Phase 5b-1): two session-only state slots, same scope as
+    // getStateInformation (APVTS + program index) -- NOT listenNode or other
+    // transient execution state. Host persistence is unchanged: getStateInformation
+    // always saves the current live state; A/B never reaches it (intentional --
+    // A/B is a within-session scratchpad, not part of the saved document).
+    // Message-thread only (the editor's A/B controls call these directly).
+    void setABSlot (int slot);        // stash current -> switch active -> load slot (or seed it, first visit)
+    int  getABSlot() const noexcept { return abActive; }
+    void copyActiveToOther();         // copy the active slot's live state onto the other slot
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void rasterizeProfile();
+    // A/B slot helpers (5b-1): reuse the same stateToXml/applyStateXml logic
+    // getStateInformation/setStateInformation use, just targeting an in-memory
+    // slot instead of the host's blob.
+    void copyStateToSlot (int slot);
+    void loadStateFromSlot (int slot);
     // Listen (5a-1-B): rasterise a profile with only ONE node (nodeId) copied
     // from the live parameters, everything else off -- same per-engine grid
     // mapping as rasterizeProfile(), just a single-node config.
@@ -146,6 +179,12 @@ private:
     juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
+
+    // A/B compare storage (5b-1): session-only, never persisted (see setABSlot
+    // / getStateInformation). Message-thread only, so plain (non-atomic) members
+    // are fine -- the editor is the sole caller.
+    juce::MemoryBlock abState[2];
+    int abActive = 0;
 
     // Reduction-node parameters, cached for the audio thread (lock-free reads).
     struct CutParams  { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* slope = nullptr; };
