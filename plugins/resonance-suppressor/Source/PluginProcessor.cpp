@@ -53,14 +53,30 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
         AudioParameterFloatAttributes().withLabel (" %")));
 
+    // Phase 6 DEFAULTS DRAFT (pending audition sign-off, CLAUDE.md "Ask a human"
+    // #1): attack was 100 ms, tuned for the pre-Phase-1 detector (a coarser,
+    // slower-reacting envelope that needed a sluggish attack to avoid chatter).
+    // The Phase 1 rework detects per STFT frame (H/fs ~ 5.3 ms hop @ 48 kHz
+    // Normal, 8x overlap) with a self-excluding-notch envelope + soft-knee
+    // contrast, so it is precise enough per frame that a 100 ms attack just
+    // lets a transient resonance (a harsh consonant, a pick attack) ring for
+    // ~19 frames before the suppressor catches up -- audibly late for a
+    // de-harsh tool. New default 20 ms (the skew centre of this range, so it
+    // sits at the dial's natural middle) reacts within ~4 frames while still
+    // averaging over enough frames to reject single-frame noise-floor jitter.
     NormalisableRange<float> atkR { 1.0f, 200.0f }; atkR.setSkewForCentre (20.0f);
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "attack", 1 }, "Attack", atkR, 100.0f,
+        ParameterID { "attack", 1 }, "Attack", atkR, 20.0f,
         AudioParameterFloatAttributes().withLabel (" ms")));
 
+    // Release nudged 50 -> 65 ms alongside the faster attack: a snappier attack
+    // with an unchanged release skewed the ballistics' overall shape toward
+    // "grabs fast, lets go fast", which can pump on rhythmic material; a modest
+    // release increase keeps recovery still well inside a "fast" setting
+    // (release range tops out at 500 ms) while smoothing the gesture back out.
     NormalisableRange<float> relR { 5.0f, 500.0f }; relR.setSkewForCentre (100.0f);
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "release", 1 }, "Release", relR, 50.0f,
+        ParameterID { "release", 1 }, "Release", relR, 65.0f,
         AudioParameterFloatAttributes().withLabel (" ms")));
 
     layout.add (std::make_unique<AudioParameterFloat> (
@@ -85,6 +101,11 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     // at the defaults below (verified by preset_test's v1.2.0 fixture). Applied
     // every block in processBlock like depth/sharpness; the engine epsilon-compares
     // and rebuilds lazily, so no SmoothedValue is needed.
+    // Phase 6 DEFAULTS DRAFT: selectivity/depth/sharpness reviewed and left
+    // UNCHANGED (conservative) -- 50% is already the soft-knee law's own
+    // documented "nominal" point (ResonanceSuppressor::computeGains: T=3.5dB/
+    // W=4dB), and depth/sharpness are audition-first-impression choices better
+    // judged by ear against the Phase 6 pack than re-guessed here.
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "selectivity", 2 }, "Selectivity",
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,

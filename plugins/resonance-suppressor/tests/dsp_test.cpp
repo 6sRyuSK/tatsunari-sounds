@@ -83,6 +83,13 @@
 //      delayed by N_L(q), at every Quality, within the 1e-9 absolute spec
 //      tolerance (a new spec value absorbing the two band STFTs'
 //      reconstruction error + FMA/rounding differences; measured <= 4.5e-16).
+//  18b. Phase 6 splitHzIn default-identity: prepare()'s new additive 4th
+//       argument (splitHzIn, default 0.0 -> the kSplitHz constant) is BIT-exact
+//       vs. the legacy 3-arg prepare() when passed the same 3000.0 Hz explicitly
+//       (proving the audition-only override hook changes nothing for any
+//       existing/default caller), and a genuinely different value (1500 Hz, the
+//       audition pack's other checkpoint) is reflected by splitHz() and
+//       measurably changes the output (non-vacuity).
 //  19. Dual Delta/Mix: (a) depth-0 delta output is the two-band reconstruction
 //      residual, peak <= 1e-9 (measured <= 6.7e-16); (b) complementarity --
 //      out_normal + out_delta reconstructs the test-side LR4-twin dry to
@@ -2192,6 +2199,66 @@ namespace
         std::printf ("  maxErr=%.2e (spec 1e-9, all q)\n", worst);
     }
 
+    // 18b. Phase 6 splitHzIn default-identity: prepare()'s additive audition hook
+    // (splitHzIn, default 0.0 -> kSplitHz) must be bit-identical to the pre-hook
+    // 3-arg prepare() call for every existing/default caller. Two composites --
+    // one via the old 3-arg prepare(), one via the new 4-arg prepare() passed the
+    // SAME 3000.0 Hz explicitly -- must produce EXACTLY the same output sample
+    // for sample (not just within a tolerance), proving the hook is additive-only.
+    // A third instance with a genuinely different splitHzIn (1500 Hz, the other
+    // audition checkpoint value) is included only to prove the override actually
+    // takes effect (splitHz() reports it, and depth=0 output measurably diverges
+    // from the two 3 kHz instances) -- so this isn't a vacuous "always 3000" check.
+    void dualSplitHzDefaultIdentityTest (double Fs)
+    {
+        std::printf ("Dual splitHzIn default-identity (Phase 6 audition hook) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int M = std::max (1 << 15, 8 * (1 << order));
+        std::mt19937 rng (53);
+        std::uniform_real_distribution<double> u (-0.5, 0.5);
+        std::vector<double> x ((size_t) M);
+        for (auto& v : x) v = u (rng);
+
+        auto renderWithSplit = [&] (bool useDefaultOverload, double splitHzIn)
+        {
+            factory_core::MultiResSuppressor m;
+            if (useDefaultOverload) m.prepare (Fs, order);                 // old 3-arg call site
+            else                    m.prepare (Fs, order, 0, splitHzIn);   // new 4-arg call site
+            m.setDepth (1.2); m.setSharpness (0.5); // engine fully active (not just depth=0 passthrough)
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = x[(size_t) n], r = x[(size_t) n]; m.process (l, r); y[(size_t) n] = l; }
+            return y;
+        };
+
+        if (std::abs (factory_core::MultiResSuppressor {}.splitHz() - 3000.0) > 0.0)
+            fail ("default-constructed splitHz() != 3000.0 (spec constant) at Fs=" + std::to_string (Fs));
+
+        const auto yOld        = renderWithSplit (true, 0.0);
+        const auto yNewDefault = renderWithSplit (false, 3000.0);
+        double diff = 0.0;
+        for (int n = 0; n < M; ++n) diff = std::max (diff, std::abs (yOld[(size_t) n] - yNewDefault[(size_t) n]));
+        if (diff != 0.0)
+            fail ("splitHzIn=3000.0 (explicit) != legacy 3-arg prepare() (bit-exact expected), diff="
+                  + std::to_string (diff) + " at Fs=" + std::to_string (Fs));
+
+        // Non-vacuity: an actually-different split (1.5 kHz) must both report
+        // differently and measurably change the depth-engaged output.
+        factory_core::MultiResSuppressor probe;
+        probe.prepare (Fs, order, 0, 1500.0);
+        if (std::abs (probe.splitHz() - 1500.0) > 1.0e-9)
+            fail ("splitHzIn=1500.0 not reflected by splitHz(): got " + std::to_string (probe.splitHz())
+                  + " at Fs=" + std::to_string (Fs));
+        const auto y1500 = renderWithSplit (false, 1500.0);
+        double divergence = 0.0;
+        for (int n = 0; n < M; ++n) divergence = std::max (divergence, std::abs (y1500[(size_t) n] - yNewDefault[(size_t) n]));
+        if (divergence < 1.0e-6)
+            fail ("splitHzIn=1500.0 did not measurably change the output vs 3000.0 (vacuous override) at Fs="
+                  + std::to_string (Fs));
+
+        std::printf ("  bitExactVsLegacy=%.2e (expect 0)  divergenceAt1500Hz=%.2e (expect > 1e-6)\n", diff, divergence);
+    }
+
     // 19. Dual Delta/Mix identity, the composite version of deltaMixIdentityTest.
     // The composite's dry reference is allpass(in) delayed N_L (its own LR4 sum
     // ring); the test rebuilds it independently (twin LR4 + plain delay). Gates:
@@ -3390,6 +3457,7 @@ int main (int argc, char** argv)
         rangeGatingTest (Fs);
         depthSharpnessMidStreamTest (Fs);
         dualReconstructionTest (Fs);
+        dualSplitHzDefaultIdentityTest (Fs);
         dualDeltaTest (Fs);
         dualBypassTest (Fs);
         dualSpeedTest (Fs);

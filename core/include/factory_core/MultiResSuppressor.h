@@ -26,6 +26,12 @@
 // large-window low path's fine bins while still giving the high path the airband
 // where fast response matters most.
 //
+// prepare()'s optional splitHzIn (Phase 6, additive) lets a caller override this
+// for A/B listening (e.g. the audition harness rendering both 1.5k and 3k); it
+// is NOT a plugin parameter or preset field -- <= 0 (every existing caller)
+// keeps the default 3 kHz bit-identically, so this is purely a headless-harness
+// hook, not a user-facing control.
+//
 // Reconstruction (why the sum is phase-correct): for an LR4 crossover low + high
 // is an allpass — flat magnitude, so at depth 0 (no suppression) each band STFT
 // perfectly reconstructs its own input and the sum is allpass(in) delayed by N_L.
@@ -101,9 +107,20 @@ namespace factory_core
         // Quality. maxOrder caps the low band's High-quality order (0 -> order+1);
         // the high band's cap is maxOrder-2. Rings/delays are sized at the low
         // band's maximum order so a Quality switch never allocates.
-        void prepare (double sampleRate, int order = 11, int maxOrderIn = 0)
+        //
+        // splitHzIn (Phase 6 audition hook, additive): <= 0 (the default) keeps
+        // the LR4 crossover at the spec constant kSplitHz (3 kHz) -- so every
+        // EXISTING caller (both channels' worth of production code and every
+        // prior test) is bit-identical, unchanged. A positive value overrides
+        // the crossover frequency for A/B listening only (e.g. the Phase 6
+        // audition pack's 1.5 kHz vs 3 kHz checkpoint, run via this same
+        // prepare() call from a headless harness); it is NOT an APVTS parameter
+        // or preset field -- the split is a fixed architectural choice, not a
+        // user-facing control. See splitHz() below for the live value.
+        void prepare (double sampleRate, int order = 11, int maxOrderIn = 0, double splitHzIn = 0.0)
         {
             fs = sampleRate;
+            splitHzActive = (splitHzIn > 0.0) ? splitHzIn : kSplitHz;
 
             int lowMax = (maxOrderIn > 0) ? maxOrderIn : (order + 1);
             lowMax = std::clamp (lowMax, order, kMaxAllowedOrder);
@@ -115,8 +132,8 @@ namespace factory_core
 
             for (int ch = 0; ch < 2; ++ch)
             {
-                splitLR[(size_t) ch].setCutoff   (kSplitHz, fs);
-                scSplitLR[(size_t) ch].setCutoff (kSplitHz, fs); // sidechain band split (same crossover)
+                splitLR[(size_t) ch].setCutoff   (splitHzActive, fs);
+                scSplitLR[(size_t) ch].setCutoff (splitHzActive, fs); // sidechain band split (same crossover)
             }
 
             // Rings sized to hold up to the maximum low-band latency (the largest
@@ -207,7 +224,9 @@ namespace factory_core
         int    latencySamples() const noexcept { return lowEng.latencySamples(); }
         int    numBins()        const noexcept { return lowEng.numBins(); }
         double binToHz (int k)  const noexcept { return lowEng.binToHz (k); }
-        double splitHz()        const noexcept { return kSplitHz; }
+        // The LIVE crossover frequency (spec default kSplitHz unless prepare()'s
+        // audition-only splitHzIn overrode it -- see prepare()).
+        double splitHz()        const noexcept { return splitHzActive; }
 
         const ResonanceSuppressor& lowEngine()  const noexcept { return lowEng; }
         const ResonanceSuppressor& highEngine() const noexcept { return highEng; }
@@ -360,7 +379,7 @@ namespace factory_core
         }
 
     private:
-        static constexpr double kSplitHz         = 3000.0; // LR4 crossover (LISTENING CHECKPOINT: 1.5k vs 3k)
+        static constexpr double kSplitHz         = 3000.0; // LR4 crossover DEFAULT (LISTENING CHECKPOINT: 1.5k vs 3k). Live value: splitHzActive (see prepare()).
         static constexpr int    kOrderDrop       = 2;      // high band window 2 orders shorter (N_S = N_L/4)
         static constexpr int    kMaxAllowedOrder = 14;     // mirrors ResonanceSuppressor's High-quality cap
         static constexpr double kBypassRampSec   = 0.010;  // latency-preserving bypass crossfade ramp
@@ -377,7 +396,7 @@ namespace factory_core
             for (int k = 0; k < nbLow; ++k)
             {
                 const double f = lowEng.binToHz (k);
-                if (f < kSplitHz) continue;
+                if (f < splitHzActive) continue;
 
                 // Bracketing high bins j0 <= f/binHz < j0+1 (the high grid is
                 // linear in frequency: f_high(j) = j * highEng.binToHz(1)). Clamp
@@ -396,6 +415,7 @@ namespace factory_core
         }
 
         double fs = 44100.0;
+        double splitHzActive = kSplitHz; // live crossover Hz (see prepare()'s splitHzIn)
 
         ResonanceSuppressor lowEng, highEng;
         std::array<LinkwitzRiley, 2> splitLR;     // [ch] band split (its low+high = allpass(in))
