@@ -23,6 +23,11 @@
 // publishes the live magnitude / reduction spectra -- merged onto the low
 // (display) grid -- to the editor lock-free. processBlock does not allocate.
 //
+// Pass 3B routing: an optional stereo Sidechain input bus keys detection off an
+// external signal (gated on a live connection, so an unpatched bus falls back to
+// internal detection), a Channel Mode switch runs the engine in Stereo or Mid/Side,
+// and Link Amount is a continuous per-channel <-> stereo-linked detection blend.
+//
 class ResonanceSuppressorAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -107,6 +112,11 @@ private:
     std::atomic<float>* selParam    = nullptr; // Selectivity (0..100 %)
     std::atomic<float>* tiltParam   = nullptr; // Tilt (-100..+100 %)
     std::atomic<float>* qualityParam = nullptr; // Quality choice (0 Fast, 1 Normal, 2 High)
+    // Pass 3B routing params.
+    std::atomic<float>* linkAmtParam     = nullptr; // Link Amount (0..100 %)
+    std::atomic<float>* channelModeParam = nullptr; // Channel mode (0 Stereo, 1 Mid-Side)
+    std::atomic<float>* scEnableParam    = nullptr; // Sidechain detection enable
+    std::atomic<float>* scListenParam    = nullptr; // Monitor the sidechain
     juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;

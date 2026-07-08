@@ -280,7 +280,10 @@ namespace
 
     // Parameters introduced after v1.2.0 (absent from the fixture above). Each must
     // read back at its OWN default when the fixture loads. Append here in later phases.
-    const char* const kV120NewParams[] = { "selectivity", "tilt", "quality" };
+    // v1.3.0: selectivity/tilt/quality. v1.5.0 (Pass 3B routing): linkAmt/channelMode/
+    // scEnable/scListen.
+    const char* const kV120NewParams[] = { "selectivity", "tilt", "quality",
+                                           "linkAmt", "channelMode", "scEnable", "scListen" };
 
     // Tolerance mirrors checks 3/6: an absolute floor plus a range-proportional term
     // (denorm -> norm -> denorm is lossy for skewed ranges within ~this bound).

@@ -100,6 +100,26 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "quality", 2 }, "Quality", StringArray { "Fast", "Normal", "High" }, 1)); // Normal
 
+    // --- Phase 3 routing controls (Link Amount / Channel mode / Sidechain) ---
+    // Version hint 2: added in v1.5.0, after the v1.2.0 set, so an older session still
+    // loads and simply leaves these at the defaults below (guarded by preset_test's
+    // v1.2.0 fixture). linkAmt scales the continuous stereo-link blend and is only
+    // effective while the Stereo Link toggle is on (engine: lambda = link ? amt : 0);
+    // channelMode switches Stereo vs Mid/Side; scEnable/scListen are additionally
+    // gated on a live sidechain connection in processBlock, so an unpatched sidechain
+    // is safe. Applied every block like the detector controls (no SmoothedValue: the
+    // engine epsilon-compares and the routing switches ride their own crossfades).
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "linkAmt", 2 }, "Link Amount",
+        NormalisableRange<float> { 0.0f, 100.0f, 1.0f }, 100.0f,
+        AudioParameterFloatAttributes().withLabel (" %")));
+
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "channelMode", 2 }, "Channel Mode", StringArray { "Stereo", "Mid-Side" }, 0));
+
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "scEnable", 2 }, "Sidechain", false));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "scListen", 2 }, "SC Listen", false));
+
     // --- Reduction / depth-EQ nodes (soothe-style) ---
     // Two cuts bound where processing acts (rolling the profile off at a chosen
     // slope), four typed bands locally raise/lower the sensitivity. Defaults
@@ -139,8 +159,9 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
 
 ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     : AudioProcessor (BusesProperties()
-          .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+          .withInput  ("Input",     juce::AudioChannelSet::stereo(), true)
+          .withOutput ("Output",    juce::AudioChannelSet::stereo(), true)
+          .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)), // optional detector key
       apvts (*this, nullptr, "PARAMS", createParameterLayout())
 {
     depthParam  = apvts.getRawParameterValue ("depth");
@@ -156,6 +177,10 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     selParam    = apvts.getRawParameterValue ("selectivity");
     tiltParam   = apvts.getRawParameterValue ("tilt");
     qualityParam = apvts.getRawParameterValue ("quality");
+    linkAmtParam     = apvts.getRawParameterValue ("linkAmt");
+    channelModeParam = apvts.getRawParameterValue ("channelMode");
+    scEnableParam    = apvts.getRawParameterValue ("scEnable");
+    scListenParam    = apvts.getRawParameterValue ("scListen");
 
     for (int w = 0; w < 2; ++w)
     {
@@ -207,10 +232,24 @@ void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
 
 bool ResonanceSuppressorAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    // Main bus: mono or stereo, in == out (unchanged rule).
     const auto out = layouts.getMainOutputChannelSet();
     if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo())
         return false;
-    return layouts.getMainInputChannelSet() == out;
+    if (layouts.getMainInputChannelSet() != out)
+        return false;
+
+    // Sidechain (input bus 1) is optional: allow it disabled, mono, or stereo. When
+    // enabled it feeds the detectors; processBlock only keys off it once connected.
+    if (layouts.inputBuses.size() > 1)
+    {
+        const auto sc = layouts.getChannelSet (true, 1);
+        if (! sc.isDisabled()
+            && sc != juce::AudioChannelSet::mono()
+            && sc != juce::AudioChannelSet::stereo())
+            return false;
+    }
+    return true;
 }
 
 void ResonanceSuppressorAudioProcessor::rasterizeProfile()
@@ -248,6 +287,13 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     for (int ch = totalIn; ch < totalOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
+    // Sidechain input (bus 1): may be disabled, mono, or stereo. "Connected" means the
+    // bus is enabled with channels; the routing params below are gated on it so an
+    // unpatched sidechain falls back to internal detection (the engine gets false).
+    auto scBus = getBusBuffer (buffer, true, 1);
+    const int  scChannels  = scBus.getNumChannels();
+    const bool scConnected = scChannels > 0;
+
     suppressor.setDepth       ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness   (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
     suppressor.setSelectivity ((double) selParam->load() / 100.0);  // 0..100 % -> 0..1
@@ -257,6 +303,16 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     suppressor.setMix         ((double) mixParam->load() / 100.0);
     suppressor.setDelta       (deltaParam->load() > 0.5f);
     suppressor.setStereoLink  (linkParam->load() > 0.5f);
+    // Continuous link amount (only effective while Stereo Link is on) and channel mode.
+    suppressor.setLinkAmount  ((double) linkAmtParam->load() / 100.0);
+    suppressor.setChannelMode ((int) channelModeParam->load());
+    // Sidechain routing gated on a live connection: with the bus unpatched the engine
+    // receives false and safely keys detection off the main signal. SC Listen also
+    // requires the sidechain to be enabled (you can only monitor what is routed).
+    const bool scEnable = scEnableParam->load() > 0.5f;
+    const bool scListen = scListenParam->load() > 0.5f;
+    suppressor.setSidechain   (scEnable && scConnected);
+    suppressor.setScListen    (scListen && scEnable && scConnected);
     suppressor.setMode        ((int) modeParam->load());
     // Quality is latched here; the engine applies the config + latency change at its
     // next frame boundary inside process() below, so PDC is renegotiated after the
@@ -274,11 +330,20 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     auto* L = buffer.getWritePointer (0);
     auto* R = numCh > 1 ? buffer.getWritePointer (1) : nullptr;
 
+    // Sidechain read pointers: mono duplicates to both channels; absent -> null, and
+    // the loop then falls back to (l, r) so the 4-arg call matches the 2-arg one.
+    const float* scL = scConnected ? scBus.getReadPointer (0) : nullptr;
+    const float* scR = scConnected ? scBus.getReadPointer (scChannels > 1 ? 1 : 0) : nullptr;
+
     for (int i = 0; i < numSamples; ++i)
     {
         double l = L[i];
         double r = (R != nullptr) ? R[i] : l;
-        suppressor.process (l, r);
+        // Read the sidechain BEFORE writing the main output: the SC bus can alias the
+        // main buffer, so sampling it first keeps detection keyed off the true input.
+        const double sl = (scL != nullptr) ? (double) scL[i] : l;
+        const double sr = (scR != nullptr) ? (double) scR[i] : r;
+        suppressor.process (l, r, sl, sr);
         L[i] = (float) l;
         if (R != nullptr) R[i] = (float) r;
     }

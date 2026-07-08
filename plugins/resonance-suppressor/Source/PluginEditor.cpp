@@ -36,6 +36,38 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (qualityBox);
     qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualityBox);
 
+    // --- Second header row (Pass 3B routing) — minimal placement; full layout later. ---
+    // Channel mode combo. Manual addItemList like the others; item IDs 1,2 -> 0,1.
+    channelBox.addItemList ({ "Stereo", "Mid-Side" }, 1);
+    channelBox.setJustificationType (juce::Justification::centred);
+    channelBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
+    channelBox.setTooltip ("Stereo: process L/R. Mid-Side: process the M/S encode (bypass stays bit-transparent).");
+    addAndMakeVisible (channelBox);
+    channelAtt = std::make_unique<CA> (processor.apvts, "channelMode", channelBox);
+
+    scEnableB.setTooltip ("Key detection off the Sidechain input bus (falls back to internal when unpatched).");
+    scListenB.setTooltip ("Monitor the raw sidechain (delayed to the plugin latency).");
+    addAndMakeVisible (scEnableB);
+    addAndMakeVisible (scListenB);
+    scEnableAtt = std::make_unique<BA> (processor.apvts, "scEnable", scEnableB);
+    scListenAtt = std::make_unique<BA> (processor.apvts, "scListen", scListenB);
+
+    // Link Amount: horizontal slider with a small caption on its left. Colours come
+    // from the LookAndFeel; % integer text (setSliderDecimals must run AFTER the
+    // attachment — see #23).
+    linkAmtL.setText ("Link Amt", juce::dontSendNotification);
+    linkAmtL.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
+    linkAmtL.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (linkAmtL);
+    linkAmtS.setSliderStyle (juce::Slider::LinearHorizontal);
+    linkAmtS.setTextBoxStyle (juce::Slider::TextBoxRight, false, 42, 18);
+    linkAmtS.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
+    linkAmtS.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    linkAmtS.setTextValueSuffix (" %");
+    addAndMakeVisible (linkAmtS);
+    linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtS);
+    factory_ui::setSliderDecimals (linkAmtS, 0); // % integer, after the attachment (#23)
+
     addAndMakeVisible (curve);
 
     addKnob (depthS, depthL, "Depth",       " %",  "depth");
@@ -104,6 +136,20 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     titleLabel.setBounds (top.removeFromLeft (210));
     top.removeFromLeft (10);
     presetController.selector().setBounds (top);
+
+    // Second slim header row (Pass 3B routing), directly under the top row: channel mode
+    // + sidechain toggles on the left, Link Amount pinned right. The analyser loses
+    // 26+8 px of height for it (minimal placement — full routing layout is a later phase).
+    auto row2 = r.removeFromTop (26);
+    channelBox.setBounds (row2.removeFromLeft (110));
+    row2.removeFromLeft (6);
+    scEnableB.setBounds (row2.removeFromLeft (106));
+    row2.removeFromLeft (6);
+    scListenB.setBounds (row2.removeFromLeft (100));
+    auto linkArea = row2.removeFromRight (200); // "Link Amt" caption + horizontal slider
+    linkAmtL.setBounds (linkArea.removeFromLeft (56));
+    linkAmtS.setBounds (linkArea);
+    r.removeFromTop (8);
 
     r.removeFromTop (10);
     // Bottom control row at ~80% of its former height so the analyser gets the
