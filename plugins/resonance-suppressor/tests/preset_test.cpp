@@ -19,6 +19,10 @@
 //      survives a getStateInformation / setStateInformation round-trip.
 //   6. Every automatable parameter's raw value round-trips through
 //      getStateInformation / setStateInformation on a fresh processor instance.
+//   7. A frozen v1.2.0-generation state XML (old params only, all non-default)
+//      loads so that (a) every old param takes its fixture value and (b) the
+//      params added after v1.2.0 (selectivity/tilt/quality) stay at their
+//      defaults — the forward-compat guarantee a minor bump relies on.
 //
 #include "PluginProcessor.h"
 #include "FactoryPresets.h"
@@ -211,6 +215,131 @@ namespace
                           + ", expected " + std::to_string (original) + ")");
             }
     }
+
+    // ------------------------------------------------------------------------
+    // check 7 — v1.2.0 state-compat fixture (state forward-compatibility).
+    //
+    // A FROZEN state blob captured from the v1.2.0 generation, BEFORE this plugin
+    // gained selectivity / tilt / quality (v1.3.0). Loading it must (a) restore
+    // every old parameter to the fixture value and (b) leave the three new params
+    // at their defaults, because juce::AudioProcessorValueTreeState::replaceState
+    // tolerates keys absent from the loaded tree — the exact guarantee that lets a
+    // parameter-adding change be a *minor* bump instead of a state break.
+    //
+    // Shape derivation (factory_presets::stateToXml =
+    // apvts.copyState().createXml() + ProgramAdapter's presetIndex attribute):
+    //   * root tag == the APVTS valueTreeType, i.e. "PARAMS" (applyStateXml only
+    //     applies a tree whose tag matches apvts.state.getType()); a "presetIndex"
+    //     attribute rides the root.
+    //   * one <PARAM id=".." value=".."/> child per parameter, where "value" is the
+    //     *denormalised* (real-unit) value APVTS stores in its tree — verified in
+    //     juce_AudioProcessorValueTreeState.{h,cpp}: child type "PARAM", property
+    //     "value" = unnormalisedValue, property "id" = the parameter ID.
+    // Every listed value is deliberately NON-default, so "applied == default" can
+    // never masquerade as a pass. The three v1.3.0 params are intentionally ABSENT
+    // — that absence is what makes this a genuine v1.2.0 blob.
+    //
+    // MAINTENANCE (Phase 3/4): when a later phase adds a parameter, append its ID to
+    // kV120NewParams so this check keeps proving that a pre-existing session loads it
+    // at its default. Do NOT edit the frozen fixture XML below (it must stay a v1.2.0
+    // artefact); only the new-params list grows.
+    constexpr const char* kV120Fixture = R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<PARAMS presetIndex="0">
+  <PARAM id="depth" value="65.0"/>
+  <PARAM id="sharpness" value="80.0"/>
+  <PARAM id="attack" value="25.0"/>
+  <PARAM id="release" value="220.0"/>
+  <PARAM id="mix" value="75.0"/>
+  <PARAM id="delta" value="1.0"/>
+  <PARAM id="link" value="0.0"/>
+  <PARAM id="bypass" value="1.0"/>
+  <PARAM id="mode" value="1.0"/>
+  <PARAM id="lc_on" value="0.0"/>
+  <PARAM id="lc_freq" value="300.0"/>
+  <PARAM id="lc_slope" value="1.0"/>
+  <PARAM id="hc_on" value="0.0"/>
+  <PARAM id="hc_freq" value="12000.0"/>
+  <PARAM id="hc_slope" value="3.0"/>
+  <PARAM id="b0_on" value="0.0"/>
+  <PARAM id="b0_freq" value="800.0"/>
+  <PARAM id="b0_type" value="2.0"/>
+  <PARAM id="b0_sens" value="-12.0"/>
+  <PARAM id="b1_on" value="0.0"/>
+  <PARAM id="b1_freq" value="3200.0"/>
+  <PARAM id="b1_type" value="3.0"/>
+  <PARAM id="b1_sens" value="9.0"/>
+  <PARAM id="b2_on" value="0.0"/>
+  <PARAM id="b2_freq" value="4200.0"/>
+  <PARAM id="b2_type" value="1.0"/>
+  <PARAM id="b2_sens" value="-6.0"/>
+  <PARAM id="b3_on" value="0.0"/>
+  <PARAM id="b3_freq" value="9500.0"/>
+  <PARAM id="b3_type" value="4.0"/>
+  <PARAM id="b3_sens" value="15.0"/>
+</PARAMS>)XML";
+
+    // Parameters introduced after v1.2.0 (absent from the fixture above). Each must
+    // read back at its OWN default when the fixture loads. Append here in later phases.
+    // v1.3.0: selectivity/tilt/quality. v1.5.0 (Pass 3B routing): linkAmt/channelMode/
+    // scEnable/scListen.
+    const char* const kV120NewParams[] = { "selectivity", "tilt", "quality",
+                                           "linkAmt", "channelMode", "scEnable", "scListen" };
+
+    // Tolerance mirrors checks 3/6: an absolute floor plus a range-proportional term
+    // (denorm -> norm -> denorm is lossy for skewed ranges within ~this bound).
+    double roundTripTol (juce::RangedAudioParameter* rp)
+    {
+        const double span = std::abs ((double) rp->convertFrom0to1 (1.0f)
+                                      - (double) rp->convertFrom0to1 (0.0f));
+        return 1.0e-3 + 1.0e-4 * span;
+    }
+
+    void check7_v120_state_compat()
+    {
+        std::printf ("7. v1.2.0 state loads: old params applied, new params default\n");
+
+        auto xml = juce::parseXML (juce::String (kV120Fixture));
+        if (xml == nullptr) { fail ("v1.2.0 fixture XML did not parse"); return; }
+
+        // Fresh instance so the new params start at their defaults (an earlier check
+        // may have moved them). Heap-allocated to stay off the 1 MB Windows stack.
+        auto p = std::make_unique<ResonanceSuppressorAudioProcessor>();
+        juce::MemoryBlock blob;
+        p->copyXmlToBinary (*xml, blob);                       // the production binary shape
+        p->setStateInformation (blob.getData(), (int) blob.getSize());
+
+        // (a) Every parameter the fixture lists took its (non-default) value.
+        for (auto* e : xml->getChildIterator())
+        {
+            if (! e->hasTagName ("PARAM")) continue;
+            const juce::String id = e->getStringAttribute ("id");
+
+            for (auto* np : kV120NewParams)
+                if (id == np)
+                    fail (std::string ("fixture must not list post-v1.2.0 param '") + np
+                          + "' (it would defeat the compat check)");
+
+            auto* rp = rangedParam (*p, id);
+            if (rp == nullptr) { fail ("fixture references unknown paramID '" + id.toStdString() + "'"); continue; }
+            const double intended = e->getDoubleAttribute ("value");
+            const double got = readReal (rp);
+            if (std::abs (got - intended) > roundTripTol (rp))
+                fail ("v1.2.0 param '" + id.toStdString() + "' loaded as " + std::to_string (got)
+                      + " (fixture " + std::to_string (intended) + ")");
+        }
+
+        // (b) The post-v1.2.0 params, absent from the fixture, stayed at default.
+        for (auto* np : kV120NewParams)
+        {
+            auto* rp = rangedParam (*p, np);
+            if (rp == nullptr) { fail (std::string ("post-v1.2.0 param '") + np + "' missing from layout"); continue; }
+            const double def = (double) rp->convertFrom0to1 (rp->getDefaultValue());
+            const double got = readReal (rp);
+            if (std::abs (got - def) > roundTripTol (rp))
+                fail (std::string ("new param '") + np + "' is " + std::to_string (got)
+                      + " after loading v1.2.0 state (expected default " + std::to_string (def) + ")");
+        }
+    }
 }
 
 int main()
@@ -232,6 +361,7 @@ int main()
     check4_init_is_default (*processor);
     check5_index_roundtrip (*processor);
     check6_full_state_roundtrip (*processor);
+    check7_v120_state_compat();
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

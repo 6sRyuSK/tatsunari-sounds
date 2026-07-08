@@ -33,14 +33,24 @@ private:
     factory_ui::PresetSelectorController presetController;
     SuppressionCurveComponent curve;
 
-    juce::Slider depthS, sharpS, atkS, relS, mixS;
-    juce::Label  depthL, sharpL, atkL, relL, mixL;
+    // Knob row (left -> right): Depth, Sharpness, Selectivity, Attack, Release, Tilt, Mix.
+    juce::Slider depthS, sharpS, selS, atkS, relS, tiltS, mixS;
+    juce::Label  depthL, sharpL, selL, atkL, relL, tiltL, mixL;
     juce::ToggleButton deltaB { "Delta" }, linkB { "Link" }, bypassB { "Bypass" };
-    juce::ComboBox modeBox;
+    juce::ComboBox modeBox, qualityBox;
+
+    // Second header row (Pass 3B routing): channel mode, sidechain toggles, Link Amount.
+    juce::ComboBox channelBox;
+    juce::ToggleButton scEnableB { "Sidechain" }, scListenB { "SC Listen" };
+    juce::Slider linkAmtS;
+    juce::Label  linkAmtL;
 
     std::vector<std::unique_ptr<SA>> knobAtts;
     std::unique_ptr<BA> deltaAtt, linkAtt, bypassAtt;
-    std::unique_ptr<CA> modeAtt;
+    std::unique_ptr<CA> modeAtt, qualityAtt;
+    std::unique_ptr<CA> channelAtt;
+    std::unique_ptr<BA> scEnableAtt, scListenAtt;
+    std::unique_ptr<SA> linkAmtAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ResonanceSuppressorAudioProcessorEditor)
 };

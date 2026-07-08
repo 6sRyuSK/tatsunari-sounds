@@ -46,11 +46,163 @@
 //      vs bypass-on-then-off) confirms the crossfade stays finite, is a convex
 //      blend of the two ends throughout the ramp, sits on the aligned dry while
 //      fully bypassed, and returns to a bit-exact match with the active twin.
-//  14. Delta-Mix identity: normal and delta twins are complementary -- their sum
-//      reconstructs the latency-aligned dry within the 1e-12 relative spec
-//      tolerance (exact in real arithmetic; one IEEE rounding, measured <= 1 ULP,
-//      remains in doubles) -- and the delta output scales with Mix bit-exactly:
-//      delta(mix)[n] == fl(mix * delta(1)[n]) with zero tolerance.
+//  14. Delta-Mix identity: Mix rides the spectral gain (gEff = 1 + mix*(g-1)), so
+//      the delta output is the removed signal literally, delta(m) = dry - out(m).
+//      Twin normal/delta engines over mix in {0, 0.3, 0.8, 1} satisfy three gates:
+//      (i) complementarity -- out_normal + out_delta reconstructs the latency-
+//      aligned dry within the 1e-12 relative spec tolerance (one IEEE rounding,
+//      measured <= 1 ULP); (ii) affine identity -- delta(m) == m*delta(1) +
+//      (1-m)*delta(0) to 1e-12 relative (exact in real arithmetic since gEff is
+//      affine in Mix and the STFT/OLA is linear; the 1e-12 absorbs FFT rounding),
+//      the structural replacement for the old bit-exact scaling gate; and
+//      (iii) reconstruction residual -- delta(0) = dry - dry_recon is the STFT OLA
+//      residual (peak <= 1e-9 in steady state), so a Mix-ignoring full-range delta
+//      leaves the whole removed signal here and fails hard.
+//  15. Envelope notch (Pass A / A1): two equal tones 1/3 octave apart over a
+//      noise floor -- the case where the old linear-amplitude envelope (no
+//      self-excluding notch) let each peak lift the other's baseline and mask
+//      the pair. Both peaks must reach the spec reduction, stay within a spec
+//      distance of each other, and match an independent spec-pipeline oracle
+//      computed on the engine's own last analysis frame.
+//  16. Selectivity contrast (Pass A / A2): the soft-knee contrast law
+//      T(s) = 1+5s dB / W(s) = 6-4s dB, on a deterministic bin-aligned comb
+//      floor + tone. A hot peak (linear knee branch) must shift its reduction
+//      by exactly depth*2.5 dB (s 0->0.5) and depth*5 dB (s 0->1); a weak
+//      (~4 dB excess) peak's reduction must decrease monotonically with s and
+//      vanish at s = 1. Engine matches the spec oracle at every s, with and
+//      without the frequency smoothing.
+//  17. Frequency-domain gain smoothing (Pass A / A4): on a steady single sine
+//      the converged reductionDb() curve equals the spec oracle (log envelope
+//      + notch -> soft-knee -> two cascaded variable-width box passes) on every
+//      bin; setSmoothingWidth(0) bypasses it (matches the unsmoothed oracle);
+//      with smoothing on, the adjacent-bin |delta redDb| stays under the spec
+//      cap (vs the raw -48 dB single-bin cliff without smoothing).
+//  18. Dual reconstruction (Pass 2A, factory_core::MultiResSuppressor): at
+//      depth 0 / mix 1 the summed dual-band output equals a TEST-SIDE LR4
+//      unity twin (same class / 3 kHz cutoff / rate; split->sum = allpass)
+//      delayed by N_L(q), at every Quality, within the 1e-9 absolute spec
+//      tolerance (a new spec value absorbing the two band STFTs'
+//      reconstruction error + FMA/rounding differences; measured <= 4.5e-16).
+//  19. Dual Delta/Mix: (a) depth-0 delta output is the two-band reconstruction
+//      residual, peak <= 1e-9 (measured <= 6.7e-16); (b) complementarity --
+//      out_normal + out_delta reconstructs the test-side LR4-twin dry to
+//      1e-12 relative at mix in {0, 0.3, 0.8, 1} (measured 1.2e-16); (c)
+//      affine identity delta(m) == m*delta(1) + (1-m)*delta(0) to 1e-12
+//      relative (measured <= 4.5e-16) -- the same three gates as the single
+//      engine's deltaMixIdentityTest, re-derived against the composite's
+//      allpass dry reference.
+//  20. Dual bypass: a from-startup-bypassed composite is bit-transparent to
+//      the RAW input delayed by N_L (out[n] == in[n-N_L], exact -- the bypass
+//      source is the plain delayed input, not the allpass reference), and a
+//      toggle twin stays finite, convex-bounded through the ramp, sits on the
+//      aligned dry while bypassed and returns to a bit-exact match.
+//  21. Dual speed -- the point of the split: a tone burst scaled to each
+//      path's own window (B = N_sub/4) with near-instant ballistics (the
+//      per-bin gain IS each frame's target) is suppressed over a span of
+//      ~ N_sub + B samples; the span is invariant to the high path's constant
+//      pre-delay, so span_high/span_low directly measures the high band's 4x
+//      frame speed. Oracle: span ~ N_sub + B - (threshold-edge frames)*H_sub,
+//      ratio ~ (N_S+B_S)/(N_L+B_L) = 1/4 with B_sub proportional to N_sub.
+//      Measured (deterministic, no rng): span_high = 1.125*N_S, span_low =
+//      0.875*N_L, ratio 0.321 at all six rates; gates fixed with margin
+//      (per-path span windows, span_high <= span_low/2, ratio in [0.18, 0.42]).
+//  22. Dual crossover continuity: equal resonant tones just below/above the
+//      3 kHz split (2.5k / 3.6k) are both suppressed >= 15 dB (measured
+//      -19.6..-24.5 dB) and within 4 dB of each other (measured <= 1.9 dB) --
+//      the crossover-edge detection bias of the band-limited envelopes is a
+//      known simplification, bounded here rather than modelled.
+//  23. Dual quality: latency table N_L(q) = 1<<clamp(O+q-1, 1, O+1) with
+//      N_S(q) = N_L(q)/4 at every q; a mid-stream Normal->Fast->High switch
+//      stays finite (peak-bounded) and returns to the depth-0 twin
+//      reconstruction <= 1e-9 (measured 4.5e-16) once BOTH sub-engines'
+//      switches settle. The two engines swap at their own frame boundaries;
+//      in between, the per-sample pre-delay D = N_L(now) - N_S(now) keeps the
+//      total latency pinned to the live low-band N_L, so no composite-level
+//      mask is needed -- the settle window in the test counts from the last
+//      request/sub-engine latency change.
+//  24. Dual display merge: the composite magnitudeDb()/reductionDb() on the
+//      low (display) grid equal the low engine verbatim below the split and
+//      an INDEPENDENTLY re-implemented log-f linear-in-dB resample of the
+//      high engine at/above it (<= 1e-9 dB), non-vacuously (the high engine
+//      contributes a real cut at 8 kHz and the merged curve genuinely differs
+//      from the low engine's own bins above the split).
+//
+// Pass A re-derivation note (engine detection rework: log-domain envelope with
+// self-excluding notch, selectivity soft-knee, finite-slope Hard mode, per-bin
+// reduction smoothing). Expected values re-derived with the new spec oracle:
+//   - hardLevelDependenceTest: operating point depth 0.28 -> 0.6 (threshold
+//     -16 dBFS -> -27.6 dBFS) and quiet scale 0.1 -> 0.06 so the two levels
+//     still straddle the threshold; gates re-derived (loud <= -4.5 dB,
+//     quiet >= -1.0 dB, gap >= 4.5 dB; measured loud -5.74..-7.11 dB and
+//     quiet ~0.00 dB across the six rates). The old loud <= -4.0 at depth 0.28
+//     assumed the removed infinite-ratio Hard cut.
+//   - hardSuppressionTest: selectivity gap 15 dB -> 6.5 dB (measured
+//     8.10..10.94 dB across rates). The finite Hard slope (0.85 ~ 6.7:1) plus
+//     the A4 smoothing dilute a single-bin tone cut by design; the raw
+//     detector's selectivity is gated smoothing-off in selectivityContrastTest.
+//     f0 <= -6 dB and control >= -4.5 dB gates unchanged (still pass).
+//   - All other existing gates (suppressionTest, softLevelInvarianceTest,
+//     hardStabilityTest, silenceTest, rangeGatingTest,
+//     depthSharpnessMidStreamTest, reconstruction/delta/bypass/reset/ballistics)
+//     hold unchanged under the new engine at all six rates -- measured values
+//     shift (e.g. suppression f0 -26.0 -> -22.7 dB at 48 kHz) but stay well
+//     inside the existing gates, so no tolerance was touched.
+//
+// Pass B-1 re-derivation note (Mix/Delta output-stage rework: Mix moved from a
+// time-domain dry/wet blend to the spectral gain, gEff = 1 + mix*(g-1) applied in
+// processFrame; delta = dry - out). Only deltaMixIdentityTest is restructured. The
+// old bit-exact scaling gate (delta(mix) == fl(mix*delta(1)), tolerance 0) no
+// longer holds by construction: with Mix on the spectral gain, delta(m) picks up
+// the (1-m)*delta(0) reconstruction-residual term, so it is m*delta(1) +
+// (1-m)*delta(0) rather than m*delta(1). It is replaced by an affine-identity gate
+// (same 1e-12 relative spec) plus a delta(0) reconstruction-residual gate (1e-9),
+// which together catch the same regression class (a Mix-non-linked delta). At the
+// default mix=1 (used by every other test) the spectral processing is bit-identical
+// to the pre-rework engine (the mix>=1 branch applies g verbatim), so no other gate
+// moves. bypassAlignment/bypassToggle/deltaTest/reconstruction hold unchanged.
+//
+// Pass B-2 re-derivation note (Tilt + 8x overlap + Quality). The default Normal
+// quality moved from 4x to 8x overlap, so the STFT frame rate DOUBLED (hop N/4 ->
+// N/8, frameRate fs/H doubled). The physical meaning of the ballistics gates (a
+// time constant in ms) is unchanged; only the FRAME COUNT changes, because a frame
+// is now half as long. The release/attack ballistics tests measure at the true
+// engine frame stride (H = N/8) and predict with frameTime = H/Fs = 1/frameRate,
+// so the one-pole check is self-consistent at the new rate. Correspondence at
+// 48 kHz / order 11 (measure stride, gate = fast-vs-slow ordering + one-pole
+// trajectory, tolerances UNCHANGED):
+//   releaseBallisticsTest: measured per-frame recovery hops roughly double with the
+//     frame rate. hopsFast 3 -> 6 (fast release 20 ms); hopsSlow stays capped at
+//     measureHops (40) (slow release 400 ms doesn't recover within the window at
+//     either rate). predErr stays ~0 (silence target is exactly 1.0). Ordering and
+//     tolerance gates UNCHANGED.
+//   attackBallisticsTest:  hopsSlow ~14 -> 29 (slow attack 300 ms); hopsFast ~0
+//     (fast attack 5 ms converges within the window fill at either rate). predErr
+//     unchanged (~0.008). Ordering and tolerance gates UNCHANGED.
+//   depthSharpnessMidStreamTest: no frame-count expectation (a slew-bound sanity
+//     gate keyed off N, not H); it holds unchanged at 8x.
+// Two new tests: tiltBallisticsTest (per-bin time constants match the one-pole
+// formula onePoleCoeffForMs(baseMs*s(f), frameRate) and the tilt direction: at +1
+// the 8 kHz bin reacts faster, the 100 Hz bin slower) and qualityTest (per-quality
+// latency table, depth=0 reconstruction, bypass bit-transparency, and a mid-stream
+// Normal->Fast->High switch: finite, forced-dry during the refill hold, and depth=0
+// reconstruction after each switch settles). The Pass A snapshot tests
+// (envelopeNotch/selectivityContrast/gainSmoothing) keep M = 2^15 a multiple of the
+// new hop N/8 at every order (11..13 -> 256/512/1024), so their frame alignment and
+// steady-state values are unchanged.
+//
+// Pass 2A note (dual-resolution composite). Tests 18-24 gate the new
+// factory_core::MultiResSuppressor (LR4 split at 3 kHz, low band at order O,
+// high band at order O-2 / 4x frame rate, high path pre-delayed to N_L total).
+// All existing single-engine tests are UNCHANGED -- the composite is additive.
+// Its dry references are test-side twins (LinkwitzRiley is verified allpass-on-
+// sum by construction: identical class/coefficients as the implementation's
+// split, fed the same input, plus plain integer delays). Measured residuals
+// that fixed the spec values, across all six rates: depth-0 reconstruction vs
+// twin <= 4.5e-16 (spec 1e-9); delta(0) peak <= 6.7e-16 (spec 1e-9);
+// complementarity <= 1.2e-16 rel and affine <= 4.5e-16 rel (spec 1e-12 each);
+// burst spans 1.125*N_S / 0.875*N_L -> ratio 0.321 (spec window [0.18, 0.42]);
+// crossover suppression -19.6..-24.5 dB, diff <= 1.83 dB (spec >= 15 dB /
+// <= 4 dB); mid-switch settled residual <= 4.5e-16 (spec 1e-9).
 //
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
@@ -58,11 +210,14 @@
 // gates exercise the real high-rate path.
 //
 #include "factory_core/FFT.h"
+#include "factory_core/LinkwitzRiley.h"
+#include "factory_core/MultiResSuppressor.h"
 #include "factory_core/ReductionProfile.h"
 #include "factory_core/ResonanceSuppressor.h"
 #include "factory_core/StftResolution.h"
 #include "factory_core/testing/DspInvariants.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -293,25 +448,39 @@ namespace
         std::printf ("  ok (N=%d settle=%d tOn=%d tOff=%d M=%d)\n", N, settle, tOn, tOff, M);
     }
 
-    // Delta must monitor exactly what Mix removes: out_delta = mix*(dry-wet), the
-    // exact IEEE sign inversion of the normal path's blend term mix*(wet-dry).
-    // Two gates on twin engines (identical config/input, delta=false vs true):
-    //  (i) Complementarity: out_normal[n] + out_delta[n] reconstructs the
-    //      latency-aligned dry, computed test-side from the raw input history
-    //      (not the engine). The identity is exact in real arithmetic; in IEEE
-    //      doubles the normal path's outer add rounds once, so the sum can miss
-    //      the dry by one rounding (2Sum non-identity). The 1e-12 relative
-    //      tolerance is the spec value from the approved rework plan: it absorbs
-    //      that <= 1 ULP residual (measured max 2.22e-16 across all rates and
-    //      mixes) with margin, while the bug it gates -- an unscaled full-range
-    //      delta -- leaves ~(1-mix)*|dry-wet|, many orders larger, and fails hard.
-    // (ii) Exact Mix scaling, tolerance zero: out_delta(mix)[n] ==
-    //      fl(mix * out_delta(1)[n]) bit-exactly. Mix feeds no STFT state, so
-    //      both sides are the same single multiply on the same dry-wet
-    //      difference (at mix=1 the delta output is exactly fl(dry-wet)).
+    // Delta must monitor exactly what Mix removes. Mix now rides the spectral gain
+    // (gEff = 1 + mix*(g-1), applied in processFrame), so the OLA ring holds the
+    // Mix-scaled output and the delta output is that removed signal literally:
+    // delta(m)[n] = dry[n] - out(m)[n]. Because gEff is affine in mix and the
+    // STFT/OLA is linear, out(m) = (1-m)*out(0) + m*out(1); hence in exact
+    // arithmetic delta(m) = m*delta(1) + (1-m)*delta(0), where delta(1) = dry -
+    // full_wet (the removed signal at Mix=1) and delta(0) = dry - dry_recon (the
+    // STFT reconstruction residual, ~0). Three gates on twin engines (identical
+    // config/input, delta=false vs true), mix in {0, 0.3, 0.8, 1}, all six rates:
+    //  (i) Complementarity: out_normal[n] + out_delta[n] reconstructs the latency-
+    //      aligned dry (test-side N delay). delta = dry - out makes this one IEEE
+    //      rounding from exact (2Sum non-identity); the 1e-12 relative spec
+    //      tolerance absorbs that <= 1 ULP residual with margin, while an unscaled
+    //      full-range delta leaves ~(1-mix)*|dry-wet| and fails hard.
+    // (ii) Affine identity: |delta(m) - (m*delta(1) + (1-m)*delta(0))| <=
+    //      1e-12*max(1,|dry|). This REPLACES the old bit-exact scaling gate
+    //      (delta(mix) == fl(mix*delta(1)), tolerance 0): now that Mix rides the
+    //      spectral gain, delta(m) carries the (1-m)*delta(0) reconstruction-
+    //      residual term, so it equals m*delta(1) + (1-m)*delta(0), not m*delta(1)
+    //      -- bit identity no longer holds by definition. The affine identity is
+    //      exact in real arithmetic; the 1e-12 spec value absorbs the FFT rounding
+    //      accumulation (~1e-15 relative). delta(1)/delta(0) are measured from
+    //      dedicated twins. It catches the same class the old gate did (a Mix-non-
+    //      linked delta): a delta that does not scale affinely with Mix fails here.
+    // (iii) Reconstruction residual: peakAbs(delta(0)) over the steady state
+    //      (n >= 2N, as reconstructionTest windows) <= 1e-9. delta(0) is the STFT
+    //      OLA reconstruction residual; a Mix-ignoring full-range delta would leave
+    //      the whole removed signal (~O(0.1)) here and fail hard -- this is the
+    //      gate that pins the m=0 endpoint of the affine identity to "nothing
+    //      removed", so (ii)+(iii) together forbid a delta that ignores Mix.
     void deltaMixIdentityTest (double Fs)
     {
-        std::printf ("Delta-Mix identity (complementarity + exact scaling) @ Fs=%.0f\n", Fs);
+        std::printf ("Delta-Mix identity (complementarity + affine + reconstruction) @ Fs=%.0f\n", Fs);
         const int N = 1 << orderFor (Fs);
         const int M = std::max (1 << 14, 4 * N);
         std::mt19937 rng (41);
@@ -321,30 +490,46 @@ namespace
 
         auto cfg = [] (factory_core::ResonanceSuppressor& s) { s.setDepth (1.2); s.setSharpness (0.5); };
 
-        // Reference removed signal: delta at mix=1 outputs exactly fl(dry-wet).
-        std::vector<double> refL ((size_t) M), refR ((size_t) M);
+        // Reference removed signals from dedicated delta twins: delta(1) = dry -
+        // full_wet (the actual removed signal at Mix=1), delta(0) = dry - dry_recon
+        // (the STFT reconstruction residual). Input is mono into both channels and
+        // detection is stereo-linked, so L==R exactly; capture the L channel.
+        auto renderDelta = [&] (double m)
         {
-            factory_core::ResonanceSuppressor d1;
-            d1.prepare (Fs, orderFor (Fs)); cfg (d1); d1.setDelta (true); d1.setMix (1.0);
+            factory_core::ResonanceSuppressor d;
+            d.prepare (Fs, orderFor (Fs)); cfg (d); d.setDelta (true); d.setMix (m);
+            std::vector<double> out ((size_t) M);
             for (int n = 0; n < M; ++n)
             {
                 double l = x[(size_t) n], r = x[(size_t) n];
-                d1.process (l, r);
-                refL[(size_t) n] = l; refR[(size_t) n] = r;
+                d.process (l, r);
+                out[(size_t) n] = l;
             }
-        }
+            return out;
+        };
+        const auto delta1 = renderDelta (1.0);
+        const auto delta0 = renderDelta (0.0);
+
         // Sanity: the gates below must act on a real removed signal, not silence.
-        if (factory_core::testing::peakAbs (refL) < 1.0e-3)
+        if (factory_core::testing::peakAbs (delta1) < 1.0e-3)
             fail ("delta reference carries no removed signal (vacuous gate) at Fs=" + std::to_string (Fs));
 
-        double maxRel = 0.0;
+        // (iii) delta(0) is the OLA reconstruction residual in the steady state
+        // (skip the first 2N of window fill-in, matching reconstructionTest).
+        double reconResidual = 0.0;
+        for (int n = 2 * N; n < M; ++n) reconResidual = std::max (reconResidual, std::abs (delta0[(size_t) n]));
+        if (reconResidual > 1.0e-9)
+            fail ("delta(0) reconstruction residual too large: " + std::to_string (reconResidual)
+                  + " (spec 1e-9) at Fs=" + std::to_string (Fs));
+
+        double maxRel = 0.0, maxAffine = 0.0;
         for (double m : { 0.0, 0.3, 0.8, 1.0 })
         {
             factory_core::ResonanceSuppressor nrm, del;
             nrm.prepare (Fs, orderFor (Fs)); cfg (nrm); nrm.setMix (m);
             del.prepare (Fs, orderFor (Fs)); cfg (del); del.setMix (m); del.setDelta (true);
 
-            bool badSum = false, badScale = false;
+            bool badSum = false, badAffine = false;
             for (int n = 0; n < M; ++n)
             {
                 double ln = x[(size_t) n], rn = x[(size_t) n];
@@ -352,9 +537,10 @@ namespace
                 nrm.process (ln, rn);
                 del.process (ld, rd);
 
-                // (i) complementarity vs the test-side aligned dry (first N: ring zeros).
-                const double dryAligned = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+                const double dryAligned = (n >= N) ? x[(size_t) (n - N)] : 0.0; // first N: ring zeros
                 const double scale = std::max (1.0, std::abs (dryAligned));
+
+                // (i) complementarity vs the test-side aligned dry.
                 const double res = std::max (std::abs (ln + ld - dryAligned), std::abs (rn + rd - dryAligned));
                 maxRel = std::max (maxRel, res / scale);
                 if (! badSum && res > 1.0e-12 * scale)
@@ -364,16 +550,21 @@ namespace
                           + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
                     badSum = true;
                 }
-                // (ii) exact Mix scaling of the delta output (tolerance zero).
-                if (! badScale && (ld != m * refL[(size_t) n] || rd != m * refR[(size_t) n]))
+                // (ii) affine identity: delta(m) == m*delta(1) + (1-m)*delta(0).
+                const double affineRef = m * delta1[(size_t) n] + (1.0 - m) * delta0[(size_t) n];
+                const double affRes = std::max (std::abs (ld - affineRef), std::abs (rd - affineRef));
+                maxAffine = std::max (maxAffine, affRes / scale);
+                if (! badAffine && affRes > 1.0e-12 * scale)
                 {
-                    fail ("delta(mix) != mix*delta(1) at n=" + std::to_string (n)
-                          + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
-                    badScale = true;
+                    char resStr[32]; std::snprintf (resStr, sizeof (resStr), "%.2e", affRes);
+                    fail ("delta(mix) != m*delta(1)+(1-m)*delta(0) (res " + std::string (resStr) + ") at n="
+                          + std::to_string (n) + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
+                    badAffine = true;
                 }
             }
         }
-        std::printf ("  maxRelResidual=%.2e (spec tol 1e-12), scaling exact\n", maxRel);
+        std::printf ("  maxRelResidual=%.2e affineRel=%.2e reconResidual=%.2e (spec 1e-12 / 1e-12 / 1e-9)\n",
+                     maxRel, maxAffine, reconResidual);
     }
 
     void suppressionTest (double Fs)
@@ -556,6 +747,372 @@ namespace
         return 20.0 * std::log10 (magAt (wet, a, b, f0, Fs) / magAt (dry, a, b, f0, Fs));
     }
 
+    // ---- Pass A spec oracle -------------------------------------------------
+    // Independent implementation of the detection -> reduction spec (A1..A4),
+    // written from the spec formulas -- it never calls into ResonanceSuppressor.
+    // factory_core::FFT is used for the analysis only (independently verified by
+    // fftTest above, like the rest of this file). The oracle evaluates ONE
+    // analysis frame; the tests below feed the engine a signal whose length M is
+    // a multiple of the hop H (so the engine's LAST frame is exactly
+    // x[M-N .. M-1]) and use near-instant ballistics, making the engine's
+    // reductionDb() equal to that frame's target (the ballistics themselves are
+    // gated separately by release/attackBallisticsTest).
+
+    struct SpecDetector
+    {
+        int    mode        = 0;          // 0 = Soft, 1 = Hard
+        double depth       = 1.0;
+        double selectivity = 0.5;        // engine default
+        double sharpOct    = 0.5;        // engine default envelope half-width
+        double smoothOct   = 1.0 / 12.0; // engine default reduction smoothing
+    };
+
+    // Spec A2 soft-knee excess: 0 below T-W/2, quadratic spline through the
+    // knee, x-T above T+W/2.
+    double specKneeOver (double x, double T, double W)
+    {
+        if (x - T <= -0.5 * W) return 0.0;
+        if (x - T >=  0.5 * W) return x - T;
+        const double t = x - T + 0.5 * W;
+        return t * t / (2.0 * W);
+    }
+
+    // Per-bin reduction target (dB) of one Hann analysis frame
+    // x[frameStart .. frameStart+N-1], per spec A1 (log-mean envelope with
+    // self-excluding notch), A2/A3 (soft-knee contrast / finite Hard slope) and
+    // A4 (two cascaded variable-width box passes on redDb).
+    std::vector<double> specReductionOracle (const std::vector<double>& x, int frameStart,
+                                             double Fs, int order, const SpecDetector& p)
+    {
+        const int N = 1 << order, half = N / 2;
+        factory_core::FFT fft; fft.prepare (order);
+        std::vector<cd> spec ((size_t) N);
+        for (int k = 0; k < N; ++k)
+        {
+            const double w = 0.5 - 0.5 * std::cos (2.0 * kPi * k / N); // Hann
+            spec[(size_t) k] = cd (x[(size_t) (frameStart + k)] * w, 0.0);
+        }
+        fft.forward (spec.data());
+
+        // A1: log magnitude, prefix sum, log-mean envelope with the central
+        // notch [k/nf, k*nf] (nf = wf^(1/4)) excluded; whole-window fallback
+        // when the window is tiny or the notch leaves fewer than 4 bins.
+        std::vector<double> L ((size_t) (half + 1)), pfx ((size_t) (half + 2)), env ((size_t) (half + 1));
+        pfx[0] = 0.0;
+        for (int k = 0; k <= half; ++k)
+        {
+            L[(size_t) k] = std::log (std::abs (spec[(size_t) k]) + 1.0e-12);
+            pfx[(size_t) (k + 1)] = pfx[(size_t) k] + L[(size_t) k];
+        }
+        const double wf = std::pow (2.0, p.sharpOct), nf = std::pow (wf, 0.25);
+        for (int k = 0; k <= half; ++k)
+        {
+            const int lo  = std::clamp ((int) std::floor (k / wf), 0, half);
+            const int hi  = std::clamp ((int) std::ceil  (k * wf), lo, half);
+            const int loN = std::clamp ((int) std::floor (k / nf), lo, hi);
+            const int hiN = std::clamp ((int) std::ceil  (k * nf), loN, hi);
+            const int  wc = hi - lo + 1, nc = hiN - loN + 1;
+            const double ws = pfx[(size_t) (hi + 1)] - pfx[(size_t) lo];
+            if (wc <= 6 || wc - nc < 4)
+                env[(size_t) k] = ws / (double) wc;
+            else
+                env[(size_t) k] = (ws - (pfx[(size_t) (hiN + 1)] - pfx[(size_t) loN])) / (double) (wc - nc);
+        }
+
+        // A2/A3: excess -> reduction. Spec constants: floor -80 dBFS (full-scale
+        // sine bin = N/4), T(s) = 1+5s, W(s) = 6-4s, Hard threshold sweep
+        // -6..-60 dBFS over depth 0..1.5, Hard slope 0.85 through a 6 dB knee,
+        // -48 dB clamp, default range 20 Hz .. 20 kHz.
+        const double floorMag = 0.25 * (double) N * std::pow (10.0, -80.0 / 20.0);
+        const double T = 1.0 + 5.0 * p.selectivity, W = 6.0 - 4.0 * p.selectivity;
+        const int lowBin  = std::clamp ((int) std::round (20.0    * N / Fs), 1, half);
+        const int highBin = std::clamp ((int) std::round (20000.0 * N / Fs), 1, half);
+        std::vector<double> red ((size_t) (half + 1), 0.0);
+        for (int k = 0; k <= half; ++k)
+        {
+            const double mk = std::abs (spec[(size_t) k]);
+            if (k < lowBin || k > highBin || p.depth <= 0.0 || mk <= floorMag) continue;
+            const double exDb = (L[(size_t) k] - env[(size_t) k]) * (20.0 / std::log (10.0));
+            double rd = 0.0;
+            if (p.mode == 0)
+                rd = -p.depth * specKneeOver (exDb, T, W);
+            else
+            {
+                const double magDb = 20.0 * std::log10 ((mk + 1.0e-12) / (0.25 * (double) N));
+                const double d     = std::clamp (p.depth / 1.5, 0.0, 1.0);
+                const double thr   = -6.0 + d * (-60.0 + 6.0);
+                if (specKneeOver (exDb, T, W) > 0.0)
+                    rd = -0.85 * specKneeOver (magDb - thr, 0.0, 6.0);
+            }
+            red[(size_t) k] = std::max (rd, -48.0);
+        }
+
+        // A4: two cascaded variable-width box averages on redDb, half-width
+        // h_k = max(1, round(k * (2^(oct/2) - 1))), edges clamped to [0, half]
+        // and renormalised by the actual bin count. oct = 0 bypasses.
+        if (p.smoothOct > 0.0)
+        {
+            const double fac = std::pow (2.0, 0.5 * p.smoothOct) - 1.0;
+            for (int pass = 0; pass < 2; ++pass)
+            {
+                pfx[0] = 0.0;
+                for (int k = 0; k <= half; ++k) pfx[(size_t) (k + 1)] = pfx[(size_t) k] + red[(size_t) k];
+                for (int k = 0; k <= half; ++k)
+                {
+                    const int h  = std::max (1, (int) std::lround (k * fac));
+                    const int lo = std::max (0, k - h), hi = std::min (half, k + h);
+                    red[(size_t) k] = (pfx[(size_t) (hi + 1)] - pfx[(size_t) lo]) / (double) (hi - lo + 1);
+                }
+            }
+        }
+        return red;
+    }
+
+    // Drive the engine over x (mono -> both channels) with near-instant
+    // ballistics and return the converged per-bin reductionDb() snapshot. x.size()
+    // must be a multiple of the hop (N/4) so the last frame is x[M-N .. M-1].
+    std::vector<double> engineReductionSnapshot (const std::vector<double>& x, double Fs,
+                                                 int order, const SpecDetector& p)
+    {
+        factory_core::ResonanceSuppressor s;
+        s.prepare (Fs, order);
+        s.setMode (p.mode); s.setDepth (p.depth); s.setSelectivity (p.selectivity);
+        s.setSharpness (p.sharpOct); s.setSmoothingWidth (p.smoothOct);
+        s.setTimes (0.01, 0.01); // coeff underflows to 0: gain == last frame's target
+        for (size_t n = 0; n < x.size(); ++n) { double l = x[n], r = x[n]; s.process (l, r); }
+        const double* rd = s.reductionDb();
+        return std::vector<double> (rd, rd + s.numBins());
+    }
+
+    // Deterministic floor for the selectivity test: bin-aligned sines with
+    // golden-ratio-scrambled fixed phases (no seed, no run-to-run variance; a
+    // time shift by any hop leaves every bin magnitude unchanged, so all frames
+    // are identical and the steady state is exact).
+    template <typename AmpFn>
+    std::vector<double> combSignal (int order, int M, AmpFn amp)
+    {
+        const int N = 1 << order;
+        std::vector<double> x ((size_t) M, 0.0);
+        for (int k = 1; k <= N / 2; ++k)
+        {
+            const double a = amp (k);
+            if (a <= 0.0) continue;
+            const double ph = 2.0 * kPi * std::fmod (0.6180339887498949 * k, 1.0);
+            const double w  = 2.0 * kPi * k / (double) N; // bin-aligned (k * Fs / N Hz)
+            for (int n = 0; n < M; ++n) x[(size_t) n] += a * std::sin (w * n + ph);
+        }
+        return x;
+    }
+
+    // A test signal length that is a multiple of the hop N/4 at every standard
+    // order (11..13 -> hop 512..2048) and >= 4N at the top order.
+    constexpr int kSnapshotLen = 1 << 15;
+
+    // Pass A / A1: the self-excluding log-envelope must detect two equal
+    // resonances 1/3 octave apart over a noise floor. Each peak sits inside the
+    // other's envelope window, so the old linear-amplitude mean (no notch) let
+    // the pair lift each other's baseline and mask both: an old-spec oracle
+    // (linear mean, no notch, hard 3 dB gate, same smoothing) measures only
+    // -5.25..-6.44 dB here across rates and would fail the >= 8 dB gate below.
+    // The new spec detects -10.77..-14.61 dB (calibrated across all six rates;
+    // engine == oracle to < 1e-14 dB). Spec values, fixed from the oracle:
+    // both peaks <= -8 dB, |difference| <= 4 dB, engine-vs-oracle <= 0.5 dB.
+    // The noise sigma scales with sqrt(N/2048) so the bin-domain tone/noise
+    // ratio (tone bin ~ N, noise bin ~ sigma*sqrt(N)) is rate-invariant.
+    void envelopeNotchTest (double Fs)
+    {
+        std::printf ("Envelope notch (two peaks 1/3 oct apart) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const double f1 = alignedFreq (Fs, 2000.0);
+        const double f2 = alignedFreq (Fs, 2000.0 * std::pow (2.0, 1.0 / 3.0));
+        const int k1 = (int) std::round (f1 * N / Fs), k2 = (int) std::round (f2 * N / Fs);
+
+        const double sigma = 0.05 * std::sqrt ((double) N / 2048.0);
+        std::mt19937 rng (19);
+        std::normal_distribution<double> g (0.0, sigma);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * f1 * n / Fs)
+                                    + 0.4 * std::sin (2.0 * kPi * f2 * n / Fs);
+
+        SpecDetector p; p.depth = 0.8;
+        const auto eng = engineReductionSnapshot (x, Fs, order, p);
+        const auto orc = specReductionOracle (x, M - N, Fs, order, p);
+
+        for (int k : { k1, k2 })
+            if (std::abs (eng[(size_t) k] - orc[(size_t) k]) > 0.5)
+                fail ("envelope notch: engine != spec oracle at bin " + std::to_string (k)
+                      + ": eng " + std::to_string (eng[(size_t) k]) + " orc " + std::to_string (orc[(size_t) k])
+                      + " at Fs=" + std::to_string (Fs));
+        if (eng[(size_t) k1] > -8.0 || eng[(size_t) k2] > -8.0)
+            fail ("envelope notch: mutual masking (a peak under-detected, want <= -8 dB): k1 "
+                  + std::to_string (eng[(size_t) k1]) + " k2 " + std::to_string (eng[(size_t) k2])
+                  + " at Fs=" + std::to_string (Fs));
+        if (std::abs (eng[(size_t) k1] - eng[(size_t) k2]) > 4.0)
+            fail ("envelope notch: equal peaks treated unequally (> 4 dB apart): k1 "
+                  + std::to_string (eng[(size_t) k1]) + " k2 " + std::to_string (eng[(size_t) k2])
+                  + " at Fs=" + std::to_string (Fs));
+        std::printf ("  red k1=%.2f dB k2=%.2f dB (spec: both <= -8, diff <= 4)\n",
+                     eng[(size_t) k1], eng[(size_t) k2]);
+    }
+
+    // Pass A / A2: the Selectivity contrast law T(s) = 1+5s dB / W(s) = 6-4s dB,
+    // on a deterministic comb floor (bins [kf/1.6, kf*1.6], amp 0.003) plus a
+    // tone at kf ~ 2 kHz. Engine must match the spec oracle at s in {0, 0.5, 1}
+    // both with the default smoothing and with smoothing off (tolerance
+    // max(0.05 dB, 3% of the oracle value) -- the spec "a few percent" bound;
+    // measured agreement < 1e-14 dB). Formula-independent invariants, smoothing
+    // off so no neighbour bins mix in:
+    //  - HOT peak (20x floor -> excess ~21.9 dB, linear knee branch, unclamped):
+    //    reduction shifts by exactly depth*2.5 dB from s=0 to 0.5 and depth*5 dB
+    //    from s=0 to 1 (T moves 1 -> 3.5 -> 6 dB) -- calibrated 2.5000 / 5.0000.
+    //  - WEAK peak (1x floor on top of it -> excess 3.95 dB, inside the knee):
+    //    reduction decreases monotonically in s (calibrated -2.949 / -0.750 /
+    //    0.000 at depth 1) and is fully gated at s=1 (excess < T(1)-W(1)/2 = 5).
+    void selectivityContrastTest (double Fs)
+    {
+        std::printf ("Selectivity contrast (soft-knee T/W law) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const int kf = (int) std::round (2000.0 * N / Fs);
+        const int jlo = (int) std::ceil (kf / 1.6), jhi = (int) std::floor (kf * 1.6);
+        const double b = 0.003;
+
+        auto redAt = [&] (const std::vector<double>& x, double sel, double smoothOct, double& orcOut)
+        {
+            SpecDetector p; p.depth = 1.0; p.selectivity = sel; p.smoothOct = smoothOct;
+            const auto eng = engineReductionSnapshot (x, Fs, order, p);
+            const auto orc = specReductionOracle (x, M - N, Fs, order, p);
+            orcOut = orc[(size_t) kf];
+            return eng[(size_t) kf];
+        };
+        auto checkOracle = [&] (double eng, double orc, const char* what, double sel)
+        {
+            if (std::abs (eng - orc) > std::max (0.05, 0.03 * std::abs (orc)))
+                fail ("selectivity: engine != spec oracle (" + std::string (what) + ", s="
+                      + std::to_string (sel) + "): eng " + std::to_string (eng) + " orc "
+                      + std::to_string (orc) + " at Fs=" + std::to_string (Fs));
+        };
+
+        // HOT: tone 20x the floor on top of it (bin amp 21b, same phase) ->
+        // linear knee branch at every s.
+        {
+            const auto x = combSignal (order, M, [&] (int k) {
+                if (k < jlo || k > jhi) return 0.0;
+                return (k == kf) ? 21.0 * b : b;
+            });
+            double e[3], o[3];
+            int i = 0;
+            for (double sel : { 0.0, 0.5, 1.0 })
+            {
+                e[i] = redAt (x, sel, 0.0, o[i]);              // smoothing off
+                checkOracle (e[i], o[i], "hot/off", sel);
+                double oSm = 0.0;
+                const double eSm = redAt (x, sel, 1.0 / 12.0, oSm); // default smoothing
+                checkOracle (eSm, oSm, "hot/smooth", sel);
+                ++i;
+            }
+            if (e[0] > -15.0 || e[0] < -40.0)
+                fail ("selectivity: hot peak not in the unclamped linear branch: red(s=0) "
+                      + std::to_string (e[0]) + " at Fs=" + std::to_string (Fs));
+            if (std::abs ((e[1] - e[0]) - 2.5) > 0.1)
+                fail ("selectivity: T(s) sweep s0->s0.5 != depth*2.5 dB: "
+                      + std::to_string (e[1] - e[0]) + " at Fs=" + std::to_string (Fs));
+            if (std::abs ((e[2] - e[0]) - 5.0) > 0.1)
+                fail ("selectivity: T(s) sweep s0->s1 != depth*5 dB: "
+                      + std::to_string (e[2] - e[0]) + " at Fs=" + std::to_string (Fs));
+            std::printf ("  hot  red(s)=(%.2f, %.2f, %.2f) dB (deltas %.4f / %.4f, expect 2.5 / 5)\n",
+                         e[0], e[1], e[2], e[1] - e[0], e[2] - e[0]);
+        }
+
+        // WEAK: tone equal to the floor on top of it -> excess ~3.95 dB.
+        {
+            const auto x = combSignal (order, M, [&] (int k) {
+                if (k < jlo || k > jhi) return 0.0;
+                return (k == kf) ? 2.0 * b : b;
+            });
+            double e[3], o[3];
+            int i = 0;
+            for (double sel : { 0.0, 0.5, 1.0 })
+            {
+                e[i] = redAt (x, sel, 0.0, o[i]);
+                checkOracle (e[i], o[i], "weak/off", sel);
+                double oSm = 0.0;
+                const double eSm = redAt (x, sel, 1.0 / 12.0, oSm);
+                checkOracle (eSm, oSm, "weak/smooth", sel);
+                ++i;
+            }
+            // Monotone decreasing reduction with s (calibrated margins 2.20 and
+            // 0.75 dB at depth 1); fully gated at max selectivity.
+            if (e[0] > e[1] - 1.5)
+                fail ("selectivity: weak peak reduction not decreasing s0->s0.5: "
+                      + std::to_string (e[0]) + " vs " + std::to_string (e[1]) + " at Fs=" + std::to_string (Fs));
+            if (e[1] > e[2] - 0.4)
+                fail ("selectivity: weak peak reduction not decreasing s0.5->s1: "
+                      + std::to_string (e[1]) + " vs " + std::to_string (e[2]) + " at Fs=" + std::to_string (Fs));
+            if (e[2] < -0.2)
+                fail ("selectivity: weak (~4 dB excess) peak not gated at s=1: "
+                      + std::to_string (e[2]) + " at Fs=" + std::to_string (Fs));
+            std::printf ("  weak red(s)=(%.3f, %.3f, %.3f) dB (monotone, ~0 at s=1)\n", e[0], e[1], e[2]);
+        }
+    }
+
+    // Pass A / A4: frequency-domain gain smoothing. A steady bin-aligned sine
+    // puts a 3-bin -48 dB block into the raw reduction target; the converged
+    // engine curve must equal the spec oracle on EVERY bin (spec tolerance
+    // 0.5 dB; measured < 2e-15), with the default smoothing and, via
+    // setSmoothingWidth(0), without it. With smoothing on, the adjacent-bin
+    // step must stay under the 7 dB spec cap (calibrated max 5.76 dB across
+    // rates); without it the raw -48 dB single-bin cliff (48 dB step) must be
+    // present -- proving the cap gate is not vacuous.
+    void gainSmoothingTest (double Fs)
+    {
+        std::printf ("Gain smoothing (2-pass box vs oracle) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, half = N / 2, M = kSnapshotLen;
+        const double f0 = alignedFreq (Fs, 2000.0);
+        const int kf = (int) std::round (f0 * N / Fs);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        SpecDetector sm;  sm.depth = 1.2;              // default smoothing 1/12 oct
+        SpecDetector raw = sm; raw.smoothOct = 0.0;    // smoothing bypassed
+        const auto engS = engineReductionSnapshot (x, Fs, order, sm);
+        const auto orcS = specReductionOracle (x, M - N, Fs, order, sm);
+        const auto engR = engineReductionSnapshot (x, Fs, order, raw);
+        const auto orcR = specReductionOracle (x, M - N, Fs, order, raw);
+
+        double errS = 0.0, errR = 0.0;
+        for (int k = 0; k <= half; ++k)
+        {
+            errS = std::max (errS, std::abs (engS[(size_t) k] - orcS[(size_t) k]));
+            errR = std::max (errR, std::abs (engR[(size_t) k] - orcR[(size_t) k]));
+        }
+        if (errS > 0.5)
+            fail ("gain smoothing: engine != spec oracle (smoothed) by " + std::to_string (errS)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (errR > 0.5)
+            fail ("gain smoothing: setSmoothingWidth(0) != unsmoothed oracle by " + std::to_string (errR)
+                  + " dB at Fs=" + std::to_string (Fs));
+
+        auto maxAdj = [half] (const std::vector<double>& v)
+        {
+            double m = 0.0;
+            for (int k = 1; k <= half; ++k) m = std::max (m, std::abs (v[(size_t) k] - v[(size_t) (k - 1)]));
+            return m;
+        };
+        const double adjS = maxAdj (engS), adjR = maxAdj (engR);
+        if (adjS > 7.0)
+            fail ("gain smoothing: adjacent-bin step above the 7 dB spec cap: " + std::to_string (adjS)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (adjR < 40.0)
+            fail ("gain smoothing: raw single-bin cliff missing (cap gate would be vacuous): "
+                  + std::to_string (adjR) + " dB at Fs=" + std::to_string (Fs));
+        if (engS[(size_t) kf] > -10.0)
+            fail ("gain smoothing: cut did not survive smoothing at kf: " + std::to_string (engS[(size_t) kf])
+                  + " dB at Fs=" + std::to_string (Fs));
+        std::printf ("  allBinErr sm=%.2e raw=%.2e  maxAdj sm=%.2f raw=%.2f  red[kf]=%.2f\n",
+                     errS, errR, adjS, adjR, engS[(size_t) kf]);
+    }
+
     // Soft mode uses an adaptive threshold, so its reduction is invariant to input
     // level: the SAME resonance is cut by the SAME dB whether the signal is at
     // 0 dB or −12 dB. This is the defining property of the frequency-dependent
@@ -578,19 +1135,25 @@ namespace
     // Hard mode reacts to absolute level: Depth sets an absolute threshold, so the
     // same resonance is cut hard when it sits above the threshold (loud) and left
     // essentially alone when it drops below it (quiet). This is the defining
-    // property of the level-dependent (Hard) mode. Depth ~0.28 puts the threshold
-    // near −16 dBFS, between the loud (−6 dBFS) and quiet (−26 dBFS) resonance.
+    // property of the level-dependent (Hard) mode. Depth 0.6 puts the threshold
+    // near −27.6 dBFS, between the loud (−6 dBFS) and quiet (−30.5 dBFS)
+    // resonance. Pass A re-derivation: the Hard cut is now finite-slope
+    // (0.85 * 6 dB-knee of the excess over the threshold, ~6.7:1) and the
+    // reduction is smoothed across frequency, so a single-bin tone's observable
+    // cut is intentionally shallower than the old infinite-ratio spec; operating
+    // point and gates re-derived with the new spec oracle (measured across all
+    // six rates: loud −5.74..−7.11 dB, quiet −0.00..−0.001 dB).
     void hardLevelDependenceTest (double Fs)
     {
         std::printf ("Hard mode level dependence @ Fs=%.0f\n", Fs);
         const double f0 = alignedFreq (Fs, 2000.0);
-        const double loud  = resonanceReductionDb (Fs, f0, 1, 0.28, 1.0);  // −6 dBFS peak
-        const double quiet = resonanceReductionDb (Fs, f0, 1, 0.28, 0.1);  // −26 dBFS peak
-        if (loud > -4.0)
+        const double loud  = resonanceReductionDb (Fs, f0, 1, 0.6, 1.0);   // −6 dBFS peak
+        const double quiet = resonanceReductionDb (Fs, f0, 1, 0.6, 0.06);  // −30.5 dBFS peak
+        if (loud > -4.5)
             fail ("Hard: loud resonance not suppressed: " + std::to_string (loud) + " dB");
-        if (quiet < -1.5)
+        if (quiet < -1.0)
             fail ("Hard: quiet resonance should be nearly untouched: " + std::to_string (quiet) + " dB");
-        if (quiet - loud < 4.0)
+        if (quiet - loud < 4.5)
             fail ("Hard mode not level-dependent: loud " + std::to_string (loud)
                   + " dB vs quiet " + std::to_string (quiet) + " dB at Fs=" + std::to_string (Fs));
         std::printf ("  redF0 loud=%.2f dB  quiet=%.2f dB (expect loud << quiet)\n", loud, quiet);
@@ -598,7 +1161,12 @@ namespace
 
     // Hard mode must still be a *resonance* suppressor, not a broadband gate: a hot
     // resonance is cut hard while a resonance-free control band is left broadly
-    // intact (selectivity), measured with an independent DFT.
+    // intact (selectivity), measured with an independent DFT. Pass A
+    // re-derivation: the finite Hard slope + the A4 frequency smoothing dilute a
+    // single-bin tone's cut by design, so the f0-vs-control selectivity gap spec
+    // moves 15 dB -> 6.5 dB (measured 8.10..10.94 dB across the six rates); the
+    // raw detector's selectivity is gated smoothing-off in
+    // selectivityContrastTest. The f0 and control gates are unchanged.
     void hardSuppressionTest (double Fs)
     {
         std::printf ("Hard suppression + selectivity @ Fs=%.0f\n", Fs);
@@ -627,7 +1195,7 @@ namespace
             fail ("Hard: resonance at f0 not suppressed (>=6 dB): " + std::to_string (f0Db) + " dB");
         if (ctrlDb < -4.5)
             fail ("Hard: control band over-attenuated (not selective): " + std::to_string (ctrlDb) + " dB");
-        if (f0Db > ctrlDb - 15.0)
+        if (f0Db > ctrlDb - 6.5)
             fail ("Hard: not selective: f0 " + std::to_string (f0Db) + " dB vs control " + std::to_string (ctrlDb) + " dB");
         std::printf ("  f0 %.1f dB   control %.1f dB (broadband)\n", f0Db, ctrlDb);
     }
@@ -743,7 +1311,7 @@ namespace
         std::printf ("Release ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
         const int order = orderFor (Fs);
         const int N = 1 << order;
-        const int H = N / 4;
+        const int H = N / 8; // Normal quality = 8x overlap (hop N/8); B2-2 doubled the frame rate
         const double f0 = alignedFreq (Fs, 2000.0);
         const int kf = (int) std::round (f0 * (double) N / Fs);
         const double atkMs = 2.0; // fast & common to both runs: fully converged before switch-off
@@ -852,7 +1420,7 @@ namespace
         std::printf ("Attack ballistics (fast vs slow, one-pole check) @ Fs=%.0f\n", Fs);
         const int order = orderFor (Fs);
         const int N = 1 << order;
-        const int H = N / 4;
+        const int H = N / 8; // Normal quality = 8x overlap (hop N/8); B2-2 doubled the frame rate
         const double f0 = alignedFreq (Fs, 2000.0);
         const int kf = (int) std::round (f0 * (double) N / Fs);
         const double relMs = 50.0; // fixed release; irrelevant while the attack branch is active
@@ -1066,6 +1634,1222 @@ namespace
                      peak, baseline, transition, bound);
     }
 
+    // Pass B-2 / B2-1: per-bin ballistics with frequency Tilt. Tilt scales each
+    // bin's time constant by s(f) = (f/1kHz)^(-Tilt*log10 4) about a 1 kHz pivot, so
+    // Tilt +1 makes highs 4x faster and lows 4x slower. Measured on the RELEASE
+    // (tone -> silence, so once the analysis window is flushed the target is exactly
+    // 1.0 and the smoother is a clean one-pole g[m] = c^m*(g0-1)+1). The oracle is
+    // the spec formula onePoleCoeffForMs(clamp(baseMs*s(f_k), 0.05, 5000), frameRate)
+    // computed test-side from the bin's exact frequency f_k = k*Fs/N -- it never
+    // reads the engine's coefficient array. Two gates per (freq, tilt): (i) the
+    // measured recovery trajectory matches the one-pole prediction (predErr <= tol),
+    // and (ii) direction -- at Tilt +1 the 8 kHz bin recovers in FEWER hops than at
+    // Tilt 0 and the 100 Hz bin in MORE (mirror at Tilt -1). baseRelMs is slow enough
+    // that every tilted time constant stays longer than the N/H = 8-hop window fill,
+    // so the flushed one-pole is clean.
+    void tiltBallisticsTest (double Fs)
+    {
+        std::printf ("Tilt ballistics (per-bin time constants) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, H = N / 8; // Normal 8x
+        const double baseAtkMs = 5.0;    // fast attack: converges well before the switch-off
+        const double baseRelMs = 200.0;  // slow-ish release: the quantity actually measured
+        const int flushHops = N / H + 2; // flush the tone out of the window before target == 1
+        const double kExp = 0.60205999132796239; // log10(4)
+        auto sOf = [kExp] (double f, double t) { return std::pow (f / 1000.0, -t * kExp); };
+
+        struct Meas { double gBefore, g0; std::vector<double> traj; };
+        auto measureRelease = [&] (double freqHz, double tilt) -> Meas
+        {
+            const double f0 = alignedFreq (Fs, freqHz);
+            const int kf = (int) std::round (f0 * (double) N / Fs);
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.0); s.setSharpness (0.5); s.setTilt (tilt); s.setTimes (baseAtkMs, baseRelMs);
+
+            std::mt19937 rng (17);
+            std::normal_distribution<double> g (0.0, 0.05);
+            const int settleSamples = (int) (0.4 * Fs);
+            for (int n = 0; n < settleSamples; ++n)
+            {
+                double l = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs), r = l;
+                s.process (l, r);
+            }
+            const double gBefore = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            for (int h = 0; h < flushHops; ++h)
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+            const double g0 = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+
+            const int measureHops = 100;
+            std::vector<double> traj ((size_t) measureHops);
+            for (int h = 0; h < measureHops; ++h)
+            {
+                for (int n = 0; n < H; ++n) { double l = 0.0, r = 0.0; s.process (l, r); }
+                traj[(size_t) h] = std::pow (10.0, s.reductionDb()[(size_t) kf] / 20.0);
+            }
+            return { gBefore, g0, traj };
+        };
+
+        auto predict = [&] (double freqHz, double tilt, double g0, int hops)
+        {
+            // Independent one-pole oracle: c = exp(-frameTime/tau) with the spec tilt
+            // scale tau = clamp(baseMs*s(f_k), 0.05, 5000) ms, computed test-side from
+            // the bin's exact frequency (never reads the engine's coefficient array).
+            const double f0 = alignedFreq (Fs, freqHz);
+            const double tauSec = std::clamp (baseRelMs * sOf (f0, tilt), 0.05, 5000.0) * 1.0e-3;
+            const double frameTime = (double) H / Fs; // = 1/frameRate
+            const double c = std::exp (-frameTime / tauSec);
+            std::vector<double> p ((size_t) hops);
+            double gg = g0;
+            for (int i = 0; i < hops; ++i) { gg = c * gg + (1.0 - c) * 1.0; p[(size_t) i] = gg; }
+            return p;
+        };
+        auto hopsToRecover = [] (const std::vector<double>& t, double thr)
+        {
+            for (size_t i = 0; i < t.size(); ++i) if (t[i] >= thr) return (int) i;
+            return (int) t.size();
+        };
+
+        struct Dir { int hopsM, hops0, hopsP; };
+        auto runFreq = [&] (double freqHz) -> Dir
+        {
+            int hops[3]; int ti = 0;
+            for (double tilt : { -1.0, 0.0, 1.0 })
+            {
+                const Meas m = measureRelease (freqHz, tilt);
+                if (m.gBefore > 0.6)
+                    fail ("tilt: resonance not suppressed before release (freq=" + std::to_string (freqHz)
+                          + " tilt=" + std::to_string (tilt) + ") g=" + std::to_string (m.gBefore)
+                          + " at Fs=" + std::to_string (Fs));
+                const auto pred = predict (freqHz, tilt, m.g0, (int) m.traj.size());
+                double err = 0.0;
+                for (size_t i = 0; i < m.traj.size(); ++i) err = std::max (err, std::abs (m.traj[i] - pred[i]));
+                if (err > 0.05)
+                    fail ("tilt: release trajectory vs one-pole oracle err " + std::to_string (err)
+                          + " (freq=" + std::to_string (freqHz) + " tilt=" + std::to_string (tilt)
+                          + ") at Fs=" + std::to_string (Fs));
+                hops[ti++] = hopsToRecover (m.traj, 0.9);
+            }
+            return { hops[0], hops[1], hops[2] };
+        };
+
+        const Dir hi = runFreq (8000.0);
+        const Dir lo = runFreq (100.0);
+
+        // Direction: Tilt +1 speeds highs (fewer recovery hops) and slows lows (more);
+        // Tilt -1 mirrors. Each with a >= 2-hop margin so frame quantisation can't flip it.
+        if (! (hi.hopsP + 2 <= hi.hops0))
+            fail ("tilt: 8 kHz not faster at +1 (hopsP=" + std::to_string (hi.hopsP) + " hops0="
+                  + std::to_string (hi.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (hi.hopsM >= hi.hops0 + 2))
+            fail ("tilt: 8 kHz not slower at -1 (hopsM=" + std::to_string (hi.hopsM) + " hops0="
+                  + std::to_string (hi.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (lo.hopsP >= lo.hops0 + 2))
+            fail ("tilt: 100 Hz not slower at +1 (hopsP=" + std::to_string (lo.hopsP) + " hops0="
+                  + std::to_string (lo.hops0) + ") at Fs=" + std::to_string (Fs));
+        if (! (lo.hopsM + 2 <= lo.hops0))
+            fail ("tilt: 100 Hz not faster at -1 (hopsM=" + std::to_string (lo.hopsM) + " hops0="
+                  + std::to_string (lo.hops0) + ") at Fs=" + std::to_string (Fs));
+
+        std::printf ("  8k hops(-1,0,+1)=(%d,%d,%d)  100 hops(-1,0,+1)=(%d,%d,%d)\n",
+                     hi.hopsM, hi.hops0, hi.hopsP, lo.hopsM, lo.hops0, lo.hopsP);
+    }
+
+    // Pass B-2 / B2-2: Quality (Fast/Normal/High) + 8x overlap + latency-changing
+    // switch. order_q = normalOrder + (q-1), overlap_q = 4 (Fast) else 8, so latency
+    // N_q = 1<<order_q and hop H_q = N_q/overlap_q. Per quality: (a) latencySamples()
+    // and hopSamples() equal the spec table; (b) depth=0 reconstruction to the
+    // latency-aligned dry (<= 1e-9); (c) bypass is bit-transparent to the aligned dry.
+    // Then a mid-stream Normal->Fast->High switch: (d) all samples finite, the N_q
+    // refill hold outputs the aligned dry bit-exactly (checked with depth on, so wet
+    // != dry makes the hold observable), and with depth=0 the reconstruction returns
+    // to <= 1e-9 once each switch settles.
+    void qualityTest (double Fs)
+    {
+        std::printf ("Quality switch (Fast/Normal/High, 8x overlap) @ Fs=%.0f\n", Fs);
+        const int normalOrder = orderFor (Fs);
+        const int maxOrder = normalOrder + 1; // engine default maxOrder
+        auto orderForQ = [&] (int q) { return std::clamp (normalOrder + (q - 1), 1, maxOrder); };
+        auto Nq = [&] (int q) { return 1 << orderForQ (q); };
+        auto Hq = [&] (int q) { return Nq (q) / ((q == 0) ? 4 : 8); };
+
+        // (a) latency/hop table + (b) depth=0 reconstruction, per quality.
+        for (int q = 0; q < 3; ++q)
+        {
+            const int nq = Nq (q), hq = Hq (q);
+            const int M = std::max (1 << 15, 8 * nq);
+            std::mt19937 rng (71);
+            std::uniform_real_distribution<double> u (-0.5, 0.5);
+            std::vector<double> x ((size_t) M);
+            for (auto& v : x) v = u (rng);
+
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setQuality (q); s.setDepth (0.0); s.setMix (1.0);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = x[(size_t) n]; s.process (l, r); y[(size_t) n] = l; }
+
+            if (s.latencySamples() != nq)
+                fail ("quality " + std::to_string (q) + ": latency " + std::to_string (s.latencySamples())
+                      + " != " + std::to_string (nq) + " at Fs=" + std::to_string (Fs));
+            if (s.hopSamples() != hq)
+                fail ("quality " + std::to_string (q) + ": hop " + std::to_string (s.hopSamples())
+                      + " != " + std::to_string (hq) + " at Fs=" + std::to_string (Fs));
+
+            double e = 0.0;
+            for (int n = M / 2; n < M; ++n) e = std::max (e, std::abs (y[(size_t) n] - x[(size_t) (n - nq)]));
+            if (e > 1.0e-9)
+                fail ("quality " + std::to_string (q) + ": depth0 reconstruction err " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  q=%d N=%d H=%d reconErr=%.2e\n", q, nq, hq, e);
+        }
+
+        // (c) bypass bit-transparency per quality (engine active underneath).
+        for (int q = 0; q < 3; ++q)
+        {
+            const int nq = Nq (q);
+            const int M = std::max (1 << 15, 8 * nq);
+            std::mt19937 rng (83);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * 1200.0 * n / Fs);
+
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setQuality (q); s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.7); s.setBypassed (true);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = x[(size_t) n]; s.process (l, r); y[(size_t) n] = l; }
+
+            // Tail (past the bypass ramp + switch + refill hold): full bypass reads
+            // the input ring with no arithmetic, so it is bit-exact to the aligned dry.
+            for (int n = M / 2; n < M; ++n)
+                if (y[(size_t) n] != x[(size_t) (n - nq)])
+                { fail ("quality " + std::to_string (q) + ": bypass not bit-transparent at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); break; }
+        }
+
+        // (d) mid-stream Normal -> Fast -> High switch. settle covers the N_q refill
+        // hold (N_q <= bufLen) + the 10 ms ramp; segments are wide enough to leave a
+        // large checked region after it (asserted non-vacuous below).
+        const int bufLen = 1 << maxOrder;
+        const int settle = bufLen + (int) std::ceil (0.010 * Fs) + 256;
+        const int t1 = 2 * bufLen, t2 = 6 * bufLen, M = 10 * bufLen;
+        std::mt19937 rng (97);
+        std::normal_distribution<double> g (0.0, 0.25);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+
+        // Pass 1 (depth on): finite everywhere; forced-dry (bit-exact) during each hold.
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.9);
+            std::vector<double> y ((size_t) M);
+            int prevLat = s.latencySamples(), holdRem = 0, holdNq = 0;
+            int switches = 0, holdChecked = 0;
+            bool holdBad = false;
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) s.setQuality (0);
+                if (n == t2) s.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                s.process (l, r);
+                y[(size_t) n] = l;
+                const int lat = s.latencySamples();
+                if (lat != prevLat) { holdRem = lat; holdNq = lat; prevLat = lat; ++switches; } // switch sample (excluded)
+                else if (holdRem > 0)
+                {
+                    if (! holdBad && (l != x[(size_t) (n - holdNq)] || r != x[(size_t) (n - holdNq)]))
+                    { fail ("quality mid-switch: refill hold not aligned dry at n=" + std::to_string (n)
+                            + " Fs=" + std::to_string (Fs)); holdBad = true; }
+                    ++holdChecked;
+                    --holdRem;
+                }
+            }
+            if (! factory_core::testing::allFinite (y))
+                fail ("quality mid-switch produced non-finite output at Fs=" + std::to_string (Fs));
+            if (switches != 2)                 // both Normal->Fast and Fast->High must apply
+                fail ("quality mid-switch: expected 2 latency changes, saw " + std::to_string (switches)
+                      + " at Fs=" + std::to_string (Fs));
+            if (holdChecked <= bufLen)         // guard: the forced-dry hold check must not be vacuous
+                fail ("quality mid-switch: hold check vacuous (holdChecked=" + std::to_string (holdChecked)
+                      + ") at Fs=" + std::to_string (Fs));
+        }
+
+        // Pass 2 (depth=0): reconstruction returns to <= 1e-9 once each switch settles.
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, normalOrder);
+            s.setDepth (0.0); s.setMix (1.0);
+            std::vector<double> y ((size_t) M), lat ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) s.setQuality (0);
+                if (n == t2) s.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                s.process (l, r);
+                y[(size_t) n] = l; lat[(size_t) n] = (double) s.latencySamples();
+            }
+            int curLat = (int) lat[0], lastChange = 0, checked = 0;
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            {
+                if ((int) lat[(size_t) n] != curLat) { curLat = (int) lat[(size_t) n]; lastChange = n; }
+                if (n - lastChange > settle && n >= curLat + settle)
+                {
+                    e = std::max (e, std::abs (y[(size_t) n] - x[(size_t) (n - curLat)]));
+                    ++checked;
+                }
+            }
+            if (checked < bufLen) // guard: the settled-region check must not be vacuous
+                fail ("quality mid-switch: depth0 check vacuous (checked=" + std::to_string (checked)
+                      + ") at Fs=" + std::to_string (Fs));
+            if (e > 1.0e-9)
+                fail ("quality mid-switch: depth0 reconstruction across switches err " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  mid-switch reconErr=%.2e checked=%d (t1=%d t2=%d M=%d)\n", e, checked, t1, t2, M);
+        }
+    }
+
+    // ---- Pass 2A: dual-resolution composite (MultiResSuppressor) -------------
+    // The composite splits the input with an LR4 at 3 kHz (spec constant,
+    // mirrored test-side below), runs the low band at order O and the high band
+    // at order O-2 (N_S = N_L/4, so the high frame rate is 4x), pre-delays the
+    // high band by N_L - N_S and sums. Every dry reference here is built
+    // test-side: an LR4 "unity twin" (same class / cutoff / rate as the
+    // implementation's split; for LR4 low+high is an allpass) plus plain
+    // integer delays -- never the implementation's own delay rings.
+
+    std::vector<double> lr4AllpassRef (const std::vector<double>& x, double Fs)
+    {
+        factory_core::LinkwitzRiley twin;
+        twin.setCutoff (3000.0, Fs); // kSplitHz spec value
+        std::vector<double> ap (x.size());
+        for (size_t n = 0; n < x.size(); ++n) ap[n] = twin.allpass (x[n]);
+        return ap;
+    }
+
+    // Spec latency table: N_L(q) = 1 << clamp(order + q - 1, 1, order + 1)
+    // (default maxOrder = order + 1); the high band runs at N_S(q) = N_L(q)/4.
+    int dualLatencyForQ (int order, int q)
+    {
+        return 1 << std::clamp (order + (q - 1), 1, order + 1);
+    }
+
+    // 18. depth=0 / mix=1: the summed dual-band output equals the test-side LR4
+    // twin allpass delayed by N_L(q), at every Quality, within the 1e-9 absolute
+    // spec tolerance (new spec value: absorbs the two band STFTs' reconstruction
+    // error plus FMA/rounding differences across compilers; measured <= 4.5e-16
+    // across all rates and qualities).
+    void dualReconstructionTest (double Fs)
+    {
+        std::printf ("Dual reconstruction (LR4 twin + N_L delay, all quality) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        double worst = 0.0;
+        for (int q = 0; q < 3; ++q)
+        {
+            const int nq = dualLatencyForQ (order, q);
+            const int M = std::max (1 << 15, 8 * nq);
+            std::mt19937 rng (7);
+            std::uniform_real_distribution<double> u (-0.5, 0.5);
+            std::vector<double> x ((size_t) M);
+            for (auto& v : x) v = u (rng);
+            const auto ap = lr4AllpassRef (x, Fs);
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setQuality (q); m.setDepth (0.0); m.setMix (1.0);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = x[(size_t) n], r = x[(size_t) n]; m.process (l, r); y[(size_t) n] = l; }
+
+            if (m.latencySamples() != nq)
+                fail ("dual recon: latency " + std::to_string (m.latencySamples()) + " != "
+                      + std::to_string (nq) + " (q=" + std::to_string (q) + ") at Fs=" + std::to_string (Fs));
+            double e = 0.0;
+            for (int n = M / 2; n < M; ++n) e = std::max (e, std::abs (y[(size_t) n] - ap[(size_t) (n - nq)]));
+            if (e > 1.0e-9)
+                fail ("dual recon: depth0 err vs LR4 twin " + std::to_string (e) + " (q=" + std::to_string (q)
+                      + ") at Fs=" + std::to_string (Fs));
+            worst = std::max (worst, e);
+        }
+        std::printf ("  maxErr=%.2e (spec 1e-9, all q)\n", worst);
+    }
+
+    // 19. Dual Delta/Mix identity, the composite version of deltaMixIdentityTest.
+    // The composite's dry reference is allpass(in) delayed N_L (its own LR4 sum
+    // ring); the test rebuilds it independently (twin LR4 + plain delay). Gates:
+    //  (a) depth-0 delta = the two-band reconstruction residual, peak <= 1e-9
+    //      over the steady state (n >= 2N);
+    //  (b) complementarity: out_normal + out_delta == twin dry to 1e-12 relative
+    //      at mix in {0, 0.3, 0.8, 1} (delta = dryRef - out is one IEEE rounding
+    //      from exact; the twin dry is bit-identical arithmetic to the ring);
+    //  (c) affine identity: delta(m) == m*delta(1) + (1-m)*delta(0) to 1e-12
+    //      relative (gEff is affine in Mix per band and the band sum is linear).
+    // Measured across rates: (a) <= 6.7e-16, (b) <= 1.2e-16, (c) <= 4.5e-16.
+    void dualDeltaTest (double Fs)
+    {
+        std::printf ("Dual delta (residual + complementarity + affine) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int M = std::max (1 << 14, 4 * N);
+        std::mt19937 rng (41);
+        std::normal_distribution<double> g (0.0, 0.3);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 1500.0 * n / Fs);
+        const auto ap = lr4AllpassRef (x, Fs);
+
+        auto cfg = [] (factory_core::MultiResSuppressor& s) { s.setDepth (1.2); s.setSharpness (0.5); };
+
+        auto renderDelta = [&] (double m)
+        {
+            factory_core::MultiResSuppressor d;
+            d.prepare (Fs, order); cfg (d); d.setDelta (true); d.setMix (m);
+            std::vector<double> out ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = x[(size_t) n], r = x[(size_t) n]; d.process (l, r); out[(size_t) n] = l; }
+            return out;
+        };
+        const auto delta1 = renderDelta (1.0);
+        const auto delta0 = renderDelta (0.0);
+
+        if (factory_core::testing::peakAbs (delta1) < 1.0e-3)
+            fail ("dual delta reference carries no removed signal (vacuous gate) at Fs=" + std::to_string (Fs));
+
+        // (a) depth-0 delta residual over the steady state.
+        double recon0 = 0.0;
+        for (int n = 2 * N; n < M; ++n) recon0 = std::max (recon0, std::abs (delta0[(size_t) n]));
+        if (recon0 > 1.0e-9)
+            fail ("dual delta(0) reconstruction residual too large: " + std::to_string (recon0)
+                  + " (spec 1e-9) at Fs=" + std::to_string (Fs));
+
+        double maxRel = 0.0, maxAffine = 0.0;
+        for (double m : { 0.0, 0.3, 0.8, 1.0 })
+        {
+            factory_core::MultiResSuppressor nrm, del;
+            nrm.prepare (Fs, order); cfg (nrm); nrm.setMix (m);
+            del.prepare (Fs, order); cfg (del); del.setMix (m); del.setDelta (true);
+
+            bool badSum = false, badAffine = false;
+            for (int n = 0; n < M; ++n)
+            {
+                double ln = x[(size_t) n], rn = x[(size_t) n];
+                double ld = x[(size_t) n], rd = x[(size_t) n];
+                nrm.process (ln, rn);
+                del.process (ld, rd);
+
+                const double dryRef = (n >= N) ? ap[(size_t) (n - N)] : 0.0; // first N: ring zeros
+                const double scale = std::max (1.0, std::abs (dryRef));
+
+                // (b) complementarity vs the test-side twin dry.
+                const double res = std::max (std::abs (ln + ld - dryRef), std::abs (rn + rd - dryRef));
+                maxRel = std::max (maxRel, res / scale);
+                if (! badSum && res > 1.0e-12 * scale)
+                {
+                    fail ("dual normal+delta != twin dry at n=" + std::to_string (n) + " mix="
+                          + std::to_string (m) + " Fs=" + std::to_string (Fs));
+                    badSum = true;
+                }
+                // (c) affine identity.
+                const double affineRef = m * delta1[(size_t) n] + (1.0 - m) * delta0[(size_t) n];
+                const double affRes = std::max (std::abs (ld - affineRef), std::abs (rd - affineRef));
+                maxAffine = std::max (maxAffine, affRes / scale);
+                if (! badAffine && affRes > 1.0e-12 * scale)
+                {
+                    fail ("dual delta(mix) != m*delta(1)+(1-m)*delta(0) at n=" + std::to_string (n)
+                          + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
+                    badAffine = true;
+                }
+            }
+        }
+        std::printf ("  recon0=%.2e complementarityRel=%.2e affineRel=%.2e (spec 1e-9 / 1e-12 / 1e-12)\n",
+                     recon0, maxRel, maxAffine);
+    }
+
+    // 20. Dual bypass. Full bypass reads the raw-input delay ring with no
+    // arithmetic, so a from-startup-bypassed composite is bit-transparent to
+    // in[n-N_L] (NOT the allpass reference -- bypass must be the untouched
+    // input). The toggle twin mirrors bypassToggleTest: bypass only gates the
+    // composite output stage (both sub-engines and all rings keep running), so
+    // after the release ramp the twin returns to a bit-exact match.
+    void dualBypassTest (double Fs)
+    {
+        std::printf ("Dual bypass (bit transparency + toggle twin) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+
+        // (i) bit transparency from startup, engine fully active underneath.
+        {
+            const int M = std::max (1 << 14, 4 * N);
+            std::mt19937 rng (29);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * 1200.0 * n / Fs);
+
+            factory_core::MultiResSuppressor s;
+            s.prepare (Fs, order);
+            s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.7);
+            s.setBypassed (true);
+            s.reset(); // snap the crossfade to the bypassed end
+
+            for (int n = 0; n < M; ++n)
+            {
+                double l = x[(size_t) n], r = x[(size_t) n];
+                s.process (l, r);
+                const double expected = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+                if (l != expected || r != expected)
+                { fail ("dual bypass not bit-transparent at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); break; }
+            }
+        }
+
+        // (ii) toggle twin: A active, B bypassed then released.
+        {
+            const double kRampSec = 0.010;                           // engine's bypass ramp (spec constant)
+            const int settle = (int) std::ceil (kRampSec * Fs) + 16; // safely past the full ramp
+            const int tOn  = 4 * N;
+            const int tOff = tOn + settle + 4 * N;
+            const int M    = tOff + settle + 4 * N + 256;
+
+            std::mt19937 rng (31);
+            std::normal_distribution<double> g (0.0, 0.25);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+
+            auto cfg = [] (factory_core::MultiResSuppressor& s)
+            { s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.8); };
+            factory_core::MultiResSuppressor A, B;
+            A.prepare (Fs, order); cfg (A); A.reset();
+            B.prepare (Fs, order); cfg (B); B.reset();
+
+            std::vector<double> a ((size_t) M), b ((size_t) M);
+            bool boundBad = false;
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == tOn)  B.setBypassed (true);
+                if (n == tOff) B.setBypassed (false);
+                double la = x[(size_t) n], ra = x[(size_t) n];
+                double lb = x[(size_t) n], rb = x[(size_t) n];
+                A.process (la, ra);
+                B.process (lb, rb);
+                a[(size_t) n] = la; b[(size_t) n] = lb;
+
+                // Convex-blend bound: B lies between the active output and the
+                // aligned raw dry (+eps slack for ties at the ends).
+                const double dryAligned = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+                const double bound = std::max (std::abs (dryAligned), std::abs (la)) + 1.0e-12;
+                if (! boundBad && (std::abs (lb) > bound || std::abs (rb) > bound))
+                { fail ("dual bypass blend exceeded convex bound at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); boundBad = true; }
+            }
+
+            if (! factory_core::testing::allFinite (a) || ! factory_core::testing::allFinite (b))
+                fail ("dual bypass toggle produced non-finite output at Fs=" + std::to_string (Fs));
+
+            for (int n = tOn + settle; n < tOff; ++n)
+                if (b[(size_t) n] != x[(size_t) (n - N)])
+                { fail ("dual bypassed B != aligned dry at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); break; }
+
+            for (int n = tOff + settle; n < M; ++n)
+                if (b[(size_t) n] != a[(size_t) n])
+                { fail ("dual post-release B != A at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); break; }
+
+            std::printf ("  ok (N=%d settle=%d tOn=%d tOff=%d M=%d)\n", N, settle, tOn, tOff, M);
+        }
+    }
+
+    // 21. Dual speed -- the property the split exists for. A tone burst scaled
+    // to each path's own window (B = N_sub/4) is fed over silence with
+    // near-instant ballistics (setTimes(0.01, 0.01): the one-pole coefficient
+    // underflows to 0, so the per-bin gain IS each frame's target and no
+    // release tau contaminates the measurement). The burst is "visible" to a
+    // window of length N_sub for N_sub + B samples, so the suppressed span of
+    // the sub-engine's gain at the tone bin is ~ N_sub + B minus a few
+    // threshold-edge frames (windows barely overlapping the burst fall under
+    // the detection knee), quantised to the sub-engine hop H_sub = N_sub/8.
+    // The span is INVARIANT to the high path's constant pre-delay (a delay
+    // shifts first/last equally), so span_high/span_low measures the high
+    // band's 4x frame speed directly: with B_sub proportional to N_sub the
+    // oracle ratio is (N_S + B_S)/(N_L + B_L) = N_S/N_L = 1/4. Everything is
+    // deterministic (no rng). Measured at all six rates: span_high exactly
+    // 1.125*N_S, span_low exactly 0.875*N_L (the 500 Hz tone sheds more edge
+    // frames -- its detection margin is slimmer), ratio 0.3214, worst in-burst
+    // reduction <= -16 dB. Gates fixed with margin: minRed <= -10 dB both;
+    // span_high in [0.75*N_S, 1.5*N_S]; span_low in [0.6*N_L, 1.5*N_L];
+    // direction span_high <= span_low/2; ratio in [0.18, 0.42]. A high band
+    // secretly running at the low resolution would give ratio ~1.25 and a
+    // one-order-short window ~0.64 -- both fail hard.
+    void dualSpeedTest (double Fs)
+    {
+        std::printf ("Dual speed (burst span, high band 4x frames) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order, NS = NL / 4;
+
+        struct Span { int first = -1, last = -1; double minRed = 0.0; };
+        auto burstSpan = [&] (bool isHigh, double toneHz) -> Span
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setDepth (1.2); m.setSharpness (0.5); m.setTimes (0.01, 0.01);
+
+            const auto& sub = isHigh ? m.highEngine() : m.lowEngine();
+            const int Nsub = sub.latencySamples();
+            const int B = Nsub / 4;
+            const int start = 4 * NL;
+            const int M = start + B + 6 * NL;
+            const int kSub = std::max (1, (int) std::round (toneHz * (double) Nsub / Fs));
+            const double f0 = (double) kSub * Fs / (double) Nsub; // aligned on the sub grid
+
+            Span sp;
+            for (int n = 0; n < M; ++n)
+            {
+                const bool on = (n >= start && n < start + B);
+                double l = on ? 0.5 * std::sin (2.0 * kPi * f0 * (n - start) / Fs) : 0.0;
+                double r = l;
+                m.process (l, r);
+                const double red = sub.reductionDb()[(size_t) kSub];
+                if (red < -6.0) { if (sp.first < 0) sp.first = n; sp.last = n; }
+                sp.minRed = std::min (sp.minRed, red);
+            }
+            return sp;
+        };
+
+        const Span hi = burstSpan (true, 8000.0);
+        const Span lo = burstSpan (false, 500.0);
+        if (hi.minRed > -10.0 || lo.minRed > -10.0 || hi.first < 0 || lo.first < 0)
+        {
+            fail ("dual speed: burst not meaningfully suppressed (minRedHi=" + std::to_string (hi.minRed)
+                  + " minRedLo=" + std::to_string (lo.minRed) + ") at Fs=" + std::to_string (Fs));
+            return;
+        }
+        const int spanHi = hi.last - hi.first + 1;
+        const int spanLo = lo.last - lo.first + 1;
+        const double ratio = (double) spanHi / (double) spanLo;
+
+        if (spanHi < (3 * NS) / 4 || spanHi > (3 * NS) / 2)
+            fail ("dual speed: high span " + std::to_string (spanHi) + " outside [0.75*N_S, 1.5*N_S] (N_S="
+                  + std::to_string (NS) + ") at Fs=" + std::to_string (Fs));
+        if (spanLo < (3 * NL) / 5 || spanLo > (3 * NL) / 2)
+            fail ("dual speed: low span " + std::to_string (spanLo) + " outside [0.6*N_L, 1.5*N_L] (N_L="
+                  + std::to_string (NL) + ") at Fs=" + std::to_string (Fs));
+        if (! (2 * spanHi <= spanLo))
+            fail ("dual speed: high span not < half the low span (spanHi=" + std::to_string (spanHi)
+                  + " spanLo=" + std::to_string (spanLo) + ") at Fs=" + std::to_string (Fs));
+        if (ratio < 0.18 || ratio > 0.42)
+            fail ("dual speed: span ratio " + std::to_string (ratio) + " outside [0.18, 0.42] at Fs="
+                  + std::to_string (Fs));
+        std::printf ("  spanHi=%d (N_S=%d) spanLo=%d (N_L=%d) ratio=%.3f minRed=(%.1f, %.1f) dB\n",
+                     spanHi, NS, spanLo, NL, ratio, hi.minRed, lo.minRed);
+    }
+
+    // 22. Dual crossover continuity: the same resonant tone+noise recipe just
+    // below (2.5 kHz) and just above (3.6 kHz) the 3 kHz split must be
+    // suppressed on both sides of the crossover and by a comparable amount.
+    // Near the split each band's detector sees an LR4-rolled-off copy of the
+    // tone and a rolled-off noise floor, so the excess -- and Soft-mode cut --
+    // survives, but a small edge bias remains (a known simplification: the
+    // envelopes are band-limited, not full-band). Measured across the six
+    // rates: 2.5k -19.6..-23.2 dB, 3.6k -20.0..-24.5 dB, |diff| <= 1.83 dB.
+    // Spec gates with margin: both <= -15 dB, |diff| <= 4 dB.
+    void dualCrossoverTest (double Fs)
+    {
+        std::printf ("Dual crossover (2.5k vs 3.6k continuity) @ Fs=%.0f\n", Fs);
+        auto suppress = [&] (double f0)
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (5);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> x ((size_t) M);
+            for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+            auto run = [&] (double depth)
+            {
+                factory_core::MultiResSuppressor m;
+                m.prepare (Fs, orderFor (Fs));
+                m.setDepth (depth); m.setSharpness (0.5);
+                std::vector<double> y ((size_t) M);
+                for (int n = 0; n < M; ++n)
+                { double l = x[(size_t) n], r = x[(size_t) n]; m.process (l, r); y[(size_t) n] = 0.5 * (l + r); }
+                return y;
+            };
+            const auto dry = run (0.0);
+            const auto wet = run (1.2);
+            const int a = M / 2, b = M;
+            return 20.0 * std::log10 (magAt (wet, a, b, f0, Fs) / magAt (dry, a, b, f0, Fs));
+        };
+
+        const double dBelow = suppress (alignedFreq (Fs, 2500.0));
+        const double dAbove = suppress (alignedFreq (Fs, 3600.0));
+        if (dBelow > -15.0)
+            fail ("dual crossover: below-split resonance under-suppressed: " + std::to_string (dBelow)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (dAbove > -15.0)
+            fail ("dual crossover: above-split resonance under-suppressed: " + std::to_string (dAbove)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (std::abs (dBelow - dAbove) > 4.0)
+            fail ("dual crossover: suppression discontinuity across the split: below "
+                  + std::to_string (dBelow) + " dB vs above " + std::to_string (dAbove)
+                  + " dB at Fs=" + std::to_string (Fs));
+        std::printf ("  2.5k %.2f dB  3.6k %.2f dB  |diff| %.2f dB (spec <= -15 / <= 4)\n",
+                     dBelow, dAbove, std::abs (dBelow - dAbove));
+    }
+
+    // 23. Dual quality: (a) the latency table and the structural N_S = N_L/4 at
+    // every Quality (depth-0 reconstruction per quality is gated in
+    // dualReconstructionTest); (b) a mid-stream Normal->Fast->High switch stays
+    // finite and peak-bounded with depth engaged, and with depth 0 the output
+    // returns to the twin reconstruction (<= 1e-9, measured 4.5e-16) once the
+    // switches settle. The two sub-engines swap at their OWN frame boundaries
+    // (up to a low hop apart); between and shortly after those boundaries the
+    // high pre-delay ring briefly carries mixed-delay history, so the settle
+    // window counts from the LAST event among {request, low latency change,
+    // high latency change} -- checking inside that window would gate the
+    // documented (finite, bounded) transient, not a regression.
+    void dualQualityTest (double Fs)
+    {
+        std::printf ("Dual quality (latency table + mid-stream switch) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int bufLen = 1 << (order + 1);
+
+        // (a) latency table + band ratio, per quality (switch applies at the
+        // first frame boundary; a short zero-feed is enough to latch it).
+        for (int q = 0; q < 3; ++q)
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setQuality (q);
+            for (int n = 0; n < 2 * bufLen; ++n) { double l = 0.0, r = 0.0; m.process (l, r); }
+            const int nq = dualLatencyForQ (order, q);
+            if (m.latencySamples() != nq)
+                fail ("dual quality " + std::to_string (q) + ": latency " + std::to_string (m.latencySamples())
+                      + " != " + std::to_string (nq) + " at Fs=" + std::to_string (Fs));
+            if (m.highEngine().latencySamples() != nq / 4)
+                fail ("dual quality " + std::to_string (q) + ": N_S " + std::to_string (m.highEngine().latencySamples())
+                      + " != N_L/4 = " + std::to_string (nq / 4) + " at Fs=" + std::to_string (Fs));
+        }
+
+        const int settle = bufLen + (int) std::ceil (0.010 * Fs) + 512;
+        const int t1 = 2 * bufLen, t2 = 6 * bufLen, M = 10 * bufLen;
+        std::mt19937 rng (97);
+        std::normal_distribution<double> g (0.0, 0.25);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+        const auto ap = lr4AllpassRef (x, Fs);
+
+        // (b1) depth engaged: finite everywhere, realistic peak bound through
+        // both switches (the composite applies no output mask -- the per-band
+        // holds and the live pre-delay keep it aligned and bounded).
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setDepth (1.2); m.setSharpness (0.5); m.setMix (0.9);
+            std::vector<double> y ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) m.setQuality (0);
+                if (n == t2) m.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                m.process (l, r);
+                y[(size_t) n] = l;
+            }
+            if (! factory_core::testing::allFinite (y))
+                fail ("dual quality mid-switch produced non-finite output at Fs=" + std::to_string (Fs));
+            const double peak = factory_core::testing::peakAbs (y);
+            if (peak > 4.0)
+                fail ("dual quality mid-switch peak " + std::to_string (peak)
+                      + " beyond realistic bound at Fs=" + std::to_string (Fs));
+        }
+
+        // (b2) depth 0: settled reconstruction across the switches.
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setDepth (0.0); m.setMix (1.0);
+            std::vector<double> y ((size_t) M);
+            std::vector<int> latL ((size_t) M), latS ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1) m.setQuality (0);
+                if (n == t2) m.setQuality (2);
+                double l = x[(size_t) n], r = x[(size_t) n];
+                m.process (l, r);
+                y[(size_t) n]    = l;
+                latL[(size_t) n] = m.lowEngine().latencySamples();
+                latS[(size_t) n] = m.highEngine().latencySamples();
+            }
+
+            int lastEvent = 0, curL = latL[0], curS = latS[0], checked = 0;
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == t1 || n == t2) lastEvent = n;
+                if (latL[(size_t) n] != curL) { curL = latL[(size_t) n]; lastEvent = n; }
+                if (latS[(size_t) n] != curS) { curS = latS[(size_t) n]; lastEvent = n; }
+                if (n - lastEvent > settle && n >= curL + settle)
+                {
+                    e = std::max (e, std::abs (y[(size_t) n] - ap[(size_t) (n - curL)]));
+                    ++checked;
+                }
+            }
+            if (checked < bufLen) // guard: the settled-region check must not be vacuous
+                fail ("dual quality mid-switch: depth0 check vacuous (checked=" + std::to_string (checked)
+                      + ") at Fs=" + std::to_string (Fs));
+            if (e > 1.0e-9)
+                fail ("dual quality mid-switch: settled depth0 residual " + std::to_string (e)
+                      + " at Fs=" + std::to_string (Fs));
+            std::printf ("  mid-switch settledErr=%.2e checked=%d (t1=%d t2=%d M=%d)\n", e, checked, t1, t2, M);
+        }
+    }
+
+    // 24. Dual display merge. The composite reports the LOW engine's grid;
+    // below the split its curves are the low engine's verbatim (same snapshot,
+    // asserted exact), at/above the split they are the high engine's values
+    // resampled by linear interpolation in dB along log-frequency -- rebuilt
+    // here independently (own bin->Hz maths, log2-based interpolation weights)
+    // and compared to 1e-9 dB. Non-vacuity: the 8 kHz resonance produces a
+    // real merged cut (<= -1 dB) and the merged magnitude genuinely differs
+    // from the low engine's own above-split bins (the two windows see
+    // different noise averages).
+    void dualDisplayTest (double Fs)
+    {
+        std::printf ("Dual display merge (low grid + log-f dB interp) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order, NS = NL / 4;
+        const int M = 1 << 15;
+
+        // 8 kHz aligned on the HIGH grid (hence also on the low grid: N_L = 4*N_S).
+        const int k8s = (int) std::round (8000.0 * (double) NS / Fs);
+        const double f8 = (double) k8s * Fs / (double) NS;
+        const double f1 = alignedFreq (Fs, 1000.0);
+
+        std::mt19937 rng (131);
+        std::normal_distribution<double> g (0.0, 0.15);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * f8 * n / Fs)
+                                    + 0.4 * std::sin (2.0 * kPi * f1 * n / Fs);
+
+        factory_core::MultiResSuppressor m;
+        m.prepare (Fs, order);
+        m.setDepth (1.2); m.setSharpness (0.5);
+        for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = x[(size_t) n]; m.process (l, r); }
+
+        const int nbLow  = m.numBins();
+        const int nbHigh = m.highEngine().numBins();
+        std::vector<double> mag ((size_t) nbLow), red ((size_t) nbLow);
+        m.magnitudeDb (mag.data());
+        m.reductionDb (red.data());
+
+        // Sub-engine snapshots (the engine is idle now, so these are the same
+        // frames the composite merged).
+        std::vector<double> lowMag ((size_t) nbLow), highMag ((size_t) nbHigh);
+        m.lowEngine().magnitudeDb (lowMag.data());
+        m.highEngine().magnitudeDb (highMag.data());
+        const double* lowRed  = m.lowEngine().reductionDb();
+        const double* highRed = m.highEngine().reductionDb();
+
+        // Independent merge oracle: own bin->Hz maths and log2-based weights.
+        auto mergeOracle = [&] (const double* lowArr, const double* highArr, int k) -> double
+        {
+            const double f = (double) k * Fs / (double) NL;
+            if (f < 3000.0) return lowArr[k];
+            const double binHzHigh = Fs / (double) NS;
+            int j0 = (int) std::floor (f / binHzHigh);
+            j0 = std::clamp (j0, 1, nbHigh - 1);
+            const int j1 = std::min (j0 + 1, nbHigh - 1);
+            if (j1 == j0) return highArr[j0];
+            const double lf  = std::log2 (f);
+            const double lf0 = std::log2 ((double) j0 * binHzHigh);
+            const double lf1 = std::log2 ((double) j1 * binHzHigh);
+            const double t   = (lf - lf0) / (lf1 - lf0);
+            return highArr[j0] + t * (highArr[j1] - highArr[j0]);
+        };
+
+        double worstMag = 0.0, worstRed = 0.0, maxAboveDiff = 0.0;
+        bool exactBad = false;
+        for (int k = 0; k < nbLow; ++k)
+        {
+            const double f = (double) k * Fs / (double) NL;
+            const double em = mergeOracle (lowMag.data(), highMag.data(), k);
+            const double er = mergeOracle (lowRed, highRed, k);
+            worstMag = std::max (worstMag, std::abs (mag[(size_t) k] - em));
+            worstRed = std::max (worstRed, std::abs (red[(size_t) k] - er));
+            if (f < 3000.0)
+            {
+                // Below the split the merge must be the low engine verbatim.
+                if (! exactBad && (mag[(size_t) k] != lowMag[(size_t) k] || red[(size_t) k] != lowRed[k]))
+                { fail ("dual display: below-split bin " + std::to_string (k)
+                        + " != low engine value at Fs=" + std::to_string (Fs)); exactBad = true; }
+            }
+            else
+                maxAboveDiff = std::max (maxAboveDiff, std::abs (mag[(size_t) k] - lowMag[(size_t) k]));
+        }
+        if (worstMag > 1.0e-9)
+            fail ("dual display: magnitude merge != oracle by " + std::to_string (worstMag)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (worstRed > 1.0e-9)
+            fail ("dual display: reduction merge != oracle by " + std::to_string (worstRed)
+                  + " dB at Fs=" + std::to_string (Fs));
+
+        // Non-vacuity: the 8 kHz cut shows up in the merged curve, and the
+        // merged magnitude above the split is not just the low engine's bins.
+        const int k8l = 4 * k8s; // same frequency on the low grid
+        if (red[(size_t) k8l] > -1.0)
+            fail ("dual display: merged reduction at 8 kHz missing (" + std::to_string (red[(size_t) k8l])
+                  + " dB) at Fs=" + std::to_string (Fs));
+        if (maxAboveDiff < 0.1)
+            fail ("dual display: merge indistinguishable from the low engine above the split (vacuous) at Fs="
+                  + std::to_string (Fs));
+        std::printf ("  oracleErr mag=%.2e red=%.2e  red[8k]=%.2f dB  maxAboveDiff=%.2f dB\n",
+                     worstMag, worstRed, red[(size_t) k8l], maxAboveDiff);
+    }
+
+    // ---- Pass 3A: routing (continuous link, external detector, M/S + sidechain) ---
+
+    // linkBlendTest: continuous stereo link on the single engine. L carries a
+    // resonance at f0 over a floor common to both channels; R carries only the
+    // floor (a flat comb: no excess at f0, so per-channel R is uncut). Sweeping the
+    // link amount lambda in {0, 0.5, 1} (link on) blends R's reduction at f0 between
+    // its per-channel value (lambda 0: ~0, R has no resonance there) and the linked
+    // value (lambda 1: R gets L's cut to preserve the stereo image). The blend is a
+    // log-domain lerp, so R's reduction IN dB is exactly affine in lambda; the
+    // midpoint identity red_R(0.5) == 0.5*(red_R(0)+red_R(1)) is an independent
+    // oracle (each endpoint measured through the real DSP, no formula from the
+    // engine). A deterministic bin-aligned comb + smoothing-off makes R's f0 a clean
+    // carrier, so the measured reduction is the true applied gain at every rate. And
+    // lambda 1 applies identical L/R gains (symmetric probe: L==R in -> L==R out).
+    void linkBlendTest (double Fs)
+    {
+        std::printf ("Link blend (continuous stereo link, affine identity) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const int kf = (int) std::round (2000.0 * N / Fs);
+        const int jlo = (int) std::ceil (kf / 1.6), jhi = (int) std::floor (kf * 1.6);
+        const double b = 0.02, big = 0.12; // floor line / L's resonance at kf (excess ~15 dB)
+        const double f0 = (double) kf * Fs / (double) N;
+
+        // R = flat comb floor (kf line == neighbours == b); L = same floor + a
+        // strong resonance at kf. The non-kf lines share amplitude AND phase, so the
+        // floor is common; L differs only by (big-b) at kf.
+        const auto xr = combSignal (order, M, [&] (int k) { return (k >= jlo && k <= jhi) ? b : 0.0; });
+        const auto xl = combSignal (order, M, [&] (int k) { if (k < jlo || k > jhi) return 0.0; return (k == kf) ? big : b; });
+
+        auto renderR = [&] (double lambda, double depth)
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, orderFor (Fs));
+            s.setStereoLink (true); s.setLinkAmount (lambda);
+            s.setDepth (depth); s.setSharpness (0.5); s.setSmoothingWidth (0.0); // clean single-bin read
+            std::vector<double> outR ((size_t) M);
+            for (int n = 0; n < M; ++n) { double l = xl[(size_t) n], r = xr[(size_t) n]; s.process (l, r); outR[(size_t) n] = r; }
+            return outR;
+        };
+        const auto dryR = renderR (1.0, 0.0); // depth 0: gain 1 (link irrelevant)
+        const auto wR0  = renderR (0.0, 1.0);
+        const auto wR5  = renderR (0.5, 1.0);
+        const auto wR1  = renderR (1.0, 1.0);
+        const int a = M / 2, b2 = M;          // window length M/2 is an integer multiple of N (clean bins)
+        const double dRef = magAt (dryR, a, b2, f0, Fs);
+        const double r0 = 20.0 * std::log10 (magAt (wR0, a, b2, f0, Fs) / dRef);
+        const double r5 = 20.0 * std::log10 (magAt (wR5, a, b2, f0, Fs) / dRef);
+        const double r1 = 20.0 * std::log10 (magAt (wR1, a, b2, f0, Fs) / dRef);
+
+        const double mid = 0.5 * (r0 + r1);
+        if (std::abs (r5 - mid) > 0.5)
+            fail ("link blend: R reduction not affine in lambda: r0=" + std::to_string (r0)
+                  + " r5=" + std::to_string (r5) + " r1=" + std::to_string (r1)
+                  + " mid=" + std::to_string (mid) + " at Fs=" + std::to_string (Fs));
+        if (r1 > -6.0)
+            fail ("link blend: lambda=1 did not cut R at f0 (image not linked): " + std::to_string (r1)
+                  + " dB at Fs=" + std::to_string (Fs));
+        if (r0 < -1.0)
+            fail ("link blend: lambda=0 cut R without a resonance there: " + std::to_string (r0)
+                  + " dB at Fs=" + std::to_string (Fs));
+
+        // lambda=1 applies identical L/R gains (symmetric probe -> exact L==R out).
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, orderFor (Fs));
+            s.setStereoLink (true); s.setLinkAmount (1.0); s.setDepth (1.0); s.setSharpness (0.5);
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            { double v = xl[(size_t) n]; double l = v, r = v; s.process (l, r); e = std::max (e, std::abs (l - r)); }
+            if (e > 1.0e-9)
+                fail ("link blend: lambda=1 L/R gains diverged err " + std::to_string (e) + " at Fs=" + std::to_string (Fs));
+        }
+        std::printf ("  redR(0,0.5,1)=(%.2f, %.2f, %.2f) dB  mid=%.2f (affine +/-0.5)\n", r0, r5, r1, mid);
+    }
+
+    // msRoundtripTest: M/S mode on the composite. (a) At depth 0 the output equals
+    // a TEST-SIDE oracle (encode M/S -> LR4 twin allpass per component -> decode,
+    // delayed N_L) to 1e-9 -- the encode/decode wraps the split cleanly. (b) M/S
+    // bypass is still bit-transparent to the raw input delayed N_L. (c) A resonance
+    // placed purely in M (l==r tone) is cut while the S component (l-r noise) is
+    // preserved within +/-0.5 dB (unlinked + high selectivity so the S floor is
+    // untouched) -- M and S are processed independently.
+    void msRoundtripTest (double Fs)
+    {
+        std::printf ("M/S roundtrip (encode/split/decode + separation) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order;
+
+        // (a) depth-0 reconstruction vs the M/S allpass twin oracle.
+        {
+            const int M = std::max (1 << 15, 8 * NL);
+            std::mt19937 rng (7);
+            std::uniform_real_distribution<double> u (-0.5, 0.5);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n) { xl[(size_t) n] = u (rng); xr[(size_t) n] = u (rng); }
+
+            // Oracle: encode -> LR4 twin allpass on M and S separately -> decode.
+            factory_core::LinkwitzRiley twM, twS;
+            twM.setCutoff (3000.0, Fs); twS.setCutoff (3000.0, Fs);
+            std::vector<double> oL ((size_t) M), oR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                const double mid = 0.5 * (xl[(size_t) n] + xr[(size_t) n]);
+                const double sid = 0.5 * (xl[(size_t) n] - xr[(size_t) n]);
+                const double aM = twM.allpass (mid), aS = twS.allpass (sid);
+                oL[(size_t) n] = aM + aS; oR[(size_t) n] = aM - aS;
+            }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setDepth (0.0); m.setMix (1.0);
+            std::vector<double> yL ((size_t) M), yR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = xl[(size_t) n], r = xr[(size_t) n]; m.process (l, r); yL[(size_t) n] = l; yR[(size_t) n] = r; }
+
+            double e = 0.0;
+            for (int n = M / 2; n < M; ++n)
+                e = std::max (e, std::max (std::abs (yL[(size_t) n] - oL[(size_t) (n - NL)]),
+                                           std::abs (yR[(size_t) n] - oR[(size_t) (n - NL)])));
+            if (e > 1.0e-9)
+                fail ("M/S depth0 reconstruction vs twin oracle err " + std::to_string (e) + " at Fs=" + std::to_string (Fs));
+            std::printf ("  depth0 reconErr=%.2e (spec 1e-9)\n", e);
+        }
+
+        // (b) M/S bypass bit-transparency to the raw input delayed N_L.
+        {
+            const int M = std::max (1 << 14, 4 * NL);
+            std::mt19937 rng (29);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n) { xl[(size_t) n] = g (rng); xr[(size_t) n] = g (rng); }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setDepth (1.2); m.setSharpness (0.5); m.setMix (0.7);
+            m.setBypassed (true); m.reset();
+            for (int n = 0; n < M; ++n)
+            {
+                double l = xl[(size_t) n], r = xr[(size_t) n];
+                m.process (l, r);
+                const double el = (n >= NL) ? xl[(size_t) (n - NL)] : 0.0;
+                const double er = (n >= NL) ? xr[(size_t) (n - NL)] : 0.0;
+                if (l != el || r != er)
+                { fail ("M/S bypass not bit-transparent at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); break; }
+            }
+        }
+
+        // (c) M/S separation: resonance in M cut, S (noise) preserved.
+        {
+            const int M = 1 << 15;
+            const double f0 = alignedFreq (Fs, 2000.0);
+            std::mt19937 rng (53);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> xl ((size_t) M), xr ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                const double tone = 0.5 * std::sin (2.0 * kPi * f0 * n / Fs); // in M (l==r part)
+                const double ns   = g (rng);                                  // in S (l-r part)
+                xl[(size_t) n] = tone + ns; xr[(size_t) n] = tone - ns;
+            }
+
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (1); m.setStereoLink (false);
+            // Unlinked so M/S are processed independently; high selectivity + modest
+            // depth so the broadband S floor is not nibbled (only M's tone is a peak).
+            m.setDepth (0.5); m.setSharpness (0.5); m.setSelectivity (1.0);
+            std::vector<double> yL ((size_t) M), yR ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { double l = xl[(size_t) n], r = xr[(size_t) n]; m.process (l, r); yL[(size_t) n] = l; yR[(size_t) n] = r; }
+
+            const int a = M / 2, b = M;
+            double sIn = 0.0, sOut = 0.0;
+            for (int n = a; n < b; ++n)
+            {
+                const double si = 0.5 * (xl[(size_t) (n - NL)] - xr[(size_t) (n - NL)]);
+                const double so = 0.5 * (yL[(size_t) n] - yR[(size_t) n]);
+                sIn += si * si; sOut += so * so;
+            }
+            const double sDb = 10.0 * std::log10 (sOut / (sIn + 1e-30));
+            if (std::abs (sDb) > 0.5)
+                fail ("M/S: S component not preserved: " + std::to_string (sDb) + " dB at Fs=" + std::to_string (Fs));
+
+            std::vector<double> mIn ((size_t) M), mOut ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            { mIn[(size_t) n] = 0.5 * (xl[(size_t) n] + xr[(size_t) n]); mOut[(size_t) n] = 0.5 * (yL[(size_t) n] + yR[(size_t) n]); }
+            const double mDb = 20.0 * std::log10 (magAt (mOut, a, b, f0, Fs) / magAt (mIn, a, b, f0, Fs));
+            if (mDb > -6.0)
+                fail ("M/S: M resonance not cut: " + std::to_string (mDb) + " dB at Fs=" + std::to_string (Fs));
+            std::printf ("  S preserved %.3f dB (+/-0.5)  M cut %.2f dB (<= -6)\n", sDb, mDb);
+        }
+    }
+
+    // sidechainTest: external-detector (sidechain) routing on the composite.
+    // (a) With the sidechain OFF, feeding a different SC signal to the 4-arg
+    // process is BIT-IDENTICAL to the 2-arg form (the SC only feeds rings, never
+    // read). (b) With it ON, a strong SC tone notches the main (broadband) output
+    // at that frequency -- on the low side (2 kHz) and the high side (6 kHz), keyed
+    // off the correct sub-engine -- and the notch vanishes when the SC is silent.
+    // (c) Toggling the sidechain stays finite and peak-bounded.
+    void sidechainTest (double Fs)
+    {
+        std::printf ("Sidechain (external detector routing) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+
+        // (a) sidechain OFF: 4-arg with a different SC == 2-arg twin, bit-exact.
+        {
+            const int M = std::max (1 << 14, 4 * N);
+            std::mt19937 rng (61);
+            std::normal_distribution<double> g (0.0, 0.3);
+            std::vector<double> xm ((size_t) M), xs ((size_t) M);
+            for (int n = 0; n < M; ++n) { xm[(size_t) n] = g (rng); xs[(size_t) n] = g (rng); }
+
+            factory_core::MultiResSuppressor A, B;
+            A.prepare (Fs, order); A.setDepth (1.2); A.setSharpness (0.5);
+            B.prepare (Fs, order); B.setDepth (1.2); B.setSharpness (0.5); // sidechain OFF (default)
+            double e = 0.0;
+            for (int n = 0; n < M; ++n)
+            {
+                double la = xm[(size_t) n], ra = xm[(size_t) n];
+                double lb = xm[(size_t) n], rb = xm[(size_t) n];
+                A.process (la, ra);                                 // 2-arg
+                B.process (lb, rb, xs[(size_t) n], xs[(size_t) n]); // 4-arg, different SC
+                e = std::max (e, std::max (std::abs (la - lb), std::abs (ra - rb)));
+            }
+            if (e > 0.0)
+                fail ("sidechain OFF: 4-arg SC feed changed the output (err " + std::to_string (e)
+                      + ") at Fs=" + std::to_string (Fs));
+        }
+
+        // (b) sidechain ON: SC tone notches the main output at its frequency.
+        auto suppressionAt = [&] (double fSc)
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (67);
+            std::normal_distribution<double> g (0.0, 0.1);
+            std::vector<double> main ((size_t) M), sc ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                main[(size_t) n] = g (rng);                                   // broadband floor
+                sc[(size_t) n]   = 0.3 * std::sin (2.0 * kPi * fSc * n / Fs)  // strong SC tone
+                                 + 0.03 * g (rng);
+            }
+            auto run = [&] (bool scActive)
+            {
+                factory_core::MultiResSuppressor m;
+                m.prepare (Fs, order);
+                m.setSidechain (true); m.setDepth (1.2); m.setSharpness (0.5);
+                std::vector<double> y ((size_t) M);
+                for (int n = 0; n < M; ++n)
+                {
+                    double l = main[(size_t) n], r = main[(size_t) n];
+                    const double s = scActive ? sc[(size_t) n] : 0.0;
+                    m.process (l, r, s, s);
+                    y[(size_t) n] = 0.5 * (l + r);
+                }
+                return y;
+            };
+            const auto on  = run (true);
+            const auto off = run (false);
+            const int a = M / 2, b = M;
+            return 20.0 * std::log10 (magAt (on, a, b, fSc, Fs) / magAt (off, a, b, fSc, Fs));
+        };
+        const double loDb = suppressionAt (alignedFreq (Fs, 2000.0));
+        const double hiDb = suppressionAt (alignedFreq (Fs, 6000.0));
+        if (loDb > -6.0)
+            fail ("sidechain: low-side SC tone did not suppress the main: " + std::to_string (loDb) + " dB at Fs=" + std::to_string (Fs));
+        if (hiDb > -6.0)
+            fail ("sidechain: high-side SC tone did not suppress the main: " + std::to_string (hiDb) + " dB at Fs=" + std::to_string (Fs));
+
+        // (c) on/off transition: finite + peak-bounded.
+        {
+            const int M = 1 << 15;
+            std::mt19937 rng (73);
+            std::normal_distribution<double> g (0.0, 0.2);
+            std::vector<double> main ((size_t) M), sc ((size_t) M);
+            for (int n = 0; n < M; ++n)
+            {
+                main[(size_t) n] = g (rng) + 0.3 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+                sc[(size_t) n]   = 0.4 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+            }
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order); m.setDepth (1.2); m.setSharpness (0.5);
+            std::vector<double> y ((size_t) M);
+            const double inPeak = factory_core::testing::peakAbs (main);
+            for (int n = 0; n < M; ++n)
+            {
+                if (n == M / 3)     m.setSidechain (true);
+                if (n == 2 * M / 3) m.setSidechain (false);
+                double l = main[(size_t) n], r = main[(size_t) n];
+                m.process (l, r, sc[(size_t) n], sc[(size_t) n]);
+                y[(size_t) n] = l;
+            }
+            if (! factory_core::testing::allFinite (y))
+                fail ("sidechain toggle produced non-finite output at Fs=" + std::to_string (Fs));
+            if (factory_core::testing::peakAbs (y) > 1.5 * inPeak)
+                fail ("sidechain toggle exceeded 1.5x input peak: " + std::to_string (factory_core::testing::peakAbs (y))
+                      + " vs " + std::to_string (inPeak) + " at Fs=" + std::to_string (Fs));
+        }
+        std::printf ("  suppression lo(2k)=%.1f dB hi(6k)=%.1f dB (spec <= -6)\n", loDb, hiDb);
+    }
+
+    // scListenTest: monitoring the raw sidechain. With scListen on the output is
+    // EXACTLY the SC input delayed by N_L (integer delay, bit-exact ring read), it
+    // outranks Delta, and in M/S mode it still returns the RAW (undecoded) SC.
+    void scListenTest (double Fs)
+    {
+        std::printf ("SC listen (raw sidechain, N_L delay, exact) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order;
+        const int M = std::max (1 << 14, 4 * NL);
+        std::mt19937 rng (89);
+        std::normal_distribution<double> g (0.0, 0.3);
+        std::vector<double> ml ((size_t) M), mr ((size_t) M), sl ((size_t) M), sr ((size_t) M);
+        for (int n = 0; n < M; ++n)
+        {
+            ml[(size_t) n] = g (rng); mr[(size_t) n] = g (rng);
+            sl[(size_t) n] = g (rng); sr[(size_t) n] = g (rng);
+        }
+
+        auto checkExact = [&] (int chMode, bool delta, const char* what)
+        {
+            factory_core::MultiResSuppressor m;
+            m.prepare (Fs, order);
+            m.setChannelMode (chMode); m.setScListen (true); m.setDelta (delta);
+            m.setDepth (1.2); m.setSharpness (0.5);
+            for (int n = 0; n < M; ++n)
+            {
+                double l = ml[(size_t) n], r = mr[(size_t) n];
+                m.process (l, r, sl[(size_t) n], sr[(size_t) n]);
+                const double el = (n >= NL) ? sl[(size_t) (n - NL)] : 0.0;
+                const double er = (n >= NL) ? sr[(size_t) (n - NL)] : 0.0;
+                if (l != el || r != er)
+                { fail (std::string ("scListen ") + what + ": out != raw SC delayed N_L at n=" + std::to_string (n)
+                        + " Fs=" + std::to_string (Fs)); return; }
+            }
+        };
+        checkExact (0, false, "stereo");
+        checkExact (0, true,  "stereo+delta"); // scListen outranks Delta
+        checkExact (1, false, "M/S-raw");      // undecoded even in M/S
+        std::printf ("  ok (out == SC[n-%d], exact: stereo / delta / M/S)\n", NL);
+    }
+
     // ---- Reduction-profile (soothe-style depth EQ) shape invariants ----------
     // Independent, oracle-free checks of the per-frequency sensitivity curve
     // (factory_core::ReductionProfile), the single source of truth shared by the
@@ -1197,6 +2981,9 @@ int main (int argc, char** argv)
         bypassToggleTest (Fs);
         deltaMixIdentityTest (Fs);
         suppressionTest (Fs);
+        envelopeNotchTest (Fs);
+        selectivityContrastTest (Fs);
+        gainSmoothingTest (Fs);
         profileTest (Fs);
         stereoLinkTest (Fs);
         silenceTest (Fs, 0); // Soft
@@ -1210,8 +2997,21 @@ int main (int argc, char** argv)
         resetStateTest (Fs);
         releaseBallisticsTest (Fs);
         attackBallisticsTest (Fs);
+        tiltBallisticsTest (Fs);
+        qualityTest (Fs);
         rangeGatingTest (Fs);
         depthSharpnessMidStreamTest (Fs);
+        dualReconstructionTest (Fs);
+        dualDeltaTest (Fs);
+        dualBypassTest (Fs);
+        dualSpeedTest (Fs);
+        dualCrossoverTest (Fs);
+        dualQualityTest (Fs);
+        dualDisplayTest (Fs);
+        linkBlendTest (Fs);
+        msRoundtripTest (Fs);
+        sidechainTest (Fs);
+        scListenTest (Fs);
     }
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }

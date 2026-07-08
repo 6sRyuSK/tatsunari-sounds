@@ -26,13 +26,57 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (modeBox);
     modeAtt = std::make_unique<CA> (processor.apvts, "mode", modeBox);
 
+    // Quality selector, sitting left of Mode. Items added manually like modeBox;
+    // item IDs 1..3 map to parameter indices 0..2 (Fast, Normal, High). Tooltip
+    // only (no modal) — the trade-off is latency vs. low-frequency resolution.
+    qualityBox.addItemList ({ "Fast", "Normal", "High" }, 1);
+    qualityBox.setJustificationType (juce::Justification::centred);
+    qualityBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
+    qualityBox.setTooltip ("Fast: half latency, half low-frequency resolution. High: double resolution, double latency.");
+    addAndMakeVisible (qualityBox);
+    qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualityBox);
+
+    // --- Second header row (Pass 3B routing) — minimal placement; full layout later. ---
+    // Channel mode combo. Manual addItemList like the others; item IDs 1,2 -> 0,1.
+    channelBox.addItemList ({ "Stereo", "Mid-Side" }, 1);
+    channelBox.setJustificationType (juce::Justification::centred);
+    channelBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
+    channelBox.setTooltip ("Stereo: process L/R. Mid-Side: process the M/S encode (bypass stays bit-transparent).");
+    addAndMakeVisible (channelBox);
+    channelAtt = std::make_unique<CA> (processor.apvts, "channelMode", channelBox);
+
+    scEnableB.setTooltip ("Key detection off the Sidechain input bus (falls back to internal when unpatched).");
+    scListenB.setTooltip ("Monitor the raw sidechain (delayed to the plugin latency).");
+    addAndMakeVisible (scEnableB);
+    addAndMakeVisible (scListenB);
+    scEnableAtt = std::make_unique<BA> (processor.apvts, "scEnable", scEnableB);
+    scListenAtt = std::make_unique<BA> (processor.apvts, "scListen", scListenB);
+
+    // Link Amount: horizontal slider with a small caption on its left. Colours come
+    // from the LookAndFeel; % integer text (setSliderDecimals must run AFTER the
+    // attachment — see #23).
+    linkAmtL.setText ("Link Amt", juce::dontSendNotification);
+    linkAmtL.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
+    linkAmtL.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (linkAmtL);
+    linkAmtS.setSliderStyle (juce::Slider::LinearHorizontal);
+    linkAmtS.setTextBoxStyle (juce::Slider::TextBoxRight, false, 42, 18);
+    linkAmtS.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
+    linkAmtS.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    linkAmtS.setTextValueSuffix (" %");
+    addAndMakeVisible (linkAmtS);
+    linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtS);
+    factory_ui::setSliderDecimals (linkAmtS, 0); // % integer, after the attachment (#23)
+
     addAndMakeVisible (curve);
 
-    addKnob (depthS, depthL, "Depth",     " %",  "depth");
-    addKnob (sharpS, sharpL, "Sharpness", " %",  "sharpness");
-    addKnob (atkS,   atkL,   "Attack",    " ms", "attack");
-    addKnob (relS,   relL,   "Release",   " ms", "release");
-    addKnob (mixS,   mixL,   "Mix",       " %",  "mix");
+    addKnob (depthS, depthL, "Depth",       " %",  "depth");
+    addKnob (sharpS, sharpL, "Sharpness",   " %",  "sharpness");
+    addKnob (selS,   selL,   "Selectivity", " %",  "selectivity");
+    addKnob (atkS,   atkL,   "Attack",      " ms", "attack");
+    addKnob (relS,   relL,   "Release",     " ms", "release");
+    addKnob (tiltS,  tiltL,  "Tilt",        " %",  "tilt");
+    addKnob (mixS,   mixL,   "Mix",         " %",  "mix");
 
     deltaAtt  = std::make_unique<BA> (processor.apvts, "delta",  deltaB);
     linkAtt   = std::make_unique<BA> (processor.apvts, "link",   linkB);
@@ -84,10 +128,28 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     deltaB.setBounds (top.removeFromRight (86));
     top.removeFromRight (10);
     modeBox.setBounds (top.removeFromRight (104));
+    top.removeFromRight (6);
+    // Quality sits just left of Mode; the preset selector takes whatever remains in
+    // the middle and shrinks to make room (minimal change — full layout is a later phase).
+    qualityBox.setBounds (top.removeFromRight (86));
     top.removeFromRight (10);
     titleLabel.setBounds (top.removeFromLeft (210));
     top.removeFromLeft (10);
     presetController.selector().setBounds (top);
+
+    // Second slim header row (Pass 3B routing), directly under the top row: channel mode
+    // + sidechain toggles on the left, Link Amount pinned right. The analyser loses
+    // 26+8 px of height for it (minimal placement — full routing layout is a later phase).
+    auto row2 = r.removeFromTop (26);
+    channelBox.setBounds (row2.removeFromLeft (110));
+    row2.removeFromLeft (6);
+    scEnableB.setBounds (row2.removeFromLeft (106));
+    row2.removeFromLeft (6);
+    scListenB.setBounds (row2.removeFromLeft (100));
+    auto linkArea = row2.removeFromRight (200); // "Link Amt" caption + horizontal slider
+    linkAmtL.setBounds (linkArea.removeFromLeft (56));
+    linkAmtS.setBounds (linkArea);
+    r.removeFromTop (8);
 
     r.removeFromTop (10);
     // Bottom control row at ~80% of its former height so the analyser gets the
@@ -97,8 +159,8 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     r.removeFromBottom (12);
     curve.setBounds (r);
 
-    juce::Slider* sl[] = { &depthS, &sharpS, &atkS, &relS, &mixS };
-    juce::Label*  lb[] = { &depthL, &sharpL, &atkL, &relL, &mixL };
+    juce::Slider* sl[] = { &depthS, &sharpS, &selS, &atkS, &relS, &tiltS, &mixS };
+    juce::Label*  lb[] = { &depthL, &sharpL, &selL, &atkL, &relL, &tiltL, &mixL };
     const int n = (int) std::size (sl);
     const int cw = juce::jmin (96, knobs.getWidth() / n);
     knobs = knobs.withSizeKeepingCentre (cw * n, knobs.getHeight());

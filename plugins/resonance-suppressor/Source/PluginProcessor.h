@@ -3,7 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "factory_core/ReductionProfile.h"
-#include "factory_core/ResonanceSuppressor.h"
+#include "factory_core/MultiResSuppressor.h"
 #include "factory_core/StftResolution.h"
 #include "factory_presets/ProgramAdapter.h"
 #include "FactoryPresets.h"
@@ -13,11 +13,20 @@
 
 //
 // Soothe-style dynamic resonance suppressor. The AudioProcessor is a thin
-// wrapper around factory_core::ResonanceSuppressor (STFT spectral engine): per
-// block it configures the engine from the parameters, rasterizes the per-band
-// "reduction profile" nodes into a per-bin multiplier, then processes. It
-// reports the engine's latency to the host and publishes the live magnitude /
-// reduction spectra to the editor lock-free. processBlock does not allocate.
+// wrapper around factory_core::MultiResSuppressor, a dual-resolution STFT engine:
+// an LR4 crossover at 3 kHz splits the signal into a low band (order O) and a
+// high band (order O-2, a 4x shorter window/hop that reacts 4x faster to airband
+// harshness), each suppressed by its own engine and summed at the shared latency
+// N_L. Per block it configures the engine from the parameters, rasterizes the
+// per-band "reduction profile" nodes into a per-bin multiplier on BOTH engines'
+// grids, then processes. It reports the low engine's latency to the host and
+// publishes the live magnitude / reduction spectra -- merged onto the low
+// (display) grid -- to the editor lock-free. processBlock does not allocate.
+//
+// Pass 3B routing: an optional stereo Sidechain input bus keys detection off an
+// external signal (gated on a live connection, so an unpatched bus falls back to
+// internal detection), a Channel Mode switch runs the engine in Stereo or Mid/Side,
+// and Link Amount is a continuous per-channel <-> stereo-linked detection blend.
 //
 class ResonanceSuppressorAudioProcessor final : public juce::AudioProcessor
 {
@@ -25,11 +34,17 @@ public:
     // The STFT order tracks the sample rate so the analyser resolution and the
     // suppressor's detection window stay constant in Hz / seconds (see
     // factory_core::fftOrderForSampleRate). Buffers are sized for the top order;
-    // `activeBins` is the live bin count for the current sample rate.
-    static constexpr int    kBaseFftOrder  = 11;        // N = 2048 at the 48 kHz reference
-    static constexpr int    kMaxFftOrder   = 13;        // N = 8192, keeps ~23 Hz bins through 192 kHz
+    // `activeBins` is the live bin count for the current sample rate AND Quality
+    // (a Quality switch changes the active window length, so it is renegotiated in
+    // processBlock — see the Quality wiring there).
+    static constexpr int    kBaseFftOrder  = 11;        // N = 2048 at the 48 kHz reference (Normal quality)
+    // Buffers must cover the largest window the engine can reach: High quality is
+    // the Normal order + 1, and the Normal order tops out at 13 (N = 8192) around
+    // 176.4/192 kHz, so High reaches order 14 (N = 16384) there. Sizing for order
+    // 13 would overflow the display / profile arrays the moment High is selected.
+    static constexpr int    kMaxFftOrder   = 14;        // N = 16384 (High quality at 176.4/192 kHz)
     static constexpr double kRefSampleRate = 48000.0;
-    static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 4097
+    static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 8193
     static constexpr int    kNumBands      = 4; // + a low cut and a high cut
 
     ResonanceSuppressorAudioProcessor();
@@ -94,6 +109,14 @@ private:
     std::atomic<float>* linkParam   = nullptr;
     std::atomic<float>* bypassParam = nullptr;
     std::atomic<float>* modeParam   = nullptr;
+    std::atomic<float>* selParam    = nullptr; // Selectivity (0..100 %)
+    std::atomic<float>* tiltParam   = nullptr; // Tilt (-100..+100 %)
+    std::atomic<float>* qualityParam = nullptr; // Quality choice (0 Fast, 1 Normal, 2 High)
+    // Pass 3B routing params.
+    std::atomic<float>* linkAmtParam     = nullptr; // Link Amount (0..100 %)
+    std::atomic<float>* channelModeParam = nullptr; // Channel mode (0 Stereo, 1 Mid-Side)
+    std::atomic<float>* scEnableParam    = nullptr; // Sidechain detection enable
+    std::atomic<float>* scListenParam    = nullptr; // Monitor the sidechain
     juce::AudioProcessorParameter* bypassParamPtr = nullptr; // for getBypassParameter()
 
     factory_presets::ProgramAdapter programs;
@@ -107,12 +130,14 @@ private:
     // Assemble the node config from the cached audio-thread pointers.
     factory_core::ReductionNodes currentNodes() const noexcept;
 
-    factory_core::ResonanceSuppressor suppressor;
+    factory_core::MultiResSuppressor suppressor;
     double currentSampleRate = kRefSampleRate;
     int    currentFftOrder   = kBaseFftOrder;
     std::atomic<int> activeBins { (1 << kBaseFftOrder) / 2 + 1 };
-    std::array<double, kMaxBins> profileBuf {};
-    std::array<double, kMaxBins> magScratch {};
+    std::array<double, kMaxBins> profileBuf {};      // reduction profile on the low (display) grid
+    std::array<double, kMaxBins> profileBufHigh {};  // reduction profile on the high engine's grid
+    std::array<double, kMaxBins> magScratch {};      // merged-magnitude display scratch (low grid)
+    std::array<double, kMaxBins> redScratch {};      // merged-reduction display scratch (low grid)
 
     std::array<std::atomic<float>, kMaxBins> pubMag {};
     std::array<std::atomic<float>, kMaxBins> pubRed {};

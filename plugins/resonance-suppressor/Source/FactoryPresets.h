@@ -22,8 +22,14 @@ namespace resonance_suppressor_presets
 {
     // Parameters presets must never touch. "bypass" is excluded fleet-wide so a
     // preset never silences the plugin; "delta" is a monitoring toggle (plan D4)
-    // so a preset never changes what the user is auditioning.
-    inline constexpr const char* kExclude[] = { "bypass", "delta" };
+    // so a preset never changes what the user is auditioning; "quality" is a
+    // latency/CPU trade-off the user owns — a preset switch must not renegotiate
+    // host PDC (latency) nor override the user's Fast/Normal/High choice. "scEnable"
+    // and "scListen" own the user's sidechain routing and monitor state — a preset
+    // must not re-key detection onto (or start monitoring) a sidechain the user has
+    // wired, so both are excluded too. (linkAmt / channelMode are ordinary tone
+    // controls and remain preset-managed.)
+    inline constexpr const char* kExclude[] = { "bypass", "delta", "quality", "scEnable", "scListen" };
     inline constexpr int kNumExclude = (int) (sizeof (kExclude) / sizeof (kExclude[0]));
 
     // ---- draft presets (pending audition) ----
