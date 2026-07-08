@@ -40,6 +40,17 @@
 //      and the step does not introduce a slew far beyond the signal's own
 //      baseline slew (documents current behaviour; a genuine zipper here would
 //      be reported, not silently patched).
+//  13. Latency-preserving bypass: a from-startup-bypassed engine is bit-transparent
+//      to the latency-aligned dry (out[n] == in[n-N]), so toggling bypass never
+//      shifts the plugin against other tracks (PDC intact). A twin (always-active
+//      vs bypass-on-then-off) confirms the crossfade stays finite, is a convex
+//      blend of the two ends throughout the ramp, sits on the aligned dry while
+//      fully bypassed, and returns to a bit-exact match with the active twin.
+//  14. Delta-Mix identity: normal and delta twins are complementary -- their sum
+//      reconstructs the latency-aligned dry within the 1e-12 relative spec
+//      tolerance (exact in real arithmetic; one IEEE rounding, measured <= 1 ULP,
+//      remains in doubles) -- and the delta output scales with Mix bit-exactly:
+//      delta(mix)[n] == fl(mix * delta(1)[n]) with zero tolerance.
 //
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
@@ -179,6 +190,190 @@ namespace
         for (int n = 2 * N; n < M; ++n) e = std::max (e, std::abs (wet[(size_t) n] + rem[(size_t) n] - x[(size_t) (n - N)]));
         if (e > 1.0e-6) fail ("wet+removed != dry err " + std::to_string (e));
         std::printf ("  maxErr=%.2e\n", e);
+    }
+
+    // Bypass must PRESERVE the reported latency (PDC): a from-startup-bypassed
+    // engine is bit-transparent to the *latency-aligned* dry, out[n] == in[n-N],
+    // never the un-delayed input. So toggling bypass never slides the plugin
+    // against other tracks. The engine is driven fully active underneath (depth /
+    // mix set) to prove the output stage — not a shortcut — carries the dry
+    // through untouched. The first N samples are the ring's initial zeros. Strict
+    // equality: a full bypass reads straight from the input ring (no arithmetic).
+    void bypassAlignmentTest (double Fs)
+    {
+        std::printf ("Bypass alignment (out[n]==in[n-N], exact) @ Fs=%.0f\n", Fs);
+        const int N = 1 << orderFor (Fs);
+        const int M = std::max (1 << 14, 4 * N);
+        std::mt19937 rng (29);
+        std::normal_distribution<double> g (0.0, 0.3);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * 1200.0 * n / Fs);
+
+        factory_core::ResonanceSuppressor s;
+        s.prepare (Fs, orderFor (Fs));
+        s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.7); // engine fully active underneath
+        s.setBypassed (true);
+        s.reset(); // snap the crossfade to the bypassed end, so it is transparent from n=0
+
+        double e = 0.0;
+        for (int n = 0; n < M; ++n)
+        {
+            double l = x[(size_t) n], r = x[(size_t) n];
+            s.process (l, r);
+            const double expected = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+            e = std::max (e, std::max (std::abs (l - expected), std::abs (r - expected)));
+            if (l != expected || r != expected)
+            { fail ("bypass not bit-transparent at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); break; }
+        }
+        std::printf ("  maxErr=%.2e (expect 0)\n", e);
+    }
+
+    // Twin engines on identical input/config: A stays active, B is bypassed then
+    // released. Bypass only gates the *output* stage, so A and B share internal
+    // STFT state exactly. Therefore: (a) all finite; (b) once B's ramp reaches the
+    // bypassed end, B == the latency-aligned dry until release (exact ring read);
+    // (c) once the release ramp completes, B == A bit-exactly (identical arithmetic
+    // on identical state); (d) throughout, B is a convex blend of A and the aligned
+    // dry, so it never exceeds their pointwise max. `settle` is a generous margin
+    // past the engine's 10 ms bypass ramp, so the strict windows sit clear of it.
+    void bypassToggleTest (double Fs)
+    {
+        std::printf ("Bypass toggle (twin active vs bypass on/off) @ Fs=%.0f\n", Fs);
+        const int N = 1 << orderFor (Fs);
+        const double kRampSec = 0.010;                            // engine's kBypassRampSec (spec constant)
+        const int settle = (int) std::ceil (kRampSec * Fs) + 16;  // generous: safely past the full ramp
+        const int tOn  = 4 * N;
+        const int tOff = tOn + settle + 4 * N;
+        const int M    = tOff + settle + 4 * N + 256;
+
+        std::mt19937 rng (31);
+        std::normal_distribution<double> g (0.0, 0.25);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 2000.0 * n / Fs);
+
+        auto cfg = [] (factory_core::ResonanceSuppressor& s) { s.setDepth (1.2); s.setSharpness (0.5); s.setMix (0.8); };
+        factory_core::ResonanceSuppressor A, B;
+        A.prepare (Fs, orderFor (Fs)); cfg (A); A.reset();
+        B.prepare (Fs, orderFor (Fs)); cfg (B); B.reset();
+
+        std::vector<double> a ((size_t) M), b ((size_t) M);
+        bool boundBad = false;
+        for (int n = 0; n < M; ++n)
+        {
+            if (n == tOn)  B.setBypassed (true);
+            if (n == tOff) B.setBypassed (false);
+            double la = x[(size_t) n], ra = x[(size_t) n];
+            double lb = x[(size_t) n], rb = x[(size_t) n];
+            A.process (la, ra);
+            B.process (lb, rb);
+            a[(size_t) n] = la; b[(size_t) n] = lb;
+
+            // (d) convex-blend bound: B lies between the active output and the
+            // aligned dry (holds every sample; +eps slack for the tie at the ends).
+            const double dryAligned = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+            const double bound = std::max (std::abs (dryAligned), std::abs (la)) + 1.0e-12;
+            if (! boundBad && (std::abs (lb) > bound || std::abs (rb) > bound))
+            { fail ("bypass blend exceeded convex bound at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); boundBad = true; }
+        }
+
+        // (a) finite.
+        if (! factory_core::testing::allFinite (a) || ! factory_core::testing::allFinite (b))
+            fail ("bypass toggle produced non-finite output at Fs=" + std::to_string (Fs));
+
+        // (b) fully bypassed window: B == latency-aligned dry, exactly.
+        for (int n = tOn + settle; n < tOff; ++n)
+            if (b[(size_t) n] != x[(size_t) (n - N)])
+            { fail ("bypassed B != aligned dry at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); break; }
+
+        // (c) after the release ramp: B == A, exactly.
+        for (int n = tOff + settle; n < M; ++n)
+            if (b[(size_t) n] != a[(size_t) n])
+            { fail ("post-release B != A at n=" + std::to_string (n) + " Fs=" + std::to_string (Fs)); break; }
+
+        std::printf ("  ok (N=%d settle=%d tOn=%d tOff=%d M=%d)\n", N, settle, tOn, tOff, M);
+    }
+
+    // Delta must monitor exactly what Mix removes: out_delta = mix*(dry-wet), the
+    // exact IEEE sign inversion of the normal path's blend term mix*(wet-dry).
+    // Two gates on twin engines (identical config/input, delta=false vs true):
+    //  (i) Complementarity: out_normal[n] + out_delta[n] reconstructs the
+    //      latency-aligned dry, computed test-side from the raw input history
+    //      (not the engine). The identity is exact in real arithmetic; in IEEE
+    //      doubles the normal path's outer add rounds once, so the sum can miss
+    //      the dry by one rounding (2Sum non-identity). The 1e-12 relative
+    //      tolerance is the spec value from the approved rework plan: it absorbs
+    //      that <= 1 ULP residual (measured max 2.22e-16 across all rates and
+    //      mixes) with margin, while the bug it gates -- an unscaled full-range
+    //      delta -- leaves ~(1-mix)*|dry-wet|, many orders larger, and fails hard.
+    // (ii) Exact Mix scaling, tolerance zero: out_delta(mix)[n] ==
+    //      fl(mix * out_delta(1)[n]) bit-exactly. Mix feeds no STFT state, so
+    //      both sides are the same single multiply on the same dry-wet
+    //      difference (at mix=1 the delta output is exactly fl(dry-wet)).
+    void deltaMixIdentityTest (double Fs)
+    {
+        std::printf ("Delta-Mix identity (complementarity + exact scaling) @ Fs=%.0f\n", Fs);
+        const int N = 1 << orderFor (Fs);
+        const int M = std::max (1 << 14, 4 * N);
+        std::mt19937 rng (41);
+        std::normal_distribution<double> g (0.0, 0.3);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * 1500.0 * n / Fs);
+
+        auto cfg = [] (factory_core::ResonanceSuppressor& s) { s.setDepth (1.2); s.setSharpness (0.5); };
+
+        // Reference removed signal: delta at mix=1 outputs exactly fl(dry-wet).
+        std::vector<double> refL ((size_t) M), refR ((size_t) M);
+        {
+            factory_core::ResonanceSuppressor d1;
+            d1.prepare (Fs, orderFor (Fs)); cfg (d1); d1.setDelta (true); d1.setMix (1.0);
+            for (int n = 0; n < M; ++n)
+            {
+                double l = x[(size_t) n], r = x[(size_t) n];
+                d1.process (l, r);
+                refL[(size_t) n] = l; refR[(size_t) n] = r;
+            }
+        }
+        // Sanity: the gates below must act on a real removed signal, not silence.
+        if (factory_core::testing::peakAbs (refL) < 1.0e-3)
+            fail ("delta reference carries no removed signal (vacuous gate) at Fs=" + std::to_string (Fs));
+
+        double maxRel = 0.0;
+        for (double m : { 0.0, 0.3, 0.8, 1.0 })
+        {
+            factory_core::ResonanceSuppressor nrm, del;
+            nrm.prepare (Fs, orderFor (Fs)); cfg (nrm); nrm.setMix (m);
+            del.prepare (Fs, orderFor (Fs)); cfg (del); del.setMix (m); del.setDelta (true);
+
+            bool badSum = false, badScale = false;
+            for (int n = 0; n < M; ++n)
+            {
+                double ln = x[(size_t) n], rn = x[(size_t) n];
+                double ld = x[(size_t) n], rd = x[(size_t) n];
+                nrm.process (ln, rn);
+                del.process (ld, rd);
+
+                // (i) complementarity vs the test-side aligned dry (first N: ring zeros).
+                const double dryAligned = (n >= N) ? x[(size_t) (n - N)] : 0.0;
+                const double scale = std::max (1.0, std::abs (dryAligned));
+                const double res = std::max (std::abs (ln + ld - dryAligned), std::abs (rn + rd - dryAligned));
+                maxRel = std::max (maxRel, res / scale);
+                if (! badSum && res > 1.0e-12 * scale)
+                {
+                    char resStr[32]; std::snprintf (resStr, sizeof (resStr), "%.2e", res);
+                    fail ("normal+delta != aligned dry (res " + std::string (resStr) + ") at n=" + std::to_string (n)
+                          + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
+                    badSum = true;
+                }
+                // (ii) exact Mix scaling of the delta output (tolerance zero).
+                if (! badScale && (ld != m * refL[(size_t) n] || rd != m * refR[(size_t) n]))
+                {
+                    fail ("delta(mix) != mix*delta(1) at n=" + std::to_string (n)
+                          + " mix=" + std::to_string (m) + " Fs=" + std::to_string (Fs));
+                    badScale = true;
+                }
+            }
+        }
+        std::printf ("  maxRelResidual=%.2e (spec tol 1e-12), scaling exact\n", maxRel);
     }
 
     void suppressionTest (double Fs)
@@ -998,6 +1193,9 @@ int main (int argc, char** argv)
         reconstructionTest (Fs);
         deltaTest (Fs, 0);   // Soft
         deltaTest (Fs, 1);   // Hard
+        bypassAlignmentTest (Fs);
+        bypassToggleTest (Fs);
+        deltaMixIdentityTest (Fs);
         suppressionTest (Fs);
         profileTest (Fs);
         stereoLinkTest (Fs);
