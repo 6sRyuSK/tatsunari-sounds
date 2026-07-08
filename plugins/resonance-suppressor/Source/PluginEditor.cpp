@@ -36,7 +36,7 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (qualityBox);
     qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualityBox);
 
-    // --- Second header row (Pass 3B routing) — minimal placement; full layout later. ---
+    // --- Second header row: Mode/Quality/Channel/Sidechain/SC Listen/Delta/Link + Link Amt. ---
     // Channel mode combo. Manual addItemList like the others; item IDs 1,2 -> 0,1.
     channelBox.addItemList ({ "Stereo", "Mid-Side" }, 1);
     channelBox.setJustificationType (juce::Justification::centred);
@@ -68,6 +68,47 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtS);
     factory_ui::setSliderDecimals (linkAmtS, 0); // % integer, after the attachment (#23)
 
+    // --- Phase 5b-1: A/B compare. A two-way radio pair (mutually-exclusive
+    // highlight via a shared radio group ID) plus a Copy button that copies the
+    // active slot's live state onto the inactive one. Palette only: panel() for
+    // the unselected fill, accent() for the selected fill, text()/white for the
+    // label so the selected pill reads clearly against the coral fill.
+    for (auto* b : { &abAButton, &abBButton })
+    {
+        b->setClickingTogglesState (true);
+        b->setRadioGroupId (0x4142, juce::dontSendNotification); // 'AB'
+        b->setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
+        b->setColour (juce::TextButton::buttonOnColourId, FactoryLookAndFeel::accent());
+        b->setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::text());
+        b->setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+        addAndMakeVisible (*b);
+    }
+    abAButton.setToggleState (true, juce::dontSendNotification); // matches abActive == 0 at construction
+    abAButton.setTooltip ("Switch to comparison slot A.");
+    abBButton.setTooltip ("Switch to comparison slot B.");
+    abAButton.onClick = [this] { processor.setABSlot (0); updateABUI(); };
+    abBButton.onClick = [this] { processor.setABSlot (1); updateABUI(); };
+
+    abCopyButton.setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
+    abCopyButton.setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::accent());
+    addAndMakeVisible (abCopyButton);
+    abCopyButton.onClick = [this] { processor.copyActiveToOther(); updateABUI(); };
+
+    // --- Phase 5b-2: Undo/Redo. UndoManager lives on the processor (declared
+    // ahead of apvts so the APVTS ctor can bind to it -- see PluginProcessor.h);
+    // enabled state is refreshed on click and by the idle-transaction timer
+    // below (timerCallback()), which also covers host-driven parameter changes.
+    for (auto* b : { &undoButton, &redoButton })
+    {
+        b->setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
+        b->setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::text());
+        addAndMakeVisible (*b);
+    }
+    undoButton.setTooltip ("Undo the last parameter change.");
+    redoButton.setTooltip ("Redo.");
+    undoButton.onClick = [this] { processor.getUndoManager().undo(); refreshUndoRedoButtons(); };
+    redoButton.onClick = [this] { processor.getUndoManager().redo(); refreshUndoRedoButtons(); };
+
     addAndMakeVisible (curve);
 
     addKnob (depthS, depthL, "Depth",       " %",  "depth");
@@ -82,17 +123,58 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     linkAtt   = std::make_unique<BA> (processor.apvts, "link",   linkB);
     bypassAtt = std::make_unique<BA> (processor.apvts, "bypass", bypassB);
 
+    updateABUI();
+    refreshUndoRedoButtons();
+    startTimer (500); // idle-transaction boundary + Undo/Redo enable refresh (Phase 5b-2)
+
     setResizable (true, true);
-    setResizeLimits (640, 440, 1280, 900);
+    // Phase 5b: the busier 2-row header (A/B + Undo/Redo added to row 1; Mode/
+    // Quality/Delta/Link moved down into row 2 alongside Channel/Sidechain/SC
+    // Listen/Link Amt) no longer fits the old 640x440 floor -- measured against
+    // the actual row-1/row-2 control widths below (see resized()), 860x590 is
+    // the smallest size that lays out every control without overlap or clipping
+    // (verified against a Standalone build). Aspect ratio re-derived from that
+    // floor (was 760/520) rather than kept arbitrarily.
+    setResizeLimits (860, 590, 1300, 892);
     if (auto* c = getConstrainer())
-        c->setFixedAspectRatio (760.0 / 520.0);
-    setSize (912, 624); // default 20% larger than the 760x520 reference (same aspect)
+        c->setFixedAspectRatio (860.0 / 590.0);
+    setSize (1032, 708); // default 20% larger than the 860x590 reference (same aspect)
 }
 
 ResonanceSuppressorAudioProcessorEditor::~ResonanceSuppressorAudioProcessorEditor()
 {
+    stopTimer();
     processor.setListenNode (-1); // Phase 5a-2: never leave Listen soloed after the editor closes
     setLookAndFeel (nullptr);
+}
+
+void ResonanceSuppressorAudioProcessorEditor::timerCallback()
+{
+    // Idle-transaction boundary (Phase 5b-2): the APVTS's own value -> ValueTree
+    // flush timer routes every parameter write through the UndoManager, but
+    // without transaction breaks a whole session collapses into one undo step.
+    // Closing the transaction here every 500 ms turns each burst of edits
+    // (a knob drag, a curve-node drag, a click) into its own discrete step
+    // without needing per-gesture hooks into every attachment / the curve's
+    // own begin/endGesture calls.
+    processor.getUndoManager().beginNewTransaction();
+    refreshUndoRedoButtons();
+}
+
+void ResonanceSuppressorAudioProcessorEditor::refreshUndoRedoButtons()
+{
+    auto& um = processor.getUndoManager();
+    undoButton.setEnabled (um.canUndo());
+    redoButton.setEnabled (um.canRedo());
+}
+
+void ResonanceSuppressorAudioProcessorEditor::updateABUI()
+{
+    const bool isA = processor.getABSlot() == 0;
+    abAButton.setToggleState (isA, juce::dontSendNotification);
+    abBButton.setToggleState (! isA, juce::dontSendNotification);
+    abCopyButton.setButtonText (isA ? "Copy A>B" : "Copy B>A");
+    abCopyButton.setTooltip (juce::String ("Copy slot ") + (isA ? "A" : "B") + " onto slot " + (isA ? "B" : "A") + ".");
 }
 
 void ResonanceSuppressorAudioProcessorEditor::addKnob (juce::Slider& s, juce::Label& l,
@@ -119,37 +201,48 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds().reduced (16);
 
+    // ---- Header row 1: title (left) / presets (centre, stretches) / A|B +
+    // Copy / Undo|Redo / Bypass (right). ----
     auto top = r.removeFromTop (28);
-    // Each pill reserves ~42px (toggle box + gap) before its caption, so give
-    // every toggle room for its full label — "Link" was clipped at 64px (see #25).
     bypassB.setBounds (top.removeFromRight (98));
-    top.removeFromRight (6);
-    linkB.setBounds (top.removeFromRight (82));
-    top.removeFromRight (6);
-    deltaB.setBounds (top.removeFromRight (86));
     top.removeFromRight (10);
-    modeBox.setBounds (top.removeFromRight (104));
+    redoButton.setBounds (top.removeFromRight (50));
+    top.removeFromRight (4);
+    undoButton.setBounds (top.removeFromRight (50));
+    top.removeFromRight (12);
+    abCopyButton.setBounds (top.removeFromRight (78));
     top.removeFromRight (6);
-    // Quality sits just left of Mode; the preset selector takes whatever remains in
-    // the middle and shrinks to make room (minimal change — full layout is a later phase).
-    qualityBox.setBounds (top.removeFromRight (86));
-    top.removeFromRight (10);
-    titleLabel.setBounds (top.removeFromLeft (210));
+    abBButton.setBounds (top.removeFromRight (26));
+    top.removeFromRight (2);
+    abAButton.setBounds (top.removeFromRight (26));
+    top.removeFromRight (12);
+    titleLabel.setBounds (top.removeFromLeft (150));
     top.removeFromLeft (10);
     presetController.selector().setBounds (top);
 
-    // Second slim header row (Pass 3B routing), directly under the top row: channel mode
-    // + sidechain toggles on the left, Link Amount pinned right. The analyser loses
-    // 26+8 px of height for it (minimal placement — full routing layout is a later phase).
+    // ---- Header row 2: Mode / Quality / Channel / Sidechain / SC Listen /
+    // Delta / Link + Link Amt. Mode/Quality/Delta/Link moved down here from row
+    // 1 (Phase 5b) to make room for A/B + Undo/Redo above; each toggle pill
+    // keeps the width it was tuned to (pill + full caption, see #25) since only
+    // the row changed, not the control. ----
     auto row2 = r.removeFromTop (26);
-    channelBox.setBounds (row2.removeFromLeft (110));
+    modeBox.setBounds (row2.removeFromLeft (94));
+    row2.removeFromLeft (6);
+    qualityBox.setBounds (row2.removeFromLeft (80));
+    row2.removeFromLeft (10);
+    channelBox.setBounds (row2.removeFromLeft (100));
     row2.removeFromLeft (6);
     scEnableB.setBounds (row2.removeFromLeft (106));
     row2.removeFromLeft (6);
     scListenB.setBounds (row2.removeFromLeft (100));
-    auto linkArea = row2.removeFromRight (200); // "Link Amt" caption + horizontal slider
-    linkAmtL.setBounds (linkArea.removeFromLeft (56));
-    linkAmtS.setBounds (linkArea);
+    row2.removeFromLeft (10);
+    deltaB.setBounds (row2.removeFromLeft (86));
+    row2.removeFromLeft (6);
+    linkB.setBounds (row2.removeFromLeft (82));
+    row2.removeFromLeft (10);
+    // Link Amount takes whatever remains on the right: caption + horizontal slider.
+    linkAmtL.setBounds (row2.removeFromLeft (56));
+    linkAmtS.setBounds (row2);
     r.removeFromTop (8);
 
     r.removeFromTop (10);

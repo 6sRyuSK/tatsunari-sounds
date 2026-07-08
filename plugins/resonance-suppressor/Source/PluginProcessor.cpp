@@ -193,7 +193,7 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
           .withInput  ("Input",     juce::AudioChannelSet::stereo(), true)
           .withOutput ("Output",    juce::AudioChannelSet::stereo(), true)
           .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)), // optional detector key
-      apvts (*this, nullptr, "PARAMS", createParameterLayout())
+      apvts (*this, &undoManager, "PARAMS", createParameterLayout())
 {
     depthParam  = apvts.getRawParameterValue ("depth");
     sharpParam  = apvts.getRawParameterValue ("sharpness");
@@ -456,6 +456,10 @@ juce::AudioProcessorEditor* ResonanceSuppressorAudioProcessor::createEditor()
     return new ResonanceSuppressorAudioProcessorEditor (*this);
 }
 
+// Host persistence: intentionally always the CURRENT live state (APVTS +
+// program index), same as before A/B existed. A/B slots are a session-only
+// scratchpad (see setABSlot below) and never reach this blob -- switching A/B
+// does not change what a host save/reload restores.
 void ResonanceSuppressorAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = factory_presets::stateToXml (apvts, programs))
@@ -465,6 +469,57 @@ void ResonanceSuppressorAudioProcessor::getStateInformation (juce::MemoryBlock& 
 void ResonanceSuppressorAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
+}
+
+// --- A/B compare (Phase 5b-1) ---------------------------------------------
+// Same scope as getStateInformation (APVTS + program index via
+// stateToXml/applyStateXml) -- listenNode and other transient execution state
+// are deliberately excluded, matching the host-save scope exactly.
+
+void ResonanceSuppressorAudioProcessor::copyStateToSlot (int slot)
+{
+    jassert (slot == 0 || slot == 1);
+    if (auto xml = factory_presets::stateToXml (apvts, programs))
+        copyXmlToBinary (*xml, abState[(size_t) slot]);
+}
+
+void ResonanceSuppressorAudioProcessor::loadStateFromSlot (int slot)
+{
+    jassert (slot == 0 || slot == 1);
+    if (abState[(size_t) slot].getSize() == 0)
+        return; // never written (shouldn't happen -- setABSlot seeds it on first visit)
+    factory_presets::applyStateXml (apvts, programs,
+        getXmlFromBinary (abState[(size_t) slot].getData(), (int) abState[(size_t) slot].getSize()).get());
+    // applyStateXml restored the slot's program index (programs.readStateAttribute)
+    // without any program-change notification, so fire one -- the same idiom
+    // PresetSelectorController uses after a user pick (setCurrentProgram +
+    // updateHostDisplay withProgramChanged). Without it the editor's preset
+    // combo and the DAW's program display keep showing the OLD slot's preset
+    // name after an A/B switch. The controller marshals its refresh through
+    // callAsync, so no synchronous re-entrancy; message-thread only (see the
+    // A/B API comment in the header), so no RT impact.
+    updateHostDisplay (juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged (true));
+}
+
+void ResonanceSuppressorAudioProcessor::setABSlot (int slot)
+{
+    jassert (slot == 0 || slot == 1);
+    if (slot == abActive)
+        return; // re-picking the already-active slot is a no-op -- notably it must NOT
+                // round-trip through loadStateFromSlot, which (via applyStateXml's
+                // apvts.replaceState) clears undo history; a reselect of the current
+                // slot is not a state change and must not have that side effect.
+    copyStateToSlot (abActive); // stash the state of the slot we are leaving
+    abActive = slot;
+    if (abState[(size_t) slot].getSize() > 0)
+        loadStateFromSlot (slot);
+    else
+        copyStateToSlot (slot); // first visit to this slot: seed it with the current (still-live) state
+}
+
+void ResonanceSuppressorAudioProcessor::copyActiveToOther()
+{
+    copyStateToSlot (1 - abActive); // the active slot's live state onto the other slot's storage
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
