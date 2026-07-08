@@ -281,9 +281,16 @@ namespace
     // Parameters introduced after v1.2.0 (absent from the fixture above). Each must
     // read back at its OWN default when the fixture loads. Append here in later phases.
     // v1.3.0: selectivity/tilt/quality. v1.5.0 (Pass 3B routing): linkAmt/channelMode/
-    // scEnable/scListen.
+    // scEnable/scListen. v1.6.0 (Phase 4: 8-band width EQ): b4..b7 on/freq/type/sens
+    // (bands 5-8, off by default) and b0..b7 width (all 8 bands, default 0.50).
     const char* const kV120NewParams[] = { "selectivity", "tilt", "quality",
-                                           "linkAmt", "channelMode", "scEnable", "scListen" };
+                                           "linkAmt", "channelMode", "scEnable", "scListen",
+                                           "b4_on", "b4_freq", "b4_type", "b4_sens",
+                                           "b5_on", "b5_freq", "b5_type", "b5_sens",
+                                           "b6_on", "b6_freq", "b6_type", "b6_sens",
+                                           "b7_on", "b7_freq", "b7_type", "b7_sens",
+                                           "b0_width", "b1_width", "b2_width", "b3_width",
+                                           "b4_width", "b5_width", "b6_width", "b7_width" };
 
     // Tolerance mirrors checks 3/6: an absolute floor plus a range-proportional term
     // (denorm -> norm -> denorm is lossy for skewed ranges within ~this bound).
