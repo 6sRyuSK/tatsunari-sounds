@@ -61,6 +61,12 @@ public:
         setColour (juce::PopupMenu::highlightedBackgroundColourId, accentDim());
         setColour (juce::PopupMenu::textColourId, text());
         setColour (juce::PopupMenu::highlightedTextColourId, text());
+        // Section headers (juce::ComboBox::addSectionHeading, e.g. the "User"
+        // row PresetSelectorController adds ahead of user presets -- Phase 5c):
+        // LookAndFeel_V4's base ctor defaults headerTextColourId from its DARK
+        // colour scheme (white), which is invisible against our white panel()
+        // popup background unless set explicitly here.
+        setColour (juce::PopupMenu::headerTextColourId, accent());
     }
 
     void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,

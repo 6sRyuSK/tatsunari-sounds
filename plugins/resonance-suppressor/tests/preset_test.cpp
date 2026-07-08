@@ -23,9 +23,16 @@
 //      loads so that (a) every old param takes its fixture value and (b) the
 //      params added after v1.2.0 (selectivity/tilt/quality) stay at their
 //      defaults — the forward-compat guarantee a minor bump relies on.
+//   8. (Phase 5c) factory_presets::UserPresetStore round-trips: save -> list
+//      contains -> load -> XML equivalent -> remove -> list empty; illegal
+//      filename characters sanitise (still self-consistent load/remove
+//      through the same name); overwrite replaces in place (no duplicate row).
+//      Runs entirely against a scratch temp directory (the File-override
+//      constructor) — never touches the real userAppData.
 //
 #include "PluginProcessor.h"
 #include "FactoryPresets.h"
+#include "factory_presets/UserPresetStore.h"
 
 #include <cstdio>
 #include <memory>
@@ -347,6 +354,100 @@ namespace
                       + " after loading v1.2.0 state (expected default " + std::to_string (def) + ")");
         }
     }
+
+    // ------------------------------------------------------------------------
+    // check 8 — factory_presets::UserPresetStore (Phase 5c shared infra).
+    //
+    // Pure file-I/O round-trips against a scratch temp directory (the
+    // File-override constructor -- see UserPresetStore.h), independent of any
+    // processor. The oracle is direct filesystem inspection (existsAsFile() on
+    // the path this test computes itself via juce::File::createLegalFileName,
+    // the same JUCE primitive the store uses) plus juce::XmlElement's own
+    // isEquivalentTo, not a re-derivation of the store's internal logic.
+    void check8_user_preset_store()
+    {
+        std::printf ("8. UserPresetStore round-trip (save/list/load/remove, sanitisation, overwrite)\n");
+
+        const auto tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                 .getChildFile ("rs_user_preset_test_" + juce::String ((juce::int64) juce::Time::getHighResolutionTicks()));
+        tempDir.deleteRecursively(); // in case a previous crashed run left it behind
+        factory_presets::UserPresetStore store (tempDir);
+
+        // Directory doesn't exist yet -- list()/exists() must not throw/assert.
+        if (! store.list().isEmpty())
+            fail ("fresh store is not empty before anything was saved");
+        if (store.exists ("Anything"))
+            fail ("exists() true before anything was saved");
+        if (store.load ("Anything") != nullptr)
+            fail ("load() non-null before anything was saved");
+
+        // save -> list contains -> load -> XML equivalent -> remove -> list empty.
+        juce::XmlElement fixtureA ("TestState");
+        fixtureA.setAttribute ("foo", 42);
+        fixtureA.setAttribute ("bar", "hello");
+
+        if (! store.save ("My Preset", fixtureA))
+            fail ("save('My Preset') returned false");
+        if (! store.list().contains ("My Preset"))
+            fail ("list() does not contain 'My Preset' after save");
+        if (! store.exists ("My Preset"))
+            fail ("exists('My Preset') false after save");
+
+        auto loadedA = store.load ("My Preset");
+        if (loadedA == nullptr)
+            fail ("load('My Preset') returned nullptr");
+        else if (! loadedA->isEquivalentTo (&fixtureA, false))
+            fail ("loaded XML is not equivalent to the saved fixture");
+
+        if (! store.remove ("My Preset"))
+            fail ("remove('My Preset') returned false");
+        if (store.list().contains ("My Preset"))
+            fail ("list() still contains 'My Preset' after remove");
+        if (store.exists ("My Preset"))
+            fail ("exists('My Preset') true after remove");
+        if (store.load ("My Preset") != nullptr)
+            fail ("load('My Preset') non-null after remove");
+        if (! store.remove ("My Preset"))
+            fail ("remove() of an already-absent preset must be a no-op success, not a failure");
+
+        // Illegal filename characters: still self-consistent through save/list/
+        // load/remove of the SAME raw name (independent oracle: this test's own
+        // call to juce::File::createLegalFileName, checked directly against disk).
+        const juce::String illegalName = "weird:name?/here";
+        const juce::String expectedLegal = juce::File::createLegalFileName (illegalName);
+        if (! store.save (illegalName, fixtureA))
+            fail ("save() with illegal filename characters returned false");
+        if (! tempDir.getChildFile (expectedLegal + ".xml").existsAsFile())
+            fail ("save() with illegal filename characters did not sanitise to the expected path '"
+                  + expectedLegal.toStdString() + ".xml'");
+        if (! store.list().contains (expectedLegal))
+            fail ("list() does not contain the sanitised name '" + expectedLegal.toStdString() + "'");
+        auto loadedIllegal = store.load (illegalName); // same raw name re-sanitises identically
+        if (loadedIllegal == nullptr)
+            fail ("load() of the original illegal-name string returned nullptr");
+        else if (! loadedIllegal->isEquivalentTo (&fixtureA, false))
+            fail ("loaded XML (illegal-name case) is not equivalent to the saved fixture");
+        if (! store.remove (illegalName))
+            fail ("remove() of the original illegal-name string returned false");
+
+        // Overwrite: second save() under the same name replaces in place (no
+        // duplicate list() entry, and the load reflects the NEW content).
+        juce::XmlElement fixtureB ("TestState");
+        fixtureB.setAttribute ("foo", 99);
+        if (! store.save ("Over", fixtureA))
+            fail ("save('Over', fixtureA) returned false");
+        if (! store.save ("Over", fixtureB))
+            fail ("save('Over', fixtureB) [overwrite] returned false");
+        const auto namesAfterOverwrite = store.list();
+        if (namesAfterOverwrite.size() != 1 || ! namesAfterOverwrite.contains ("Over"))
+            fail ("overwrite produced " + std::to_string (namesAfterOverwrite.size())
+                  + " entries named 'Over' (expected exactly 1)");
+        auto loadedOver = store.load ("Over");
+        if (loadedOver == nullptr || ! loadedOver->isEquivalentTo (&fixtureB, false))
+            fail ("load('Over') after overwrite did not reflect the second save");
+
+        tempDir.deleteRecursively(); // leave no artefact behind, pass or fail
+    }
 }
 
 int main()
@@ -369,6 +470,7 @@ int main()
     check5_index_roundtrip (*processor);
     check6_full_state_roundtrip (*processor);
     check7_v120_state_compat();
+    check8_user_preset_store();
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);
