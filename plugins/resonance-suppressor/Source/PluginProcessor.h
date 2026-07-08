@@ -28,6 +28,16 @@
 // internal detection), a Channel Mode switch runs the engine in Stereo or Mid/Side,
 // and Link Amount is a continuous per-channel <-> stereo-linked detection blend.
 //
+// Phase 5a-1: the editor can solo one reduction node's removed signal (Listen,
+// setListenNode/getListenNode -- NOT an APVTS parameter, so it is never saved or
+// automated). While a node is soloed, processBlock rasterises a single-node
+// profile (only that node's cut/band contributes) onto both engines' grids and
+// forces delta=true / mix=1.0 for that block only (the APVTS delta/mix params
+// are untouched), so the output is exactly what that one node removes; SC Listen
+// is forced off (Listen outranks it). displayMagPreDb() additionally publishes
+// the PRE-gain (input) spectrum alongside displayMagDb() (post), so the editor
+// can show input vs. suppressed side by side.
+//
 class ResonanceSuppressorAudioProcessor final : public juce::AudioProcessor
 {
 public:
@@ -94,11 +104,27 @@ public:
     // Editor display snapshots (GUI thread reads; lock-free).
     float displayMagDb (int bin) const noexcept { return pubMag[(size_t) bin].load (std::memory_order_relaxed); }
     float displayRedDb (int bin) const noexcept { return pubRed[(size_t) bin].load (std::memory_order_relaxed); }
+    // Pre-gain (input) spectrum snapshot (Phase 5a-1-C), same bin grid as
+    // displayMagDb() -- the input spectrum ahead of suppression.
+    float displayMagPreDb (int bin) const noexcept { return pubMagPre[(size_t) bin].load (std::memory_order_relaxed); }
     int   binsForDisplay() const noexcept { return activeBins.load (std::memory_order_relaxed); }
+
+    // Listen (Phase 5a-1-B): solo one reduction node's removed signal (output =
+    // exactly what that node is cutting, mix-independent). NOT an APVTS
+    // parameter -- non-automatable, non-persisted, editor-only transient state;
+    // GUI thread writes, audio thread reads once per block. id convention
+    // matches the reduction nodes: 0 = low cut, 1 = high cut, 2..(1+kNumBands)
+    // = bands, -1 = disabled (normal processing).
+    void setListenNode (int id) noexcept { listenNode.store (id, std::memory_order_relaxed); }
+    int  getListenNode() const noexcept { return listenNode.load (std::memory_order_relaxed); }
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void rasterizeProfile();
+    // Listen (5a-1-B): rasterise a profile with only ONE node (nodeId) copied
+    // from the live parameters, everything else off -- same per-engine grid
+    // mapping as rasterizeProfile(), just a single-node config.
+    void rasterizeListenProfile (int nodeId);
 
     std::atomic<float>* depthParam  = nullptr;
     std::atomic<float>* sharpParam  = nullptr;
@@ -138,9 +164,18 @@ private:
     std::array<double, kMaxBins> profileBufHigh {};  // reduction profile on the high engine's grid
     std::array<double, kMaxBins> magScratch {};      // merged-magnitude display scratch (low grid)
     std::array<double, kMaxBins> redScratch {};      // merged-reduction display scratch (low grid)
+    std::array<double, kMaxBins> preScratch {};      // merged pre-gain magnitude display scratch (low grid)
+    // Listen (5a-1-B): single-node profile, rasterised fresh each block on both
+    // engines' grids (prepared arrays, no allocation -- mirrors profileBuf/High).
+    std::array<double, kMaxBins> listenProfileLow {};
+    std::array<double, kMaxBins> listenProfileHigh {};
+    // Listen target: -1 = disabled (normal processing). GUI thread writes,
+    // audio thread reads once per block (see setListenNode/getListenNode).
+    std::atomic<int> listenNode { -1 };
 
     std::array<std::atomic<float>, kMaxBins> pubMag {};
     std::array<std::atomic<float>, kMaxBins> pubRed {};
+    std::array<std::atomic<float>, kMaxBins> pubMagPre {}; // pre-gain (input) spectrum (5a-1-C)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ResonanceSuppressorAudioProcessor)
 };

@@ -55,6 +55,12 @@
 // JUCE-independent, allocation-free in process(): all buffers are sized in
 // prepare() at the maximum order.
 //
+// Pre-spectrum display (5a-1-A): alongside dispMag/magnitudeDb (the POST,
+// gain-applied analyser magnitude), dispMagPre/magnitudePreDb capture the SAME
+// per-bin worst-case magnitude before the per-bin gain is applied -- the input
+// spectrum, on the same normalisation and grid -- so a caller can show pre and
+// post side by side (e.g. what a node is about to remove).
+//
 #include "FFT.h"
 #include "SmoothingCoeff.h"
 
@@ -136,6 +142,7 @@ namespace factory_core
             prefix.assign   ((size_t) (maxBins + 1), 0.0);
             dispMag.assign  ((size_t) maxBins, 0.0);
             dispRedDb.assign((size_t) maxBins, 0.0);
+            dispMagPre.assign((size_t) maxBins, 0.0);
             profile.assign  ((size_t) maxBins, 1.0);
 
             // Per-bin ballistics coefficient arrays + the order-independent ln(k)
@@ -259,6 +266,19 @@ namespace factory_core
             return scratch;
         }
         const double* reductionDb() const noexcept { return dispRedDb.data(); }
+
+        // Pre-gain (input) magnitude snapshot (Phase 5a-1-A): same active-bin
+        // count / dB conversion as magnitudeDb(), but sourced from dispMagPre --
+        // the detector-side magnitude captured BEFORE the per-bin gain is applied
+        // (see dispMagPre's assignment in processFrame). Lets a caller show the
+        // input spectrum alongside the (post-gain) magnitudeDb().
+        const double* magnitudePreDb (double* scratch) const noexcept
+        {
+            const int nb = N / 2 + 1;
+            for (int k = 0; k < nb; ++k)
+                scratch[k] = 20.0 * std::log10 (dispMagPre[(size_t) k] + 1.0e-12);
+            return scratch;
+        }
 
         // Process one stereo sample in place. Output is latency-aligned dry/wet.
         // The 2-arg form detects on the main signal; it delegates to the 4-arg form
@@ -668,6 +688,12 @@ namespace factory_core
                 dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * g0Eff[(size_t) k],
                                                 mag[1][(size_t) k] * g1Eff[(size_t) k]) / (0.5 * (double) N);
 
+            // Pre-gain (input) magnitude, same normalisation as dispMag above but
+            // WITHOUT the detector gain (Phase 5a-1-A): lets a caller show the
+            // input spectrum ahead of suppression (pre-spectrum display / Listen).
+            for (int k = 0; k <= half; ++k)
+                dispMagPre[(size_t) k] = std::max (mag[0][(size_t) k], mag[1][(size_t) k]) / (0.5 * (double) N);
+
             // Apply the real per-bin gains, keeping the spectrum Hermitian. Mix rides
             // the spectral gain: gEff = 1 + mix*(g - 1), mix read once per frame.
             const double m = mix;
@@ -727,7 +753,7 @@ namespace factory_core
         std::array<std::vector<double>, 2> gOut;      // [ch] blended effective output gain (0<lambda<1)
         std::vector<double> gainM;                    // linked-reference ballistics state (0<lambda<1)
         std::vector<double> det, env, logMag, redDbBuf, prefix, profile;
-        std::vector<double> dispMag, dispRedDb;
+        std::vector<double> dispMag, dispRedDb, dispMagPre;
 
         // per-bin ballistics
         std::vector<double> atkCoef, relCoef, lnK;

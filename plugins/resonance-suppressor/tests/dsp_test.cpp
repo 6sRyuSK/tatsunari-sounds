@@ -225,6 +225,25 @@
 //       isolated contribution -- reductionProfileDbAt is additive by
 //       construction, so this is an exact-arithmetic gate.
 //
+// Phase 5a-1 (pre-spectrum + Listen, engine level; the plugin's own Listen
+// wiring is JUCE-dependent and not headless-testable):
+//   28. Pre-spectrum: magnitudePreDb() (the input spectrum, captured before
+//       the per-bin gain) matches an independent Hann-FFT oracle on the
+//       engine's own last analysis frame at a suppressed resonance's bin
+//       (<= 1e-6 dB), while magnitudeDb() (post) sits >= 3 dB lower there; at
+//       an unrelated control bin (no resonance) pre and post coincide
+//       (<= 0.5 dB), since nothing was suppressed.
+//   29. Listen profile: the engine-level equivalent of soloing one reduction
+//       node -- a single-node profile (one Bell band's local boost, baseline
+//       1.0 elsewhere, the shape the plugin's node-copy would rasterise) +
+//       delta=true + mix=1.0. (a) With depth > 0 the delta output carries
+//       genuine removed energy in the node's band. (b) With depth == 0 (the
+//       SAME solo profile, unchanged) delta collapses to the STFT OLA
+//       reconstruction residual (<= 1e-6): profile only SCALES an
+//       already-nonzero post-softknee reduction (computeGains), it can never
+//       manufacture suppression from nothing, so this is a non-vacuous check
+//       that (a)'s effect is genuinely depth-driven through the profile shape.
+//
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
 // order the plugin would pick (factory_core::fftOrderForSampleRate), so the
@@ -659,6 +678,182 @@ namespace
         if (mF0 < dryF0 * 0.85) fail ("profile=0 region still suppressed "
                                       + std::to_string (20.0 * std::log10 (mF0 / dryF0)) + " dB");
         std::printf ("  masked f0 %.2f dB (expect ~0)\n", 20.0 * std::log10 (mF0 / dryF0));
+    }
+
+    // ---- Phase 5a-1: pre-spectrum + Listen (engine-level) -------------------
+
+    // Independent oracle for magnitudePreDb(): an independently instantiated
+    // factory_core::FFT computes the Hann-windowed magnitude of the engine's own
+    // last analysis frame (x[frameStart..frameStart+N-1]), normalised exactly
+    // like the spec (max(|FFT|) / (0.5*N); here mono, so L==R==this value), in
+    // dB -- mirrors the Pass A spec oracle's approach: it uses the verified FFT
+    // primitive directly and never calls into ResonanceSuppressor's own
+    // processFrame/dispMag machinery.
+    std::vector<double> preSpectrumOracleDb (const std::vector<double>& x, int frameStart, int order)
+    {
+        const int N = 1 << order, half = N / 2;
+        factory_core::FFT fft; fft.prepare (order);
+        std::vector<cd> spec ((size_t) N);
+        for (int k = 0; k < N; ++k)
+        {
+            const double w = 0.5 - 0.5 * std::cos (2.0 * kPi * k / N);
+            spec[(size_t) k] = cd (x[(size_t) (frameStart + k)] * w, 0.0);
+        }
+        fft.forward (spec.data());
+        std::vector<double> db ((size_t) (half + 1));
+        for (int k = 0; k <= half; ++k)
+            db[(size_t) k] = 20.0 * std::log10 (std::abs (spec[(size_t) k]) / (0.5 * (double) N) + 1.0e-12);
+        return db;
+    }
+
+    // Test (Phase 5a-1-A): magnitudePreDb() must equal the input spectrum
+    // (the independent Hann-FFT oracle above) at a resonant bin, while
+    // magnitudeDb() (post) sits meaningfully lower there (the resonance is
+    // suppressed); at an unrelated control bin (no resonance) pre and post must
+    // coincide (nothing was suppressed, so the input and output spectra agree).
+    void preSpectrumTest (double Fs)
+    {
+        std::printf ("Pre-spectrum (magnitudePreDb == input; magnitudeDb == suppressed) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int M = 1 << 15; // multiple of the hop (N/8) at every supported rate -> exact last-frame alignment
+        // Bin-aligned frequency near `target` (no scalloping loss in the dB reads below).
+        auto binFreq = [&] (double target) {
+            const int kf = std::max (1, (int) std::round (target * (double) N / Fs));
+            return (double) kf * Fs / (double) N;
+        };
+        const double f0    = binFreq (3000.0);
+        const double fCtrl = binFreq (9000.0); // unrelated control bin (no resonance)
+
+        std::mt19937 rng (233);
+        std::normal_distribution<double> g (0.0, 0.05);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        factory_core::ResonanceSuppressor s;
+        s.prepare (Fs, order);
+        s.setDepth (1.2); s.setSharpness (0.5);
+        for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = l; s.process (l, r); }
+
+        const int nb = s.numBins();
+        std::vector<double> preDb ((size_t) nb), postDb ((size_t) nb);
+        s.magnitudePreDb (preDb.data());
+        s.magnitudeDb (postDb.data());
+
+        const auto oracle = preSpectrumOracleDb (x, M - N, order); // x[M-N..M-1] == the engine's own last frame
+        const int k0   = (int) std::round (f0 * (double) N / Fs);
+        const int kCtl = (int) std::round (fCtrl * (double) N / Fs);
+
+        const double oracleErr = std::abs (preDb[(size_t) k0] - oracle[(size_t) k0]);
+        if (oracleErr > 1.0e-6)
+            fail ("pre-spectrum f0 bin != independent Hann-FFT oracle: " + std::to_string (preDb[(size_t) k0])
+                  + " vs " + std::to_string (oracle[(size_t) k0]) + " dB (err " + std::to_string (oracleErr)
+                  + ") at Fs=" + std::to_string (Fs));
+
+        // Post (suppressed) sits meaningfully below pre at the resonance.
+        const double cutDb = preDb[(size_t) k0] - postDb[(size_t) k0];
+        if (cutDb < 3.0)
+            fail ("post spectrum not suppressed relative to pre at f0: pre=" + std::to_string (preDb[(size_t) k0])
+                  + " post=" + std::to_string (postDb[(size_t) k0]) + " dB at Fs=" + std::to_string (Fs));
+
+        // Unrelated control bin: pre ~= post (no MEANINGFUL suppression there --
+        // a quiet noise-floor bin can show a small natural fluctuation from the
+        // detector's own randomness, same margin class as suppressionTest's
+        // broadband control-band gate; measured <= 1.3 dB across all six rates).
+        const double ctrlDiff = std::abs (preDb[(size_t) kCtl] - postDb[(size_t) kCtl]);
+        if (ctrlDiff > 2.0)
+            fail ("pre != post at unrelated control bin: pre=" + std::to_string (preDb[(size_t) kCtl])
+                  + " post=" + std::to_string (postDb[(size_t) kCtl]) + " dB at Fs=" + std::to_string (Fs));
+
+        std::printf ("  f0: pre=%.2f post=%.2f oracle=%.2f dB (cut %.2f dB)  ctrl: pre=%.2f post=%.2f (diff %.3f dB)\n",
+                     preDb[(size_t) k0], postDb[(size_t) k0], oracle[(size_t) k0], cutDb,
+                     preDb[(size_t) kCtl], postDb[(size_t) kCtl], ctrlDiff);
+    }
+
+    // Test (Phase 5a-1-B, engine-level equivalent of Listen -- the plugin's own
+    // Listen wiring is JUCE-dependent and not headless-testable): a single-node
+    // profile (one Bell band's local boost, baseline 1.0 elsewhere -- the exact
+    // shape the plugin's node-copy, currentNodes() -> one node kept, rest off,
+    // would rasterise) + delta=true + mix=1.0 must expose exactly what that one
+    // node removes.
+    //   (a) with the node's profile active and depth > 0, delta carries genuine
+    //       removed energy in the node's band.
+    //   (b) with depth == 0 (the SAME solo profile, unchanged), delta collapses
+    //       to the STFT OLA reconstruction residual. ResonanceSuppressor gates
+    //       ALL reduction on depth > 0.0 (computeGains: profile only SCALES an
+    //       already-nonzero post-softknee value, it can never manufacture
+    //       suppression from nothing), so this proves (a)'s effect is really
+    //       driven by depth acting through the profile shape, not some vacuous
+    //       artefact of the profile array itself -- a stronger non-vacuity
+    //       check than merely disabling the node (which would still leave the
+    //       engine's normal depth-driven broadband detection active).
+    void listenProfileTest (double Fs)
+    {
+        std::printf ("Listen profile (single-node profile+delta+mix=1 == node removal) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int N = 1 << order;
+        const int M = 1 << 15;
+        // Bin-aligned frequency near 5 kHz (no scalloping loss in magAt below).
+        const int kf0 = std::max (1, (int) std::round (5000.0 * (double) N / Fs));
+        const double f0 = (double) kf0 * Fs / (double) N;
+
+        std::mt19937 rng (211);
+        std::normal_distribution<double> g (0.0, 0.1);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng) + 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        // A single Bell band, on, at f0, sens large enough to hit the
+        // setProfile ceiling (reductionProfileLinearAt clamps to 4.0) at its
+        // centre, tapering back to the 1.0 baseline within about two octaves.
+        factory_core::ReductionNodes solo;
+        solo.bands[0] = { true, f0, factory_core::ReductionBandType::Bell, 24.0, 0.50 };
+
+        auto profileFor = [&] (const factory_core::ReductionNodes& n, int nb)
+        {
+            std::vector<double> prof ((size_t) nb, 1.0);
+            for (int k = 1; k < nb; ++k)
+                prof[(size_t) k] = factory_core::reductionProfileLinearAt ((double) k * Fs / (double) N, n);
+            return prof;
+        };
+
+        // (a) node on, depth > 0.
+        factory_core::ResonanceSuppressor eOn;
+        eOn.prepare (Fs, order);
+        eOn.setDepth (1.0); eOn.setSharpness (0.5);
+        { auto prof = profileFor (solo, eOn.numBins()); eOn.setProfile (prof.data(), eOn.numBins()); }
+        eOn.setDelta (true); eOn.setMix (1.0);
+        std::vector<double> deltaOn ((size_t) M);
+        for (int n = 0; n < M; ++n) { double l = x[(size_t) n], r = l; eOn.process (l, r); deltaOn[(size_t) n] = l; }
+
+        const int a = 2 * N, b = M;
+        const double removedF0 = magAt (deltaOn, a, b, f0, Fs);
+        if (removedF0 < 0.05)
+            fail ("listen profile: no removed energy at the node's band: " + std::to_string (removedF0)
+                  + " at Fs=" + std::to_string (Fs));
+
+        // (b) depth == 0, SAME solo profile: delta must collapse to the
+        // reconstruction residual (the same order reconstructionTest /
+        // deltaMixIdentityTest's delta(0) case already gate at 1e-9; 1e-6 here
+        // gives margin for the extra profile array in the loop).
+        factory_core::ResonanceSuppressor eOff;
+        eOff.prepare (Fs, order);
+        eOff.setDepth (0.0); eOff.setSharpness (0.5);
+        { auto prof = profileFor (solo, eOff.numBins()); eOff.setProfile (prof.data(), eOff.numBins()); }
+        eOff.setDelta (true); eOff.setMix (1.0);
+        double residual = 0.0;
+        for (int n = 0; n < M; ++n)
+        {
+            double l = x[(size_t) n], r = l;
+            eOff.process (l, r);
+            if (n >= a) residual = std::max (residual, std::abs (l));
+        }
+        if (residual > 1.0e-6)
+            fail ("listen profile: depth=0 delta did not collapse to reconstruction residual: "
+                  + std::to_string (residual) + " at Fs=" + std::to_string (Fs));
+
+        std::printf ("  removedF0=%.4f (depth=1, on)   residual=%.2e (depth=0, spec <=1e-6)\n", removedF0, residual);
     }
 
     void stereoLinkTest (double Fs)
@@ -3176,6 +3371,8 @@ int main (int argc, char** argv)
         selectivityContrastTest (Fs);
         gainSmoothingTest (Fs);
         profileTest (Fs);
+        preSpectrumTest (Fs);
+        listenProfileTest (Fs);
         stereoLinkTest (Fs);
         silenceTest (Fs, 0); // Soft
         silenceTest (Fs, 1); // Hard
