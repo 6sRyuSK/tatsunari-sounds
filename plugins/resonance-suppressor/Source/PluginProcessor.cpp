@@ -32,7 +32,8 @@ ResonanceSuppressorAudioProcessor::readNodes (juce::AudioProcessorValueTreeState
         n.bands[(size_t) b] = { f (bandPid (b, "on")) > 0.5f,
                                 (double) f (bandPid (b, "freq")),
                                 (factory_core::ReductionBandType) (int) f (bandPid (b, "type")),
-                                (double) f (bandPid (b, "sens")) };
+                                (double) f (bandPid (b, "sens")),
+                                (double) f (bandPid (b, "width")) };
     return n;
 }
 
@@ -122,9 +123,11 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
 
     // --- Reduction / depth-EQ nodes (soothe-style) ---
     // Two cuts bound where processing acts (rolling the profile off at a chosen
-    // slope), four typed bands locally raise/lower the sensitivity. Defaults
-    // mirror the reference: low cut 450 Hz, high cut 16 kHz, bands flat except a
-    // +6 dB emphasis at 5 kHz, so the factory sound is mid-focused, not full-band.
+    // slope), eight typed bands locally raise/lower the sensitivity over a
+    // per-band width (Phase 4). Defaults mirror the reference: low cut 450 Hz,
+    // high cut 16 kHz, bands 1-4 flat except a +6 dB emphasis at 5 kHz, so the
+    // factory sound is mid-focused, not full-band; bands 5-8 (Phase 4) are off
+    // by default so the shipped sound is unchanged until the user enables one.
     const StringArray slopeChoices { "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct" };
     const StringArray typeChoices  { "Bell", "Low Shelf", "High Shelf", "Band Shelf", "Band Reject", "Tilt" };
 
@@ -140,9 +143,11 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
         layout.add (std::make_unique<AudioParameterChoice> (ParameterID { cutPid (w, "slope"), 1 }, juce::String (cd.which) + " Slope", slopeChoices, 2)); // 24 dB/oct
     }
 
-    const float bandFreqs[kNumBands] = { 1000.0f, 2500.0f, 5000.0f, 8000.0f };
-    const float bandSens [kNumBands] = { 0.0f,   0.0f,    6.0f,    0.0f };
-    for (int b = 0; b < kNumBands; ++b)
+    // b0..b3 shipped pre-Phase-4 (version hint 1) -- defaults/hints unchanged.
+    const float bandFreqs[kNumBands] = { 1000.0f, 2500.0f, 5000.0f, 8000.0f, 150.0f, 500.0f, 3000.0f, 12000.0f };
+    const float bandSens [kNumBands] = { 0.0f,   0.0f,    6.0f,    0.0f,    0.0f,   0.0f,   0.0f,    0.0f };
+    constexpr int kNumBandsV1 = 4;
+    for (int b = 0; b < kNumBandsV1; ++b)
     {
         const juce::String name = "Band " + juce::String (b + 1);
         layout.add (std::make_unique<AudioParameterBool>   (ParameterID { bandPid (b, "on"),   1 }, name + " On", true));
@@ -153,6 +158,32 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
                                                             NormalisableRange<float> { -30.0f, 30.0f, 0.1f }, bandSens[b],
                                                             AudioParameterFloatAttributes().withLabel (" dB")));
     }
+
+    // Phase 4: bands 5-8, off by default (version hint 2 -- brand new IDs, never
+    // shipped before). Defaults spread across low/low-mid/high-mid/air so
+    // enabling one lands somewhere useful before the user retunes freq/type/sens.
+    for (int b = kNumBandsV1; b < kNumBands; ++b)
+    {
+        const juce::String name = "Band " + juce::String (b + 1);
+        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { bandPid (b, "on"),   2 }, name + " On", false));
+        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "freq"), 2 }, name + " Freq", freqRange(), bandFreqs[b],
+                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { bandPid (b, "type"), 2 }, name + " Type", typeChoices, 0)); // Bell
+        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "sens"), 2 }, name + " Sens",
+                                                            NormalisableRange<float> { -30.0f, 30.0f, 0.1f }, bandSens[b],
+                                                            AudioParameterFloatAttributes().withLabel (" dB")));
+    }
+
+    // Phase 4: per-band width, ALL 8 bands (version hint 2 -- brand new). Scales
+    // each shape's half-width/edge/span in ReductionProfile.h; default 0.50 is
+    // the pre-Phase-4 fixed width, so every band reproduces the old curve
+    // bit-for-bit until this is moved (see ReductionProfile.h's kWidthRef). The
+    // UI knob for this parameter is Phase 5a; only the parameter ships here.
+    for (int b = 0; b < kNumBands; ++b)
+        layout.add (std::make_unique<AudioParameterFloat> (
+            ParameterID { bandPid (b, "width"), 2 }, "Band " + juce::String (b + 1) + " Width",
+            NormalisableRange<float> { 0.10f, 2.00f, 0.01f }, 0.50f,
+            AudioParameterFloatAttributes().withLabel (" oct")));
 
     return layout;
 }
@@ -191,10 +222,11 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     }
     for (int b = 0; b < kNumBands; ++b)
     {
-        bandParams[(size_t) b].on   = apvts.getRawParameterValue (bandPid (b, "on"));
-        bandParams[(size_t) b].freq = apvts.getRawParameterValue (bandPid (b, "freq"));
-        bandParams[(size_t) b].type = apvts.getRawParameterValue (bandPid (b, "type"));
-        bandParams[(size_t) b].sens = apvts.getRawParameterValue (bandPid (b, "sens"));
+        bandParams[(size_t) b].on    = apvts.getRawParameterValue (bandPid (b, "on"));
+        bandParams[(size_t) b].freq  = apvts.getRawParameterValue (bandPid (b, "freq"));
+        bandParams[(size_t) b].type  = apvts.getRawParameterValue (bandPid (b, "type"));
+        bandParams[(size_t) b].sens  = apvts.getRawParameterValue (bandPid (b, "sens"));
+        bandParams[(size_t) b].width = apvts.getRawParameterValue (bandPid (b, "width"));
     }
 
     programs.configure (apvts, resonance_suppressor_presets::bank,
@@ -211,7 +243,8 @@ factory_core::ReductionNodes ResonanceSuppressorAudioProcessor::currentNodes() c
         n.bands[(size_t) b] = { bandParams[(size_t) b].on->load() > 0.5f,
                                 (double) bandParams[(size_t) b].freq->load(),
                                 (factory_core::ReductionBandType) (int) bandParams[(size_t) b].type->load(),
-                                (double) bandParams[(size_t) b].sens->load() };
+                                (double) bandParams[(size_t) b].sens->load(),
+                                (double) bandParams[(size_t) b].width->load() };
     return n;
 }
 

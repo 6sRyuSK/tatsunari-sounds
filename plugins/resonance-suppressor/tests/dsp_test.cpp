@@ -204,6 +204,27 @@
 // crossover suppression -19.6..-24.5 dB, diff <= 1.83 dB (spec >= 15 dB /
 // <= 4 dB); mid-switch settled residual <= 4.5e-16 (spec 1e-9).
 //
+// Phase 4 note (8-band reduction/depth-EQ + per-band width). ReductionNodes
+// grew from 4 to 8 bands and gained a per-band widthOct (factory_core::
+// ReductionProfile.h); three new rate-independent tests gate it directly
+// (reductionProfileDbAt has no sample-rate dependence, so these run once, like
+// reductionProfileTest, not per rate):
+//   25. Default-identity: the 8-band profile at the factory defaults (b0..b3 as
+//       before, b4..b7 off, every band's widthOct at the new default 0.50)
+//       matches an INDEPENDENT v1 oracle (the pre-Phase-4 fixed-width formulas,
+//       hard-coded in the test, never calling factory_core::detail::*) at every
+//       swept frequency -- proving the width parameter is a no-op at its
+//       default and the 8-band curve is identical to the old 4-band one.
+//   26. Width sweep: for a single Bell band, the frequency where the profile
+//       reaches HALF the peak's dB value scales with widthOct as an
+//       independent closed-form oracle derived from the Bell spec predicts
+//       (half-width in octaves proportional to widthOct), at widthOct in
+//       {0.25, 0.50, 1.0, 2.0}.
+//   27. 8-band superposition: with all 8 bands on at different freq/type/sens/
+//       width, the combined profile equals the sum (in dB) of each band's own
+//       isolated contribution -- reductionProfileDbAt is additive by
+//       construction, so this is an exact-arithmetic gate.
+//
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
 // order the plugin would pick (factory_core::fftOrderForSampleRate), so the
@@ -2933,6 +2954,173 @@ namespace
         std::printf ("  ok\n");
     }
 
+    // ---- Phase 4: 8-band width EQ -------------------------------------------
+    // Independent v1 (pre-Phase-4) oracle: the fixed-width formulas exactly as
+    // they existed before ReductionNodes gained widthOct, hard-coded here (NOT
+    // calling factory_core::detail::* -- that would just be the implementation
+    // checking itself). Only cuts + bands[0..3] exist in this model, matching
+    // what the plugin shipped through v1.5.0.
+    namespace v1
+    {
+        constexpr double kBellSigma  = 0.35;
+        constexpr double kShelfWidth = 0.50;
+        constexpr double kBandHalf   = 0.50;
+        constexpr double kBandEdge   = 0.35;
+        constexpr double kTiltSpan   = 2.0 * 0.69314718055994530942;
+
+        double bandTop (double x)
+        {
+            const double num = std::tanh ((x + kBandHalf) / kBandEdge) - std::tanh ((x - kBandHalf) / kBandEdge);
+            const double den = 2.0 * std::tanh (kBandHalf / kBandEdge);
+            return num / den;
+        }
+        double bandDb (BT type, double x, double sensDb)
+        {
+            switch (type)
+            {
+                case BT::Bell:       { const double t = x / kBellSigma; return sensDb * std::exp (-0.5 * t * t); }
+                case BT::LowShelf:   return sensDb * 0.5 * (1.0 - std::tanh (x / kShelfWidth));
+                case BT::HighShelf:  return sensDb * 0.5 * (1.0 + std::tanh (x / kShelfWidth));
+                case BT::BandShelf:  return sensDb * bandTop (x);
+                case BT::BandReject: return -sensDb * bandTop (x);
+                case BT::Tilt:       return sensDb * std::clamp (x / kTiltSpan, -1.0, 1.0);
+            }
+            return 0.0;
+        }
+        double cutDb (double f, double fc, double slopeDbPerOct, bool lowCut)
+        {
+            const double order = std::max (0.5, slopeDbPerOct / 6.0);
+            const double ratio = lowCut ? (fc / std::max (1.0e-6, f)) : (f / std::max (1.0e-6, fc));
+            return -10.0 * std::log10 (1.0 + std::pow (ratio, 2.0 * order));
+        }
+        // v1 only ever had 4 bands: bands[4..7] (if present/on) are deliberately
+        // ignored, mirroring the type that existed pre-Phase-4.
+        double reductionProfileDbAt (double f, const factory_core::ReductionNodes& n)
+        {
+            const double lf = std::log (std::max (1.0e-6, f));
+            double db = 0.0;
+            if (n.lowCut.on)  db += cutDb (f, n.lowCut.freqHz,  n.lowCut.slopeDbPerOct,  true);
+            if (n.highCut.on) db += cutDb (f, n.highCut.freqHz, n.highCut.slopeDbPerOct, false);
+            for (int b = 0; b < 4; ++b)
+            {
+                const auto& bd = n.bands[(size_t) b];
+                if (bd.on) db += bandDb (bd.type, lf - std::log (std::max (1.0e-6, bd.freqHz)), bd.sensDb);
+            }
+            return db;
+        }
+    }
+
+    // Test 25: at the factory defaults (b0..b3 as v1, b4..b7 off, every widthOct
+    // == 0.50) the new 8-band width-scaled implementation must reproduce the old
+    // fixed-width v1 oracle at every frequency -- bit-identical in exact
+    // arithmetic (w = widthOct/kWidthRef == 1.0 exactly, and x*1.0 == x), so a
+    // small relative tolerance only absorbs incidental compiler/libm variance
+    // between the header's call site and this independently-written oracle.
+    void reductionDefaultIdentityTest()
+    {
+        std::printf ("Reduction default-identity (8-band width==0.50 vs independent v1 oracle)\n");
+        const auto n = defaultNodes(); // b0..b3 == v1 factory defaults; b4..b7 default-constructed (off)
+        double maxAbs = 0.0, maxRel = 0.0;
+        for (int i = 0; i <= 1000; ++i)
+        {
+            const double t = (double) i / 1000.0;
+            const double f = 20.0 * std::pow (1000.0, t); // 20 Hz .. 20 kHz, log-spaced
+            const double got = factory_core::reductionProfileDbAt (f, n);
+            const double expected = v1::reductionProfileDbAt (f, n);
+            const double diff = std::abs (got - expected);
+            const double tol  = 1.0e-12 * std::max (1.0, std::abs (expected));
+            maxAbs = std::max (maxAbs, diff);
+            maxRel = std::max (maxRel, diff / std::max (1.0, std::abs (expected)));
+            if (diff > tol)
+                fail ("default profile diverged from v1 oracle at f=" + std::to_string (f)
+                      + " got=" + std::to_string (got) + " expected=" + std::to_string (expected));
+        }
+        std::printf ("  maxAbsDiff=%.3e maxRelDiff=%.3e (spec: bit-identical or <= 1e-12 rel)\n", maxAbs, maxRel);
+    }
+
+    // Test 26: width sweep. For a single Bell band (bandDb = sensDb *
+    // exp(-0.5*(x/sigma)^2), sigma = kBellSigma*widthOct/kWidthRef, x = ln(f/f0)),
+    // the profile reaches HALF the peak's dB value (sensDb/2) at x_half =
+    // sigma*sqrt(2 ln 2) -- an independent closed-form derivation from the Bell
+    // spec, not read from the implementation. The half-width in octaves,
+    // x_half/ln2, is therefore proportional to widthOct. Measure the actual
+    // half-value frequency via bisection on the real reductionProfileDbAt (the
+    // function the engine/editor evaluate -- the "z-domain", i.e. the domain
+    // that actually runs, for this non-filter EQ curve) and compare to the
+    // spec ratio.
+    void widthSweepTest()
+    {
+        std::printf ("Width sweep (Bell half-value width proportional to widthOct)\n");
+        constexpr double kBellSigmaV1 = 0.35, kWidthRefV1 = 0.50, kLn2 = 0.69314718055994530942;
+        const double f0 = 1000.0, sens = -12.0; // negative peak; half value = -6 dB
+
+        for (double widthOct : { 0.25, 0.50, 1.0, 2.0 })
+        {
+            factory_core::ReductionNodes n;
+            n.bands[0] = { true, f0, BT::Bell, sens, widthOct };
+
+            // Bisect in log-frequency for the root of db(f) == sens/2 above f0
+            // (db is monotone from sens at f0 toward 0 as f grows away from it).
+            double lo = f0, hi = f0 * 64.0;
+            for (int it = 0; it < 60; ++it)
+            {
+                const double mid = std::sqrt (lo * hi);
+                const double d = factory_core::reductionProfileDbAt (mid, n);
+                if (d < sens * 0.5) lo = mid; else hi = mid;
+            }
+            const double fHalf = std::sqrt (lo * hi);
+            const double measuredHalfWidthOct = std::log (fHalf / f0) / kLn2;
+
+            const double specSigma = kBellSigmaV1 * (widthOct / kWidthRefV1);
+            const double specHalfWidthOct = specSigma * std::sqrt (2.0 * kLn2) / kLn2;
+
+            const double relErr = std::abs (measuredHalfWidthOct - specHalfWidthOct) / specHalfWidthOct;
+            if (relErr > 0.03) // a few percent, fixed (bisection converges to ~2^-60; headroom is the oracle itself)
+                fail ("width=" + std::to_string (widthOct) + " half-width " + std::to_string (measuredHalfWidthOct)
+                      + " oct vs spec " + std::to_string (specHalfWidthOct) + " oct (relErr " + std::to_string (relErr) + ")");
+            std::printf ("  width=%.2f oct: measured=%.4f oct  spec=%.4f oct  relErr=%.4f\n",
+                         widthOct, measuredHalfWidthOct, specHalfWidthOct, relErr);
+        }
+    }
+
+    // Test 27: 8-band superposition. reductionProfileDbAt accumulates each
+    // enabled band's bandDb() into a single running sum, so with all 8 bands on
+    // (different freq/type/sens/width, no cuts) the combined curve must equal
+    // the sum of each band's OWN isolated contribution at every frequency --
+    // an exact-arithmetic gate (same accumulation order either way).
+    void eightBandSuperpositionTest()
+    {
+        std::printf ("8-band superposition (combined == sum of individual contributions)\n");
+        const double freqs [8] = { 80.0, 200.0, 500.0, 1200.0, 3000.0, 6000.0, 9000.0, 15000.0 };
+        const double senss [8] = { 4.0, -6.0, 8.0, -3.0, 10.0, -8.0, 5.0, -2.0 };
+        const BT     types [8] = { BT::Bell, BT::LowShelf, BT::HighShelf, BT::BandShelf,
+                                   BT::BandReject, BT::Tilt, BT::Bell, BT::LowShelf };
+        const double widths[8] = { 0.25, 0.50, 1.0, 2.0, 0.30, 0.75, 1.5, 0.10 };
+
+        factory_core::ReductionNodes n; // all cuts off -- isolate the band superposition
+        for (int b = 0; b < 8; ++b)
+            n.bands[(size_t) b] = { true, freqs[b], types[b], senss[b], widths[b] };
+
+        double maxErr = 0.0;
+        for (int i = 0; i <= 400; ++i)
+        {
+            const double t = (double) i / 400.0;
+            const double f = 20.0 * std::pow (1000.0, t); // 20 Hz .. 20 kHz, log-spaced
+
+            double sumIndividual = 0.0;
+            for (int b = 0; b < 8; ++b)
+            {
+                factory_core::ReductionNodes one; // all bands off by default except b
+                one.bands[(size_t) b] = n.bands[(size_t) b];
+                sumIndividual += factory_core::reductionProfileDbAt (f, one);
+            }
+            const double combined = factory_core::reductionProfileDbAt (f, n);
+            maxErr = std::max (maxErr, std::abs (combined - sumIndividual));
+        }
+        if (maxErr > 1.0e-9) fail ("8-band superposition mismatch, maxErr=" + std::to_string (maxErr));
+        std::printf ("  maxErr=%.2e (expect ~0, additive by construction)\n", maxErr);
+    }
+
     void reductionDefaultTest (double Fs)
     {
         std::printf ("Reduction default profile (rasterise) @ Fs=%.0f\n", Fs);
@@ -2972,6 +3160,9 @@ int main (int argc, char** argv)
 
     fftTest();
     reductionProfileTest();
+    reductionDefaultIdentityTest();
+    widthSweepTest();
+    eightBandSuperpositionTest();
     for (double Fs : rates)
     {
         reconstructionTest (Fs);

@@ -45,7 +45,7 @@ public:
     static constexpr int    kMaxFftOrder   = 14;        // N = 16384 (High quality at 176.4/192 kHz)
     static constexpr double kRefSampleRate = 48000.0;
     static constexpr int    kMaxBins       = (1 << kMaxFftOrder) / 2 + 1; // 8193
-    static constexpr int    kNumBands      = 4; // + a low cut and a high cut
+    static constexpr int    kNumBands      = 8; // + a low cut and a high cut
 
     ResonanceSuppressorAudioProcessor();
     ~ResonanceSuppressorAudioProcessor() override = default;
@@ -123,7 +123,7 @@ private:
 
     // Reduction-node parameters, cached for the audio thread (lock-free reads).
     struct CutParams  { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* slope = nullptr; };
-    struct BandParams { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* type = nullptr; std::atomic<float>* sens = nullptr; };
+    struct BandParams { std::atomic<float>* on = nullptr; std::atomic<float>* freq = nullptr; std::atomic<float>* type = nullptr; std::atomic<float>* sens = nullptr; std::atomic<float>* width = nullptr; };
     CutParams lowCut, highCut;
     std::array<BandParams, kNumBands> bandParams;
 
