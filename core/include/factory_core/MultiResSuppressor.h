@@ -75,7 +75,8 @@
 // grid — bins below kSplitHz read the low engine directly, bins at/above it are
 // resampled from the high engine by linear interpolation in dB along log-f. GUI
 // reads race benignly against the audio thread, exactly like the single engine's
-// meters.
+// meters. magnitudePreDb() (5a-1-A) is the same merge sourced from each
+// sub-engine's PRE-gain magnitude, for a pre/post spectrum display.
 //
 // Header-only, JUCE-independent, allocation-free in process(): every buffer is
 // sized in prepare() at the maximum order.
@@ -220,6 +221,18 @@ namespace factory_core
         {
             lowEng.magnitudeDb (scratch);          // low grid, in dB
             highEng.magnitudeDb (mergeHi.data());  // high grid, in dB
+            mergeHighInto (scratch, mergeHi.data());
+            return scratch;
+        }
+
+        // Pre-gain (input) magnitude merge (Phase 5a-1-A): the same low/high
+        // grid merge as magnitudeDb(), but sourced from each sub-engine's
+        // magnitudePreDb() (the input spectrum ahead of suppression). Reuses the
+        // mergeHi scratch (GUI thread only, benign race like the meters).
+        const double* magnitudePreDb (double* scratch) const noexcept
+        {
+            lowEng.magnitudePreDb (scratch);
+            highEng.magnitudePreDb (mergeHi.data());
             mergeHighInto (scratch, mergeHi.data());
             return scratch;
         }

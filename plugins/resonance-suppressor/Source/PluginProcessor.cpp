@@ -261,6 +261,7 @@ void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
     activeBins.store (suppressor.numBins(), std::memory_order_relaxed);
     for (auto& a : pubMag) a.store (-120.0f, std::memory_order_relaxed);
     for (auto& a : pubRed) a.store (0.0f, std::memory_order_relaxed);
+    for (auto& a : pubMagPre) a.store (-120.0f, std::memory_order_relaxed);
 }
 
 bool ResonanceSuppressorAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -311,6 +312,35 @@ void ResonanceSuppressorAudioProcessor::rasterizeProfile()
     suppressor.setProfile (profileBuf.data(), nLow, profileBufHigh.data(), nHigh);
 }
 
+void ResonanceSuppressorAudioProcessor::rasterizeListenProfile (int nodeId)
+{
+    // Solo one reduction node: copy just that node from the live parameters
+    // into an otherwise-default (all off) ReductionNodes, then rasterise it on
+    // BOTH engines' grids exactly like rasterizeProfile() -- same mapping, same
+    // per-band width -- so only that node's cut/band shapes the profile; every
+    // other bin sits at the nominal (no-EQ) 1.0 baseline. id convention: 0 = low
+    // cut, 1 = high cut, 2..(1+kNumBands) = bands (see setListenNode).
+    const auto nodes = currentNodes();
+    factory_core::ReductionNodes solo;
+    if (nodeId == 0)      solo.lowCut  = nodes.lowCut;
+    else if (nodeId == 1) solo.highCut = nodes.highCut;
+    else if (nodeId >= 2 && nodeId - 2 < kNumBands)
+        solo.bands[(size_t) (nodeId - 2)] = nodes.bands[(size_t) (nodeId - 2)];
+
+    const int nLow = suppressor.numBins();
+    listenProfileLow[0] = 1.0; // DC: nominal, matches rasterizeProfile()
+    for (int k = 1; k < nLow; ++k)
+        listenProfileLow[(size_t) k] = factory_core::reductionProfileLinearAt (suppressor.binToHz (k), solo);
+
+    const auto& high = suppressor.highEngine();
+    const int nHigh = high.numBins();
+    listenProfileHigh[0] = 1.0;
+    for (int k = 1; k < nHigh; ++k)
+        listenProfileHigh[(size_t) k] = factory_core::reductionProfileLinearAt (high.binToHz (k), solo);
+
+    suppressor.setProfile (listenProfileLow.data(), nLow, listenProfileHigh.data(), nHigh);
+}
+
 void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -327,23 +357,33 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     const int  scChannels  = scBus.getNumChannels();
     const bool scConnected = scChannels > 0;
 
+    // Listen (5a-1-B): loaded once per block. >= 0 solos that one reduction
+    // node's removed signal (forces delta/mix for THIS block only, below --
+    // the APVTS delta/mix params themselves are never written) and outranks SC
+    // Listen. < 0 is the normal path, unchanged.
+    const int listen = listenNode.load (std::memory_order_relaxed);
+
     suppressor.setDepth       ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness   (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
     suppressor.setSelectivity ((double) selParam->load() / 100.0);  // 0..100 % -> 0..1
     suppressor.setTilt        ((double) tiltParam->load() / 100.0); // -100..+100 % -> -1..+1
     suppressor.setRange       (20.0, 20000.0); // full band; the low/high cut nodes bound processing via the profile
     suppressor.setTimes       (atkParam->load(), relParam->load());
-    suppressor.setMix         ((double) mixParam->load() / 100.0);
-    suppressor.setDelta       (deltaParam->load() > 0.5f);
+    // Mix/Delta: Listen forces mix=1.0 / delta=true (the node's removed signal,
+    // full amount, mix-independent) for this block only; otherwise the normal
+    // APVTS-driven values.
+    suppressor.setMix         ((listen >= 0) ? 1.0 : (double) mixParam->load() / 100.0);
+    suppressor.setDelta       ((listen >= 0) || (deltaParam->load() > 0.5f));
     suppressor.setStereoLink  (linkParam->load() > 0.5f);
     // Continuous link amount (only effective while Stereo Link is on) and channel mode.
     suppressor.setLinkAmount  ((double) linkAmtParam->load() / 100.0);
     suppressor.setChannelMode ((int) channelModeParam->load());
     // Sidechain routing gated on a live connection: with the bus unpatched the engine
     // receives false and safely keys detection off the main signal. SC Listen also
-    // requires the sidechain to be enabled (you can only monitor what is routed).
+    // requires the sidechain to be enabled (you can only monitor what is routed), and
+    // is forced off while Listen is active (Listen outranks SC Listen / Delta).
     const bool scEnable = scEnableParam->load() > 0.5f;
-    const bool scListen = scListenParam->load() > 0.5f;
+    const bool scListen = (listen < 0) && (scListenParam->load() > 0.5f);
     suppressor.setSidechain   (scEnable && scConnected);
     suppressor.setScListen    (scListen && scEnable && scConnected);
     suppressor.setMode        ((int) modeParam->load());
@@ -356,7 +396,11 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // toward the aligned dry. No early return, so the reported latency is honoured
     // in bypass (no PDC shift against other tracks) and the editor keeps updating.
     suppressor.setBypassed    (bypassParam->load() > 0.5f);
-    rasterizeProfile();
+    // Listen rasterises a single-node profile instead of the full node graph;
+    // parameters (still applied above) keep working while soloed, since the
+    // profile is rebuilt from the live parameters every block.
+    if (listen >= 0) rasterizeListenProfile (listen);
+    else              rasterizeProfile();
 
     const int numSamples = buffer.getNumSamples();
     const int numCh = juce::jmin (buffer.getNumChannels(), 2);
@@ -396,12 +440,14 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // (a Quality switch this block may have grown/shrunk it). magScratch is
     // preallocated (sized for the top order) to keep processBlock allocation-free.
     const int bins = suppressor.numBins();
-    const double* magDb = suppressor.magnitudeDb (magScratch.data());
-    const double* redDb = suppressor.reductionDb (redScratch.data());
+    const double* magDb    = suppressor.magnitudeDb (magScratch.data());
+    const double* redDb    = suppressor.reductionDb (redScratch.data());
+    const double* magPreDb = suppressor.magnitudePreDb (preScratch.data()); // 5a-1-C: input spectrum
     for (int k = 0; k < bins; ++k)
     {
         pubMag[(size_t) k].store ((float) magDb[k], std::memory_order_relaxed);
         pubRed[(size_t) k].store ((float) redDb[k], std::memory_order_relaxed);
+        pubMagPre[(size_t) k].store ((float) magPreDb[k], std::memory_order_relaxed);
     }
 }
 
