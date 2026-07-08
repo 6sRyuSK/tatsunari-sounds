@@ -60,8 +60,12 @@ Editor を読み直す必要はない。
 (`presetController (*this, p)` で構築、`resized()` で
 `presetController.selector().setBounds(...)`)、これがホスト↔コンボの双方向同期を
 すべて担う。Editor 側に `AudioProcessorListener` 継承や `refreshPresetSelector` /
-`audioProcessorChanged` の手書きは不要。view 単体は `PresetSelector.h`
-(ComboBox + 前/次矢印)。配線の詳細は `add-preset` スキル。
+`audioProcessorChanged` の手書きは不要。**Phase 5c 以降、このコントローラはファクトリー
+program に加えオンディスクのユーザープリセット一覧＋Save As/Overwrite/Delete も
+自動で面倒を見る**(`processor.getName()` から保存先を導出するので、プラグイン側の
+追加配線ゼロでユーザープリセットが有効になる)。view 単体は `PresetSelector.h`
+(ComboBox + 前/次矢印、`setMenu()` で item/header/separator 混在行・
+非steppable なアクション行にも対応)。配線の詳細は `add-preset` スキル。
 
 ## GUI 確認
 
