@@ -276,6 +276,12 @@ void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
     // High quality (its maxOrder defaults to order + 1, capped at kMaxFftOrder).
     currentFftOrder   = factory_core::fftOrderForSampleRate (sampleRate, kBaseFftOrder, kRefSampleRate, kMaxFftOrder);
     suppressor.prepare (sampleRate, currentFftOrder);
+    // Display-only spectral smoothing (~50 ms): restores the v1 analyser's smooth
+    // feel on top of v2's dual-resolution engine (whose airband window is only
+    // ~10.7 ms). Opt-in and display-ONLY -- it low-passes what the analyser draws
+    // and never touches the suppression/detection DSP or the output audio. Value
+    // chosen by listening sign-off (2026-07-09).
+    suppressor.setDisplaySmoothingMs (50.0);
     setLatencySamples (suppressor.latencySamples());
     // Normal quality is active after prepare; activeBins follows the engine's live
     // window and is renegotiated in processBlock whenever a Quality switch changes it.

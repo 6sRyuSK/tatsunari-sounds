@@ -178,6 +178,13 @@ namespace factory_core
         void setSharpness      (double oct) noexcept { lowEng.setSharpness (oct);      highEng.setSharpness (oct); }
         void setSelectivity    (double s)   noexcept { lowEng.setSelectivity (s);      highEng.setSelectivity (s); }
         void setSmoothingWidth (double oct) noexcept { lowEng.setSmoothingWidth (oct); highEng.setSmoothingWidth (oct); }
+        // Display-ONLY temporal smoothing (DEV audition; opt-in, default 0 = OFF --
+        // see ResonanceSuppressor::setDisplaySmoothingMs). Forwarded to BOTH
+        // sub-engines so each derives its OWN one-pole coefficient from its OWN
+        // live frame interval (dt = H/fs) -- the low engine's large hop and the
+        // high engine's small hop both converge with the same ~ms wall-clock tau,
+        // so the displayed spectrum reads uniformly smooth across the band split.
+        void setDisplaySmoothingMs (double ms) noexcept { lowEng.setDisplaySmoothingMs (ms); highEng.setDisplaySmoothingMs (ms); }
         void setTilt           (double t)   noexcept { lowEng.setTilt (t);             highEng.setTilt (t); }
         void setMode           (int m)      noexcept { lowEng.setMode (m);             highEng.setMode (m); }
         void setStereoLink     (bool b)     noexcept { lowEng.setStereoLink (b);       highEng.setStereoLink (b); }

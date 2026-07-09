@@ -143,6 +143,12 @@ namespace factory_core
             dispMag.assign  ((size_t) maxBins, 0.0);
             dispRedDb.assign((size_t) maxBins, 0.0);
             dispMagPre.assign((size_t) maxBins, 0.0);
+            // Display-only smoothing state (opt-in, see setDisplaySmoothingMs):
+            // persistent one-pole state parallel to dispMag/dispMagPre, sized the
+            // same so a Quality switch (which can grow the active bin count up to
+            // maxBins) never overruns it.
+            dispMagState.assign   ((size_t) maxBins, 0.0);
+            dispMagPreState.assign((size_t) maxBins, 0.0);
             profile.assign  ((size_t) maxBins, 1.0);
 
             // Per-bin ballistics coefficient arrays + the order-independent ln(k)
@@ -179,6 +185,10 @@ namespace factory_core
             hop = 0;
             switchHold = 0;           // no refill hold pending
             bypassMix = bypassTarget; // snap the crossfade (no fade right after prepare/reset)
+            // Display-only smoothing (opt-in): un-prime so the next frame seeds the
+            // state fresh instead of ramping from a stale value across a
+            // prepare/reset (Quality switch, bypass, channel-count change, ...).
+            dispSmPrimed = false;
         }
 
         // --- configuration ---
@@ -248,6 +258,18 @@ namespace factory_core
             const int n = std::min (count, (int) profile.size());
             for (int k = 0; k < n; ++k) profile[(size_t) k] = std::max (0.0, mul[(size_t) k]);
         }
+
+        // Display-ONLY temporal smoothing (audition/DEV; opt-in, default 0 = OFF).
+        // Does not touch the suppression/detection DSP in any way -- it only
+        // low-passes what magnitudeDb()/magnitudePreDb() report, in place, via a
+        // one-pole filter whose coefficient is re-derived every frame from THIS
+        // engine's own current frame interval dt = H/fs (see processFrame), so the
+        // wall-clock time constant stays ~dispSmoothMs regardless of hop -- e.g. a
+        // dual-resolution front end's fast/slow sub-engines both settle at the same
+        // ms even though their hops differ. 0 (default) keeps dispMag/dispMagPre
+        // bit-identical to writing the raw per-frame value directly (no filtering,
+        // no extra rounding).
+        void setDisplaySmoothingMs (double ms) noexcept { dispSmoothMs = std::max (0.0, ms); }
 
         int latencySamples() const noexcept { return N; }
         int hopSamples()     const noexcept { return H; }
@@ -684,15 +706,58 @@ namespace factory_core
             // Analyser shows the post-processing (output) magnitude: the input
             // spectrum scaled by the per-bin detector gain g -- NOT the Mix-scaled
             // gEff applied below (v1 display semantics). Gain is real, so |spec*g| = mag*g.
-            for (int k = 0; k <= half; ++k)
-                dispMag[(size_t) k] = std::max (mag[0][(size_t) k] * g0Eff[(size_t) k],
-                                                mag[1][(size_t) k] * g1Eff[(size_t) k]) / (0.5 * (double) N);
-
+            //
             // Pre-gain (input) magnitude, same normalisation as dispMag above but
             // WITHOUT the detector gain (Phase 5a-1-A): lets a caller show the
             // input spectrum ahead of suppression (pre-spectrum display / Listen).
-            for (int k = 0; k <= half; ++k)
-                dispMagPre[(size_t) k] = std::max (mag[0][(size_t) k], mag[1][(size_t) k]) / (0.5 * (double) N);
+            //
+            // Display-only smoothing (DEV audition; opt-in via setDisplaySmoothingMs,
+            // default 0 = OFF): the OFF branch below writes the raw per-frame value
+            // straight into dispMag/dispMagPre exactly as before -- bit-identical to
+            // v1/v2 (the state buffers are just kept in sync so switching on later
+            // never jumps). The ON branch runs the same raw value through a one-pole
+            // low-pass into persistent state and displays THAT instead; the
+            // suppression/detection DSP above (gains, ballistics, spec[], the output
+            // audio) is completely untouched -- only these two display snapshots move.
+            if (dispSmoothMs > 0.0)
+            {
+                // Coefficient from THIS engine's own live frame interval dt = H/fs
+                // (same onePoleCoeffForMs the ballistics use, just keyed off the
+                // frame rate instead of the sample rate), so a fixed ms value settles
+                // in the same wall-clock time regardless of hop -- e.g. the
+                // dual-resolution front end's low engine (large hop) and high engine
+                // (small hop) both converge with the same ~dispSmoothMs tau.
+                const double c = onePoleCoeffForMs (dispSmoothMs, fs / (double) H); // retention (pole)
+                const double a = 1.0 - c;                                          // update fraction
+                for (int k = 0; k <= half; ++k)
+                {
+                    const double r = std::max (mag[0][(size_t) k] * g0Eff[(size_t) k],
+                                                mag[1][(size_t) k] * g1Eff[(size_t) k]) / (0.5 * (double) N);
+                    if (! dispSmPrimed) dispMagState[(size_t) k] = r; // prime: no ramp-up on the first smoothed frame
+                    else                 dispMagState[(size_t) k] += a * (r - dispMagState[(size_t) k]);
+                    dispMag[(size_t) k] = dispMagState[(size_t) k];
+
+                    const double rp = std::max (mag[0][(size_t) k], mag[1][(size_t) k]) / (0.5 * (double) N);
+                    if (! dispSmPrimed) dispMagPreState[(size_t) k] = rp;
+                    else                 dispMagPreState[(size_t) k] += a * (rp - dispMagPreState[(size_t) k]);
+                    dispMagPre[(size_t) k] = dispMagPreState[(size_t) k];
+                }
+                dispSmPrimed = true;
+            }
+            else
+            {
+                for (int k = 0; k <= half; ++k)
+                {
+                    const double r = std::max (mag[0][(size_t) k] * g0Eff[(size_t) k],
+                                                mag[1][(size_t) k] * g1Eff[(size_t) k]) / (0.5 * (double) N);
+                    dispMag[(size_t) k] = r;
+                    dispMagState[(size_t) k] = r; // keep state caught up so enabling later doesn't jump
+
+                    const double rp = std::max (mag[0][(size_t) k], mag[1][(size_t) k]) / (0.5 * (double) N);
+                    dispMagPre[(size_t) k] = rp;
+                    dispMagPreState[(size_t) k] = rp;
+                }
+            }
 
             // Apply the real per-bin gains, keeping the spectrum Hermitian. Mix rides
             // the spectral gain: gEff = 1 + mix*(g - 1), mix read once per frame.
@@ -754,6 +819,14 @@ namespace factory_core
         std::vector<double> gainM;                    // linked-reference ballistics state (0<lambda<1)
         std::vector<double> det, env, logMag, redDbBuf, prefix, profile;
         std::vector<double> dispMag, dispRedDb, dispMagPre;
+
+        // Display-only smoothing (opt-in, default OFF -- see setDisplaySmoothingMs).
+        // dispMagState/dispMagPreState are the persistent one-pole state parallel to
+        // dispMag/dispMagPre; dispSmPrimed guards the very first smoothed frame
+        // (seed from raw instead of ramping from a zero-initialised state).
+        std::vector<double> dispMagState, dispMagPreState;
+        double dispSmoothMs = 0.0;
+        bool   dispSmPrimed = false;
 
         // per-bin ballistics
         std::vector<double> atkCoef, relCoef, lnK;
