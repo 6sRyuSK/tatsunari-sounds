@@ -47,6 +47,7 @@ public:
         : processor (p), apvts (s), panel (p, s)
     {
         addChildComponent (panel); // shown when a node is selected
+        panel.onCloseRequested = [this] { selectNode (-1); }; // ✕ -> fully deselect (drops Listen too, see selectNode())
         setWantsKeyboardFocus (true); // Delete/Backspace + arrow-key nudge on the selected node
         startTimerHz (30);
     }
