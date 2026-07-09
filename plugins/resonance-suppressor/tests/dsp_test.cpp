@@ -251,6 +251,22 @@
 //       manufacture suppression from nothing, so this is a non-vacuous check
 //       that (a)'s effect is genuinely depth-driven through the profile shape.
 //
+//  30. Display smoothing (Phase 6, setDisplaySmoothingMs): a DEV/audition-only
+//      one-pole temporal low-pass on the analyser snapshot dispMag/dispMagPre
+//      (magnitudeDb()/magnitudePreDb()), forwarded from MultiResSuppressor to
+//      both sub-engines. Twin composites (A: 0 ms/off, B: 50 ms/on), identical
+//      config and input (a silence -> airband-tone step, held): (i) A and B's
+//      output audio is bit-identical at EVERY sample -- the smoothing state
+//      never leaks into the suppression/detection DSP or the OLA ring; (ii) a
+//      few frames after the analysis window has fully cleared the onset, A's
+//      unsmoothed reading has already settled to the frame's raw content while
+//      B's one-pole has barely risen (read off highEngine() directly, the same
+//      merge-free accessor dualSpeedTest/dualDisplayTest use, so the gate is
+//      not diluted by the low/high display-grid interpolation) -- proving the
+//      feature is not a silent no-op; (iii) after ~10 of B's own time
+//      constants (dt = H/fs, so wall-clock tau holds regardless of hop) past
+//      that same point, B relaxes onto A within a small dB tolerance.
+//
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
 // order the plugin would pick (factory_core::fftOrderForSampleRate), so the
@@ -2789,6 +2805,202 @@ namespace
                      worstMag, worstRed, red[(size_t) k8l], maxAboveDiff);
     }
 
+    // ---- Phase 6: display-only temporal smoothing (audition/DEV) ------------
+
+    // 30. Display smoothing (setDisplaySmoothingMs) must be perfectly
+    // audio-transparent: it only low-passes the analyser snapshot that
+    // magnitudeDb()/magnitudePreDb() report (dispMag/dispMagPre in
+    // ResonanceSuppressor, forwarded to both MultiResSuppressor sub-engines),
+    // and must never alter the suppression/detection DSP or the output audio.
+    // By construction (ResonanceSuppressor::processFrame): the raw per-frame
+    // value r = max(mag0*g0Eff, mag1*g1Eff)/(0.5*N) is computed from mag[]/
+    // gain[], which are populated BEFORE the dispSmoothMs branch and never
+    // read back from dispMag/dispMagState -- so r is bit-identical whether or
+    // not smoothing is on; only what gets WRITTEN to dispMag differs (r itself
+    // vs. a running one-pole of r). Twin composites (A: off/0 ms, B: on/50 ms),
+    // identical prepare/depth/sharpness/near-instant ballistics and identical
+    // input, gate three formula-independent invariants:
+    //  (i)   Audio transparency: A and B's output audio is bit-identical (exact
+    //        equality) at EVERY sample of a run spanning a silence->tone onset
+    //        AND the ensuing steady state.
+    //  (ii)  Non-vacuity (the feature does something), measured RELATIVE to the
+    //        tone's actual arrival so it never depends on the exact delay
+    //        arithmetic: read directly off the HIGH sub-engine (bypassing the
+    //        low/high display-grid merge, the same accessor dualSpeedTest/
+    //        dualDisplayTest use) at an airband tone bin-aligned on its own
+    //        grid, with near-instant ballistics (setTimes(0.01, 0.01), the same
+    //        "gain == this frame's target" trick engineReductionSnapshot uses)
+    //        so the per-bin gain carries no ballistics-timescale memory of its
+    //        own. Scan forward for the FIRST sample the UNSMOOTHED A's
+    //        magnitudeDb() at that bin rises clearly off the analyser floor
+    //        (> kArrivalDb). A and B share frame timing exactly (identical
+    //        input/config; display smoothing changes only WHAT is written to
+    //        dispMag, not WHEN), so at that same sample B's one-pole reflects
+    //        the same history -- still dominated by the long near-silent stretch
+    //        before the tone reaches the high band -- and must sit measurably
+    //        BELOW A. A separate gate asserts A does arrive within a generous
+    //        budget, so the check can never be silently skipped.
+    //  (iii) Steady-state convergence: ~10 time constants past guaranteed
+    //        arrival, B's one-pole has relaxed onto the (now-constant) raw
+    //        value and must match A within a small dB tolerance.
+    // Timing (spec constants, independent of the engine internals): the tone
+    // reaches the HIGH sub-engine only after the high-band pre-delay
+    // D = N_L - N_S (MultiResSuppressor's highDelay ring) plus the high engine's
+    // own window fill N_S -- ~(N_L + N_S)/H_S frames after onset. Invariant (ii)
+    // is arrival-relative, so this figure only sizes the "A must arrive" budget
+    // (arrivalBudgetFrames = ceil((N_L+N_S)/H_S) + 2*fillFrames, fillFrames =
+    // ceil(N_S/H_S) = 8 at the default 8x Normal quality). n63Frames =
+    // kDispSmoothMs*(Fs/H_S)/1000 is the one-pole's frame-domain time constant
+    // (H_S/Fs is the high engine's frame interval, so this is exactly the
+    // coefficient's tau in frames -- see setDisplaySmoothingMs's own doc).
+    // Across 44.1-192 kHz H_S/Fs stays narrow (the STFT order tracks Fs so the
+    // window length in ms is ~constant -- see resolutionTest), so n63Frames
+    // stays roughly in [27, 53]. At A's first arrival B is many tau behind
+    // (still integrating mostly floor), so the A-vs-B gap is tens of dB and
+    // kLagEpsilonDb (4 dB) has huge margin. Check (iii) waits ceil(10*n63Frames)
+    // frames past the arrival budget (retention c^n ~ e^-10 ~= 4.5e-5 in the
+    // linear domain, an estimated ~4e-4 dB residual), so kConvergeTolDb
+    // (0.05 dB) has ~100x margin.
+    void displaySmoothingIsAudioTransparentTest (double Fs)
+    {
+        std::printf ("Display smoothing (audio-transparent, lag-then-converge) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs);
+        const int NL = 1 << order;
+
+        const double kDispSmoothMs  = 50.0;  // audition tau under test
+        const double kArrivalDb     = -60.0; // invariant (ii): "A risen off the floor" threshold (floor ~-240, steady ~-36 dB)
+        const double kLagEpsilonDb  = 4.0;   // invariant (ii) margin (B typically tens of dB lower at A's first arrival)
+        const double kConvergeTolDb = 0.05;  // invariant (iii) tolerance (estimated residual ~4e-4 dB)
+
+        // Near-instant ballistics (matches engineReductionSnapshot's trick):
+        // the per-bin gain coefficient underflows to 0, so gain == this
+        // frame's own target with no cross-frame ballistics memory -- the only
+        // remaining time-domain effect on the raw r sequence is the analysis
+        // window itself filling with the tone, isolating (ii)/(iii) to the
+        // display smoothing alone.
+        auto cfg = [] (factory_core::MultiResSuppressor& s)
+        { s.setDepth (1.2); s.setSharpness (0.5); s.setTimes (0.01, 0.01); };
+
+        factory_core::MultiResSuppressor A, B; // A: smoothing off, B: smoothing on
+        A.prepare (Fs, order); cfg (A); A.setDisplaySmoothingMs (0.0);
+        B.prepare (Fs, order); cfg (B); B.setDisplaySmoothingMs (kDispSmoothMs);
+
+        const int NS = A.highEngine().latencySamples();
+        const int HS = A.highEngine().hopSamples();
+
+        // Airband tone bin-aligned on the HIGH engine's own FFT grid (no
+        // scalloping loss), same technique as dualSpeedTest/dualDisplayTest.
+        const int kSub = std::max (1, (int) std::round (8000.0 * (double) NS / Fs));
+        const double f0 = (double) kSub * Fs / (double) NS;
+
+        // Onset aligned to a whole H_S hop (cosmetic; the arrival scan below is
+        // index-based, not tied to an absolute frame count -- see (ii)).
+        const int onset = ((4 * NL + HS - 1) / HS) * HS;
+
+        const int fillFrames = (NS + HS - 1) / HS; // hops spanning one high-engine analysis window (== 8, Normal quality)
+        const double n63Frames = (kDispSmoothMs * 1.0e-3) * (Fs / (double) HS); // one-pole tau, in high-engine frames
+
+        // The tone reaches the HIGH sub-engine only after the high-band pre-delay
+        // D = N_L - N_S (MultiResSuppressor's highDelay ring) PLUS the high
+        // engine's own window fill N_S -- ~(N_L + N_S)/H_S frames after onset.
+        // Invariant (ii) is measured RELATIVE to A's actual first arrival (found
+        // in the loop), so it never depends on this figure; the budget below only
+        // guards "A must arrive" so the check can never be silently skipped, and
+        // the convergence point (iii) sits ~10 tau AFTER guaranteed arrival.
+        const int arrivalBudgetFrames = (NL + NS + HS - 1) / HS + 2 * fillFrames;
+        const int checkFrames3        = arrivalBudgetFrames + (int) std::ceil (10.0 * n63Frames);
+        const int arrivalBudgetSample = onset + arrivalBudgetFrames * HS;
+        const int checkSample3        = onset + checkFrames3 * HS;
+        const int M = checkSample3;
+
+        std::vector<double> x ((size_t) M, 0.0);
+        for (int n = onset; n < M; ++n) x[(size_t) n] = 0.5 * std::sin (2.0 * kPi * f0 * (n - onset) / Fs);
+
+        const int nbHigh = A.highEngine().numBins();
+        std::vector<double> magA ((size_t) nbHigh), magB ((size_t) nbHigh);
+        double snap2A = 0.0, snap2B = 0.0, snap3A = 0.0, snap3B = 0.0;
+        int arriveSample = -1;
+        bool audioBad = false;
+
+        for (int n = 0; n < M; ++n)
+        {
+            double la = x[(size_t) n], ra = x[(size_t) n];
+            double lb = x[(size_t) n], rb = x[(size_t) n];
+            A.process (la, ra);
+            B.process (lb, rb);
+
+            // (i) Audio transparency: exact equality, every sample.
+            if (! audioBad && (la != lb || ra != rb))
+            {
+                fail ("display smoothing altered the output audio at n=" + std::to_string (n)
+                      + " (dL=" + std::to_string (la - lb) + " dR=" + std::to_string (ra - rb)
+                      + ") at Fs=" + std::to_string (Fs));
+                audioBad = true;
+            }
+
+            // (ii) Arrival-relative lag: capture the FIRST sample the unsmoothed
+            // A rises clearly off the analyser floor at the test bin. A and B
+            // share frame timing exactly (identical input/config; display
+            // smoothing changes only WHAT is written to dispMag, not WHEN), so
+            // B's value at this same sample is its one-pole over the same history
+            // -- still dominated by the long near-silent stretch before the tone
+            // reaches the high band, hence far lower than A.
+            if (arriveSample < 0 && n >= onset)
+            {
+                A.highEngine().magnitudeDb (magA.data());
+                if (magA[(size_t) kSub] > kArrivalDb)
+                {
+                    B.highEngine().magnitudeDb (magB.data());
+                    snap2A = magA[(size_t) kSub];
+                    snap2B = magB[(size_t) kSub];
+                    arriveSample = n;
+                }
+            }
+
+            if (n == checkSample3 - 1)
+            {
+                A.highEngine().magnitudeDb (magA.data());
+                B.highEngine().magnitudeDb (magB.data());
+                snap3A = magA[(size_t) kSub]; snap3B = magB[(size_t) kSub];
+            }
+        }
+
+        // Non-vacuity: the tone must actually register (well above the
+        // analyser floor) and be genuinely suppressed (depth=1.2 active), or
+        // the gates below would pass trivially on near-silence.
+        if (snap3A < -40.0)
+            fail ("display smoothing: steady-state tone magnitude implausibly low ("
+                  + std::to_string (snap3A) + " dB) -- test signal not registering at Fs=" + std::to_string (Fs));
+        const double redAtSteady = A.highEngine().reductionDb()[(size_t) kSub];
+        if (redAtSteady > -3.0)
+            fail ("display smoothing: no meaningful suppression active at the test bin ("
+                  + std::to_string (redAtSteady) + " dB) -- invariant (i) would be vacuous at Fs=" + std::to_string (Fs));
+
+        // (ii) A must arrive within the budget (so the check is never silently
+        // skipped) and, at that first-arrival sample, B must sit measurably below it.
+        if (arriveSample < 0 || arriveSample > arrivalBudgetSample)
+            fail ("display smoothing: unsmoothed A never rose off the floor (> "
+                  + std::to_string (kArrivalDb) + " dB) within the arrival budget ("
+                  + std::to_string (arrivalBudgetFrames) + " frames): arriveSample="
+                  + std::to_string (arriveSample) + " budgetSample=" + std::to_string (arrivalBudgetSample)
+                  + " at Fs=" + std::to_string (Fs));
+        else if (snap2B > snap2A - kLagEpsilonDb)
+            fail ("display smoothing: no measurable lag at A's first arrival (sample "
+                  + std::to_string (arriveSample) + "): A=" + std::to_string (snap2A) + " dB B="
+                  + std::to_string (snap2B) + " dB (want B <= A-" + std::to_string (kLagEpsilonDb)
+                  + ") at Fs=" + std::to_string (Fs));
+
+        // (iii) B must converge to A in the steady state.
+        if (std::abs (snap3B - snap3A) > kConvergeTolDb)
+            fail ("display smoothing: did not converge to the unsmoothed value after " + std::to_string (checkFrames3)
+                  + " frames: A=" + std::to_string (snap3A) + " dB B=" + std::to_string (snap3B)
+                  + " dB (tol " + std::to_string (kConvergeTolDb) + ") at Fs=" + std::to_string (Fs));
+
+        std::printf ("  arrive@%d (budget %d) n63Frames=%.1f  lag(A=%.2f,B=%.2f,gap=%.2f dB)  converge(A=%.3f,B=%.3f,err=%.2e dB)\n",
+                     arriveSample, arrivalBudgetSample, n63Frames, snap2A, snap2B, snap2A - snap2B,
+                     snap3A, snap3B, std::abs (snap3A - snap3B));
+    }
+
     // ---- Pass 3A: routing (continuous link, external detector, M/S + sidechain) ---
 
     // linkBlendTest: continuous stereo link on the single engine. L carries a
@@ -3464,6 +3676,7 @@ int main (int argc, char** argv)
         dualCrossoverTest (Fs);
         dualQualityTest (Fs);
         dualDisplayTest (Fs);
+        displaySmoothingIsAudioTransparentTest (Fs);
         linkBlendTest (Fs);
         msRoundtripTest (Fs);
         sidechainTest (Fs);
