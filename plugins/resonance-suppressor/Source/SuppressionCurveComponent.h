@@ -4,6 +4,7 @@
 
 #include "PluginProcessor.h"
 #include "NodePanel.h"
+#include "RsTheme.h"
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
 #include "factory_ui/SpectrumDisplay.h"
@@ -52,9 +53,18 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        factory_ui::paintCard (g, getLocalBounds().toFloat(), 10.0f);
-        auto r = getLocalBounds().toFloat().reduced (12.0f);
-        controlsRow = r.removeFromTop (12.0f); // mode/freeze chips + GR badge
+        // Analyzer container / plot background (demo-analysis SS3.1): warm peach
+        // vertical gradient + a 1 px inset hairline (replaces the old white card).
+        auto full = getLocalBounds().toFloat();
+        juce::ColourGradient plotBg (rs::colour::plotTop(), 0.0f, full.getY(),
+                                     rs::colour::plotBottom(), 0.0f, full.getBottom(), false);
+        g.setGradientFill (plotBg);
+        g.fillRoundedRectangle (full, 14.0f);
+        g.setColour (rs::colour::border());
+        g.drawRoundedRectangle (full.reduced (0.5f), 14.0f, 1.0f);
+
+        auto r = full.reduced (12.0f);
+        controlsRow = r.removeFromTop (22.0f); // mode/freeze chips + GR badge
         r.removeFromTop (14.0f);               // Hz labels sit above the plot
         plot = r;
         layoutControlsRow();
@@ -227,7 +237,7 @@ private:
     juce::Rectangle<float> plotRect() const
     {
         auto r = getLocalBounds().toFloat().reduced (12.0f);
-        r.removeFromTop (12.0f); // controls row (mode/freeze chips, GR badge)
+        r.removeFromTop (22.0f); // controls row (mode/freeze chips, GR badge) -- must match paint()
         r.removeFromTop (14.0f); // Hz labels sit above the plot
         return r;
     }
@@ -285,24 +295,27 @@ private:
 
     juce::Point<float> nodePos (int id) const { return { freqToX (nodeFreq (id)), sensToY (nodeSens (id)) }; }
 
+    // demo-analysis SS3.1: decade freq lines (100/1k/10k) + the 0 dB reference
+    // line are the "strong" grid tier (#f2ddd4); everything else is "faint"
+    // (#f7e7e0). Same freqToX / label set / dB step as before -- colour only.
     void drawGrid (juce::Graphics& g)
     {
-        g.setFont (juce::Font (juce::FontOptions (10.0f)));
-        struct FL { float f; const char* s; };
-        for (auto fl : { FL{50,"50"}, FL{100,"100"}, FL{200,"200"}, FL{500,"500"},
-                         FL{1000,"1k"}, FL{2000,"2k"}, FL{5000,"5k"}, FL{10000,"10k"} })
+        g.setFont (rs::font (rs::FontKind::Ui, 10.0f, 600));
+        struct FL { float f; const char* s; bool strong; };
+        for (auto fl : { FL{50,"50",false}, FL{100,"100",true}, FL{200,"200",false}, FL{500,"500",false},
+                         FL{1000,"1k",true}, FL{2000,"2k",false}, FL{5000,"5k",false}, FL{10000,"10k",true} })
         {
             const float x = freqToX (fl.f);
-            g.setColour (FactoryLookAndFeel::track().withAlpha (0.7f));
+            g.setColour (fl.strong ? rs::colour::border() : rs::colour::borderLight());
             g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-            g.setColour (FactoryLookAndFeel::textDim());
+            g.setColour (fl.strong ? rs::colour::textMuted() : rs::colour::textFaint());
             g.drawText (fl.s, juce::Rectangle<float> (x - 18.0f, plot.getY() - 13.0f, 36.0f, 12.0f),
                         juce::Justification::centred);
         }
         for (float db = 0.0f; db >= -60.0f; db -= 12.0f)
         {
             const float y = dbToY (db);
-            g.setColour (FactoryLookAndFeel::track().withAlpha (db == 0.0f ? 0.9f : 0.4f));
+            g.setColour (db == 0.0f ? rs::colour::border() : rs::colour::borderLight());
             g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
         }
     }
@@ -435,6 +448,12 @@ private:
         g.strokePath (combined, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
+    // demo-analysis SS3.5: band nodes are plain pastel dots (15px dia., 20px selected)
+    // with a white halo + soft drop shadow; cuts are square handles (13x13 r4)
+    // with a coloured ring + a dashed vertical guide. Neither carries a text
+    // label in the demo (identity now reads from position/colour/the popover's
+    // "Band N" header) -- everything else (skip/dim rules, listen ring, the
+    // selected node growing) is the same semantics as before, just restyled.
     void drawNodes (juce::Graphics& g)
     {
         const int listen = processor.getListenNode();
@@ -447,38 +466,72 @@ private:
             if (! isCut (id) && ! on) continue;
             const float a = on ? 1.0f : 0.3f;
             const auto p = nodePos (id);
-            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
+            const bool selected = (id == selectedNode);
 
-            if (id == listen) // Listen ring, outermost so it doesn't collide with the selection ring
+            if (isCut (id))
             {
-                g.setColour (kTeal.withAlpha (0.9f));
-                g.drawEllipse (juce::Rectangle<float> (25.0f, 25.0f).withCentre (p), 2.0f);
-            }
+                const auto ring = (id == 0) ? rs::colour::orange() : kHighCutRing; // LC / HC
+                const float dashes[] = { 4.0f, 4.0f };
+                g.setColour (rs::colour::textFaint().withAlpha (a));
+                g.drawDashedLine (juce::Line<float> (p.x, plot.getY(), p.x, plot.getBottom()), dashes, 2, 1.0f);
 
-            g.setColour (juce::Colours::white.withAlpha (a));
-            g.fillEllipse (juce::Rectangle<float> (18.0f, 18.0f).withCentre (p));
-            g.setColour (col.withAlpha (a));
-            g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre (p));
-            if (id == selectedNode) // ring the node whose editor is open
-            {
-                g.setColour (FactoryLookAndFeel::text().withAlpha (0.9f));
-                g.drawEllipse (juce::Rectangle<float> (21.0f, 21.0f).withCentre (p), 1.6f);
+                const float sz = selected ? 18.0f : 13.0f; // demo: 13x13px r4 (grown when selected)
+                const auto sq = juce::Rectangle<float> (sz, sz).withCentre (p);
+
+                if (id == listen) // Listen ring, outermost
+                {
+                    g.setColour (kTeal.withAlpha (0.9f));
+                    g.drawRoundedRectangle (sq.expanded (5.0f), rs::radius::cutHandle + 3.0f, 2.0f);
+                }
+                { // soft drop shadow (approximates the demo's "0 2px 5px rgba(107,87,80,.25)")
+                    juce::DropShadow ds (juce::Colour::fromFloatRGBA (107.0f / 255.0f, 87.0f / 255.0f, 80.0f / 255.0f, 0.25f * a),
+                                         5, { 0, 2 });
+                    juce::Path sp; sp.addRoundedRectangle (sq, rs::radius::cutHandle);
+                    ds.drawForPath (g, sp);
+                }
+                g.setColour (ring.withAlpha (a)); // 2 px colour ring (box-shadow spread, approximated as a fill)
+                g.fillRoundedRectangle (sq.expanded (2.0f), rs::radius::cutHandle + 1.5f);
+                g.setColour (rs::colour::footerBg().withAlpha (a)); // handle bg #fff4ee
+                g.fillRoundedRectangle (sq, rs::radius::cutHandle);
             }
-            g.setColour (juce::Colours::white.withAlpha (a));
-            g.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
-            const juce::String label = isCut (id) ? (id == 0 ? "LC" : "HC") : juce::String (id - 1);
-            g.drawText (label, juce::Rectangle<float> (16.0f, 16.0f).withCentre (p), juce::Justification::centred);
+            else
+            {
+                const auto col = FactoryLookAndFeel::bandColour (id - 2);
+                const float dotD  = selected ? 20.0f : 15.0f; // demo: 15px dia., 20px selected
+                const float haloD = dotD + 6.0f;               // "0 0 0 3px #fff" halo
+                const auto dotR  = juce::Rectangle<float> (dotD, dotD).withCentre (p);
+                const auto haloR = juce::Rectangle<float> (haloD, haloD).withCentre (p);
+
+                if (id == listen) // Listen ring, outermost so it doesn't collide with the halo
+                {
+                    g.setColour (kTeal.withAlpha (0.9f));
+                    g.drawEllipse (juce::Rectangle<float> (haloD + 7.0f, haloD + 7.0f).withCentre (p), 2.0f);
+                }
+                { // soft drop shadow ("0 2px 6px rgba(107,87,80,.28)")
+                    juce::DropShadow ds (juce::Colour::fromFloatRGBA (107.0f / 255.0f, 87.0f / 255.0f, 80.0f / 255.0f, 0.28f),
+                                         6, { 0, 2 });
+                    juce::Path dp; dp.addEllipse (dotR);
+                    ds.drawForPath (g, dp);
+                }
+                g.setColour (rs::colour::white());
+                g.fillEllipse (haloR);
+                g.setColour (col);
+                g.fillEllipse (dotR);
+            }
         }
     }
 
-    // Small header chips (Pre/Post/Both, Freeze) + the GR badge.
+    // Small header chips (Pre/Post/Both, Freeze) + the GR badge. demo-analysis
+    // SS2.2: Pre/Post/Both sits top-left (A1); Freeze + GR sit top-right,
+    // Freeze left of GR (A2/A3) -- unlike the old layout, which grouped Freeze
+    // next to the mode chip on the left.
     void layoutControlsRow()
     {
         auto r = controlsRow;
-        modeChipBounds   = r.removeFromLeft (54.0f);
-        r.removeFromLeft (4.0f);
-        freezeChipBounds = r.removeFromLeft (50.0f);
-        grBadgeBounds    = r.removeFromRight (100.0f);
+        modeChipBounds = r.removeFromLeft (132.0f);
+        grBadgeBounds  = r.removeFromRight (100.0f);
+        r.removeFromRight (6.0f);
+        freezeChipBounds = r.removeFromRight (66.0f);
     }
 
     bool hitsModeChip   (juce::Point<float> pos) const { return modeChipBounds.contains (pos); }
@@ -491,26 +544,57 @@ private:
                                                               : AnalyzerMode::Both;
     }
 
+    // demo-analysis SS2.2 A1-A3. The mode chip keeps ONE click region over all
+    // 3 segments (hitsModeChip/cycleAnalyzerMode below are unchanged) -- only
+    // the paint gains the demo's 3-segment look, with whichever segment equals
+    // the live analyzerMode drawn as the active coral pill (matches the demo,
+    // where "Both" is the one shown active).
     void drawHeaderControls (juce::Graphics& g)
     {
-        auto chip = [&] (juce::Rectangle<float> b, const juce::String& text, bool active)
+        auto chipShell = [&] (juce::Rectangle<float> b)
         {
-            if (active)
-            {
-                g.setColour (FactoryLookAndFeel::accent().withAlpha (0.16f));
-                g.fillRoundedRectangle (b, 5.0f);
-            }
-            g.setColour (active ? FactoryLookAndFeel::accent() : FactoryLookAndFeel::textDim());
-            g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-            g.drawText (text, b, juce::Justification::centred);
+            g.setColour (rs::colour::chipBg());
+            g.fillRoundedRectangle (b, rs::radius::badge);
+            g.setColour (rs::colour::border());
+            g.drawRoundedRectangle (b.reduced (0.5f), rs::radius::badge, 1.0f);
         };
-        static constexpr const char* kModeNames[] = { "Both", "Pre", "Post" };
-        chip (modeChipBounds, kModeNames[(int) analyzerMode], analyzerMode != AnalyzerMode::Both);
-        chip (freezeChipBounds, freeze ? "Frozen" : "Freeze", freeze);
 
-        g.setColour (kTeal.withAlpha (0.85f));
-        g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-        g.drawText ("GR " + juce::String (grPeakDb, 1) + " dB", grBadgeBounds, juce::Justification::centredRight);
+        // A1: Pre / Post / Both.
+        chipShell (modeChipBounds);
+        {
+            static constexpr const char* kSegNames[] = { "Pre", "Post", "Both" };
+            static constexpr AnalyzerMode kSegModes[] = { AnalyzerMode::Pre, AnalyzerMode::Post, AnalyzerMode::Both };
+            auto inner = modeChipBounds.reduced (3.0f);
+            const float segW = inner.getWidth() / 3.0f;
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto seg = juce::Rectangle<float> (inner.getX() + (float) i * segW, inner.getY(), segW, inner.getHeight());
+                const bool active = (analyzerMode == kSegModes[i]);
+                if (active)
+                {
+                    g.setColour (rs::colour::accent());
+                    g.fillRoundedRectangle (seg.reduced (1.0f), rs::radius::badge - 2.0f);
+                }
+                g.setColour (active ? rs::colour::white() : rs::colour::textMuted());
+                g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+                g.drawText (kSegNames[i], seg, juce::Justification::centred);
+            }
+        }
+
+        // A2: Freeze.
+        chipShell (freezeChipBounds);
+        g.setColour (rs::colour::textSecondary());
+        g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+        g.drawText (freeze ? "Frozen" : "Freeze", freezeChipBounds, juce::Justification::centred);
+
+        // A3: GR peak-hold badge.
+        g.setColour (kGrBg);
+        g.fillRoundedRectangle (grBadgeBounds, rs::radius::badge);
+        g.setColour (kGrBorder);
+        g.drawRoundedRectangle (grBadgeBounds.reduced (0.5f), rs::radius::badge, 1.0f);
+        g.setColour (kGrText);
+        g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+        g.drawText ("GR " + juce::String (grPeakDb, 1) + " dB", grBadgeBounds, juce::Justification::centred);
     }
 
     // GR badge peak-hold: jump immediately to a bigger (more negative) cut, hold
@@ -748,7 +832,14 @@ private:
         if (result >= 200 && result < 204) { setParamGestured (pid (id, "slope"), (float) (result - 200)); return; }
     }
 
-    inline static const juce::Colour kTeal { juce::Colour (0xff45b8acu) };
+    inline static const juce::Colour kTeal        { juce::Colour (0xff45b8acu) };
+    // A few demo hex values (demo-analysis SS1.3) with no rs::colour role of
+    // their own (RsTheme.h is out of scope for this phase) -- kept local, same
+    // pattern as kTeal above.
+    inline static const juce::Colour kHighCutRing { juce::Colour (0xff79b8efu) }; // high-cut handle ring
+    inline static const juce::Colour kGrBg        { juce::Colour (0xffeafaf7u) }; // GR badge bg
+    inline static const juce::Colour kGrBorder    { juce::Colour (0xffb8e8e2u) }; // GR badge border
+    inline static const juce::Colour kGrText      { juce::Colour (0xff2f9488u) }; // GR badge text
 
     ResonanceSuppressorAudioProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
