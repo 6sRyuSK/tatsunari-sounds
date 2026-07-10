@@ -275,6 +275,15 @@
 //      -48; Hard uncontaminated; (b) sub-cap transparency vs the unmodified
 //      oracle; (c) closed-form per-frame slew bound + applied-gain floor;
 //      (d) HF narrow efficacy guard against a pre-smoothing cap regression.
+//  32-35. v2.1 plugin-mapping family, driven through the SAME JUCE-free
+//      Source/DetailParam.h the processor ships: (32) Detail/depth/migration
+//      math (d = 50 bit-preserves the v2.0.1 defaults, smoothing width exactly
+//      1/12); (33) F2 soft depth bound -- at the new soft maximum (engine 1.0)
+//      the cut never exceeds the excess (flatten-to-envelope), and the old 1.5
+//      maximum provably violates it (bug path stays gated); (34) F4 smoothing
+//      width extremes 1/24 / 1/6 vs the capped spec pipeline + a closed-form
+//      adjacent-step bound; (35) F5 full-chain two-tone AM artifact gate on
+//      the composite at the shipped defaults (margin >= kF5MarginDb).
 //
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
@@ -288,6 +297,8 @@
 #include "factory_core/ResonanceSuppressor.h"
 #include "factory_core/StftResolution.h"
 #include "factory_core/testing/DspInvariants.h"
+
+#include "DetailParam.h" // JUCE-free plugin mapping/migration math (Source/, see CMakeLists)
 
 #include <algorithm>
 #include <cmath>
@@ -1624,6 +1635,319 @@ namespace
                   + " dB (a pre-smoothing cap shifts this by ~2 dB) at Fs=" + std::to_string (Fs));
         std::printf ("  red[kf]: eng=%.2f orc=%.2f raw=%.2f dB (winErr=%.2e, h=%d)\n",
                      eng[(size_t) kf], orc[(size_t) kf], orcRaw[(size_t) kf], err, h);
+    }
+
+    // ---- v2.1 plugin-mapping family (Detail / F2 depth / F4 width / F5) -----
+    // These gate the plugin-side v2.1 changes at the engine level, through the
+    // SAME JUCE-free mapping header the processor ships (Source/DetailParam.h)
+    // -- so the values asserted here are the values the plugin actually feeds.
+
+    // 32. Detail/depth/migration mapping math (rate-independent, run once).
+    // The load-bearing exactness requirement: detail = 50 must reproduce the
+    // v2.0.1 defaults BIT-exactly -- in particular the smoothing width must be
+    // exactly 1.0/12.0 (the engine default the plugin previously never
+    // overrode), so a fresh v2.1 instance is bit-identical to v2.0.1.
+    void detailParamMathTest()
+    {
+        namespace rd = resonance_suppressor_detail;
+        std::printf ("Detail mapping math (d=50 bit-preserves v2.0.1 defaults)\n");
+
+        if (rd::gainSmoothOctForDetail (50.0) != 1.0 / 12.0)
+            fail ("detail: gainSmoothOctForDetail(50) != exactly 1/12 (defaults not bit-preserved)");
+        // 2^(+-1) is an exact power-of-two scaling, so the formula's endpoints
+        // ARE the clamp bounds, exactly.
+        if (rd::gainSmoothOctForDetail (0.0) != 1.0 / 6.0)
+            fail ("detail: gainSmoothOctForDetail(0) != exactly 1/6");
+        if (rd::gainSmoothOctForDetail (100.0) != 1.0 / 24.0)
+            fail ("detail: gainSmoothOctForDetail(100) != exactly 1/24");
+        if (! (rd::gainSmoothOctForDetail (25.0) > rd::gainSmoothOctForDetail (50.0)
+               && rd::gainSmoothOctForDetail (50.0) > rd::gainSmoothOctForDetail (75.0)))
+            fail ("detail: gainSmoothOctForDetail not strictly decreasing in d");
+        if (rd::gainSmoothOctForDetail (-50.0) != 1.0 / 6.0 || rd::gainSmoothOctForDetail (200.0) != 1.0 / 24.0)
+            fail ("detail: gainSmoothOctForDetail clamp ([1/24, 1/6]) broken");
+
+        if (std::abs (rd::sharpOctForDetail (50.0) - 0.575) > 1.0e-15)
+            fail ("detail: sharpOctForDetail(50) != 0.575 (v2.0.1 default)");
+        if (std::abs (rd::sharpOctForDetail (0.0) - 0.15) > 1.0e-15
+            || std::abs (rd::sharpOctForDetail (100.0) - 1.0) > 1.0e-15)
+            fail ("detail: sharpOctForDetail endpoints != 0.15 / 1.0");
+        if (rd::selectivityForDetail (50.0) != 0.5
+            || rd::selectivityForDetail (0.0) != 0.0
+            || rd::selectivityForDetail (100.0) != 1.0)
+            fail ("detail: selectivityForDetail != d/100 at {0, 50, 100}");
+
+        // F2 depth map: soft tops out at 1.0, hard keeps the 1.5 span.
+        if (rd::engineDepthForPct (100.0, false) != 1.0
+            || rd::engineDepthForPct (100.0, true) != 1.5
+            || rd::engineDepthForPct (50.0, true) != 0.75
+            || std::abs (rd::engineDepthForPct (30.0, false) - 0.3) > 1.0e-15)
+            fail ("detail: engineDepthForPct mapping broken (soft 1.0 / hard 1.5 span)");
+
+        // Migration inverse: mean of the legacy pair, clamped to [0, 100].
+        if (rd::detailFromLegacy (70.0, 60.0) != 65.0
+            || rd::detailFromLegacy (80.0, 50.0) != 65.0
+            || rd::detailFromLegacy (0.0, 0.0) != 0.0
+            || rd::detailFromLegacy (100.0, 100.0) != 100.0
+            || rd::detailFromLegacy (150.0, 90.0) != 100.0
+            || rd::detailFromLegacy (-10.0, 0.0) != 0.0)
+            fail ("detail: detailFromLegacy != clamp((sharp+sel)/2, 0, 100)");
+        std::printf ("  ok\n");
+    }
+
+    // Independent A1-only oracle for test 33: the per-bin EXCESS (dB over the
+    // self-excluding log-mean envelope) of one Hann analysis frame. Restates
+    // the spec's A1 stage alone -- never calls into ResonanceSuppressor, and
+    // deliberately separate from specReductionOracle's A2-A4 stages so the F2
+    // bound below is checked against the excess itself, not the reduction law
+    // under test.
+    std::vector<double> specExcessDbOracle (const std::vector<double>& x, int frameStart,
+                                            int order, double sharpOct)
+    {
+        const int N = 1 << order, half = N / 2;
+        factory_core::FFT fft; fft.prepare (order);
+        std::vector<cd> spec ((size_t) N);
+        for (int k = 0; k < N; ++k)
+        {
+            const double w = 0.5 - 0.5 * std::cos (2.0 * kPi * k / N);
+            spec[(size_t) k] = cd (x[(size_t) (frameStart + k)] * w, 0.0);
+        }
+        fft.forward (spec.data());
+
+        std::vector<double> L ((size_t) (half + 1)), pfx ((size_t) (half + 2)), ex ((size_t) (half + 1));
+        pfx[0] = 0.0;
+        for (int k = 0; k <= half; ++k)
+        {
+            L[(size_t) k] = std::log (std::abs (spec[(size_t) k]) + 1.0e-12);
+            pfx[(size_t) (k + 1)] = pfx[(size_t) k] + L[(size_t) k];
+        }
+        const double wf = std::pow (2.0, sharpOct), nf = std::pow (wf, 0.25);
+        for (int k = 0; k <= half; ++k)
+        {
+            const int lo  = std::clamp ((int) std::floor (k / wf), 0, half);
+            const int hi  = std::clamp ((int) std::ceil  (k * wf), lo, half);
+            const int loN = std::clamp ((int) std::floor (k / nf), lo, hi);
+            const int hiN = std::clamp ((int) std::ceil  (k * nf), loN, hi);
+            const int  wc = hi - lo + 1, nc = hiN - loN + 1;
+            const double ws = pfx[(size_t) (hi + 1)] - pfx[(size_t) lo];
+            double env;
+            if (wc <= 6 || wc - nc < 4)
+                env = ws / (double) wc;
+            else
+                env = (ws - (pfx[(size_t) (hiN + 1)] - pfx[(size_t) loN])) / (double) (wc - nc);
+            ex[(size_t) k] = (L[(size_t) k] - env) * (20.0 / std::log (10.0));
+        }
+        return ex;
+    }
+
+    // 33. F2 soft depth bound: at the plugin's new soft maximum (depth 1.0,
+    // profile 1) the cut can never exceed the excess itself -- 100 % Depth
+    // means "flatten to the envelope, never below it". Checked pre-smoothing
+    // (smoothing spreads reduction onto low-excess neighbour bins by design;
+    // the LAW is what this gates) with the excess from the independent A1
+    // oracle above; at the OLD soft maximum (engine depth 1.5, still reachable
+    // through the engine API) the same signal must VIOLATE the bound at the
+    // resonance -- proving the gate really distinguishes the bug path F2
+    // removed from the plugin mapping.
+    void engineSoftDepthBoundTest (double Fs)
+    {
+        std::printf ("F2 soft depth bound (depth 1.0: cut <= excess; 1.5 violates) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const int kf = (int) std::round (2000.0 * N / Fs);
+        const int jlo = (int) std::ceil (kf / 1.6), jhi = (int) std::floor (kf * 1.6);
+        const double b = 0.003;
+        const auto x = combSignal (order, M, [&] (int k) {
+            if (k < jlo || k > jhi) return 0.0;
+            return (k == kf) ? 21.0 * b : b;
+        });
+
+        const auto ex = specExcessDbOracle (x, M - N, order, 0.5);
+
+        SpecDetector p; p.depth = 1.0; p.smoothOct = 0.0; // new soft max, law only
+        const auto red1 = engineReductionSnapshot (x, Fs, order, p);
+        double worst = 0.0; int worstK = 0;
+        for (int k = 0; k <= N / 2; ++k)
+        {
+            const double over = -red1[(size_t) k] - std::max (0.0, ex[(size_t) k]);
+            if (over > worst) { worst = over; worstK = k; }
+        }
+        if (worst > 0.05)
+            fail ("F2: depth-1.0 cut exceeds the excess by " + std::to_string (worst)
+                  + " dB at bin " + std::to_string (worstK) + " (flatten-to-envelope violated) at Fs="
+                  + std::to_string (Fs));
+        if (red1[(size_t) kf] > -10.0)
+            fail ("F2: depth-1.0 resonance cut too shallow to make the bound meaningful: "
+                  + std::to_string (red1[(size_t) kf]) + " dB at Fs=" + std::to_string (Fs));
+
+        SpecDetector p15 = p; p15.depth = 1.5; // the old soft max = the bug path
+        const auto red15 = engineReductionSnapshot (x, Fs, order, p15);
+        if (! (-red15[(size_t) kf] > std::max (0.0, ex[(size_t) kf]) + 1.0))
+            fail ("F2: depth-1.5 did NOT violate the excess bound at kf (gate vacuous): cut "
+                  + std::to_string (-red15[(size_t) kf]) + " vs excess " + std::to_string (ex[(size_t) kf])
+                  + " dB at Fs=" + std::to_string (Fs));
+        std::printf ("  worstOver=%.4f dB (depth 1.0)   kf: cut=%.2f excess=%.2f (1.5: cut=%.2f, violates)\n",
+                     worst, -red1[(size_t) kf], ex[(size_t) kf], -red15[(size_t) kf]);
+    }
+
+    // 34. F4 smoothing-width extremes: the Detail knob now drives
+    // setSmoothingWidth across [1/24, 1/6] (gainSmoothOctForDetail); at BOTH
+    // extremes the engine must equal the capped spec pipeline (unmodified
+    // specReductionOracle + the post-smoothing soft cap, i.e. max(orc, -24))
+    // on every bin, and the adjacent-bin step of the final curve must obey the
+    // closed-form two-pass-box bound: each box pass maps values in [-48, 0]
+    // (the raw clamp range) to averages whose adjacent difference is at most
+    // C/(2h+1) when the pair shares one half-width h (one bin enters, one
+    // leaves a (2h+1)-bin window) and 2C/(2h+3) when h grows by one between
+    // the pair (window re-normalisation), with C = 48; the same bound holds
+    // for the second pass (its input range is again [-C, 0]) and the soft cap
+    // is a contraction (|max(a,-c) - max(b,-c)| <= |a-b|), so the FINAL curve
+    // obeys it too.
+    void gainSmoothWidthExtremesTest (double Fs)
+    {
+        std::printf ("F4 smoothing-width extremes (1/24 and 1/6 oct) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, half = N / 2, M = kSnapshotLen;
+        const double f0 = alignedFreq (Fs, 2000.0);
+        const int kf = (int) std::round (f0 * N / Fs);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n) x[(size_t) n] = 0.5 * std::sin (2.0 * kPi * f0 * n / Fs);
+
+        namespace rd = resonance_suppressor_detail;
+        const double octs[2] = { rd::gainSmoothOctForDetail (100.0),   // 1/24 (most surgical)
+                                 rd::gainSmoothOctForDetail (0.0) };   // 1/6  (broadest)
+        for (double w : octs)
+        {
+            SpecDetector p; p.depth = 1.2; p.smoothOct = w;
+            const auto eng = engineReductionSnapshot (x, Fs, order, p);
+            const auto orc = specReductionOracle (x, M - N, Fs, order, p);
+
+            double err = 0.0;
+            for (int k = 0; k <= half; ++k)
+            {
+                const double expected = std::max (orc[(size_t) k], -kSoftCapDbSpec); // post-smoothing soft cap
+                err = std::max (err, std::abs (eng[(size_t) k] - expected));
+            }
+            if (err > 0.5)
+                fail ("F4: engine != capped spec pipeline at oct=" + std::to_string (w)
+                      + " by " + std::to_string (err) + " dB at Fs=" + std::to_string (Fs));
+
+            const double C = 48.0, fac = std::pow (2.0, 0.5 * w) - 1.0;
+            for (int k = 0; k < half; ++k)
+            {
+                const int h0 = std::max (1, (int) std::lround (k * fac));
+                const int h1 = std::max (1, (int) std::lround ((k + 1) * fac));
+                const int hm = std::min (h0, h1);
+                const double bound = (h0 == h1 ? C / (2.0 * hm + 1.0) : 2.0 * C / (2.0 * hm + 3.0)) + 1.0e-9;
+                const double step = std::abs (eng[(size_t) (k + 1)] - eng[(size_t) k]);
+                if (step > bound)
+                {
+                    fail ("F4: adjacent-bin step " + std::to_string (step) + " above the closed-form box bound "
+                          + std::to_string (bound) + " at bin " + std::to_string (k) + " oct=" + std::to_string (w)
+                          + " Fs=" + std::to_string (Fs));
+                    break;
+                }
+            }
+            if (eng[(size_t) kf] > -5.0)
+                fail ("F4: cut did not survive smoothing at oct=" + std::to_string (w) + ": "
+                      + std::to_string (eng[(size_t) kf]) + " dB at Fs=" + std::to_string (Fs));
+            std::printf ("  oct=%.4f err=%.2e red[kf]=%.2f\n", w, err, eng[(size_t) kf]);
+        }
+    }
+
+    // 35. F5 full-chain artifact gate: the shipped v2.1 chain (MultiRes
+    // composite, Soft mode, Depth 100 % -> engine 1.0 via the F2 map, every
+    // detection control at the Detail-50 defaults, plugin-default ballistics
+    // 20/65 ms) on a two-tone 5.0/5.9 kHz test signal, amplitude-modulated at
+    // 5 Hz / 80 % depth -- the moving-target case that makes a chattering
+    // detector paint sidebands/"musical noise" across the spectrum. Gate: in
+    // the output's spectrum (Hann FFT whose order follows the sample rate:
+    // fftOrderForSampleRate(Fs, 16, 48k, 18), ~0.73 Hz bins at every rate),
+    // the loudest bin OUTSIDE +-100 Hz of each tone, over [200 Hz,
+    // min(20 kHz, 0.45*Fs)], must sit at least kF5MarginDb below the QUIETER
+    // tone's in-band peak. kF5MarginDb was calibrated post-F1/F2/F4 by running
+    // this measurement across all six rates -- measured margins 92.39 (44.1k),
+    // 88.85 (48k), 92.49 (88.2k), 88.92 (96k), 92.51 (176.4k), 88.93 (192k) dB
+    // -- and FIXED ~6 dB below the worst (88.85 dB @ 48k): 88.85 - 6 -> 82. A
+    // musical-noise regression (the pre-F1 soft law's uncapped chatter) paints
+    // frame-rate sideband combs on the tone flanks many tens of dB above this
+    // floor, so the 6 dB headroom only absorbs benign platform/FFT variance.
+    constexpr double kF5MarginDb = 82.0;
+    void fullChainArtifactTest (double Fs)
+    {
+        std::printf ("F5 full-chain artifact gate (two-tone AM, composite) @ Fs=%.0f\n", Fs);
+        namespace rd = resonance_suppressor_detail;
+        const int order = orderFor (Fs);
+
+        factory_core::MultiResSuppressor s;
+        s.prepare (Fs, order);
+        s.setMode (0);
+        s.setDepth (rd::engineDepthForPct (100.0, false));            // F2: soft max = 1.0
+        s.setSharpness (rd::sharpOctForDetail (50.0));                // Detail-50 defaults
+        s.setSelectivity (rd::selectivityForDetail (50.0));
+        s.setSmoothingWidth (rd::gainSmoothOctForDetail (50.0));
+        s.setTimes (20.0, 65.0);                                      // plugin defaults
+        const int NL = s.latencySamples();
+
+        // Tones bin-aligned on the HIGH engine's grid (both are above the 3 kHz
+        // split, so the fast order-2 engine owns them).
+        const int NS = 1 << (order - 2);
+        const int k1 = std::max (1, (int) std::round (5000.0 * NS / Fs));
+        const int k2 = std::max (k1 + 1, (int) std::round (5900.0 * NS / Fs));
+        const double f1 = (double) k1 * Fs / NS, f2 = (double) k2 * Fs / NS;
+
+        // Analysis FFT order follows the sample rate (~0.73 Hz bins at every
+        // rate); never a fixed order.
+        const int aOrd = factory_core::fftOrderForSampleRate (Fs, 16, 48000.0, 18);
+        const int L = 1 << aOrd;
+        const int settle = 2 * NL + 8192;
+
+        std::vector<double> y ((size_t) L);
+        for (int n = 0; n < settle + L; ++n)
+        {
+            const double am = 1.0 + 0.8 * std::sin (2.0 * kPi * 5.0 * n / Fs);
+            double l = 0.25 * am * (std::sin (2.0 * kPi * f1 * n / Fs) + std::sin (2.0 * kPi * f2 * n / Fs));
+            double r = l;
+            s.process (l, r);
+            if (n >= settle) y[(size_t) (n - settle)] = l;
+        }
+        if (! factory_core::testing::allFinite (y))
+            fail ("F5: composite output not finite at Fs=" + std::to_string (Fs));
+
+        factory_core::FFT fft; fft.prepare (aOrd);
+        std::vector<cd> spec ((size_t) L);
+        for (int n = 0; n < L; ++n)
+        {
+            const double w = 0.5 - 0.5 * std::cos (2.0 * kPi * n / L);
+            spec[(size_t) n] = cd (y[(size_t) n] * w, 0.0);
+        }
+        fft.forward (spec.data());
+
+        const double binHz = Fs / (double) L;
+        auto peakIn = [&] (double lo, double hi, bool excludeTones)
+        {
+            double m = 0.0;
+            const int a = std::max (1, (int) std::ceil (lo / binHz));
+            const int b = std::min (L / 2, (int) std::floor (hi / binHz));
+            for (int k = a; k <= b; ++k)
+            {
+                const double f = k * binHz;
+                if (excludeTones && (std::abs (f - f1) <= 100.0 || std::abs (f - f2) <= 100.0)) continue;
+                m = std::max (m, std::abs (spec[(size_t) k]));
+            }
+            return m;
+        };
+        const double tone1 = peakIn (f1 - 100.0, f1 + 100.0, false);
+        const double tone2 = peakIn (f2 - 100.0, f2 + 100.0, false);
+        const double toneRef = std::min (tone1, tone2); // gate against the QUIETER tone (stricter)
+        const double artifact = peakIn (200.0, std::min (20000.0, 0.45 * Fs), true);
+
+        const double marginDb = 20.0 * std::log10 (toneRef / std::max (artifact, 1.0e-300));
+        if (toneRef <= 0.0 || 20.0 * std::log10 (toneRef / (0.25 * 0.5 * (double) L)) < -30.0)
+            fail ("F5: tones missing from the output (measurement broken) at Fs=" + std::to_string (Fs));
+        if (marginDb < kF5MarginDb)
+            fail ("F5: worst artifact only " + std::to_string (marginDb)
+                  + " dB below the quieter tone (spec >= " + std::to_string (kF5MarginDb)
+                  + ") at Fs=" + std::to_string (Fs));
+        std::printf ("  tone-artifact margin %.2f dB (spec >= %.0f; f1=%.1f f2=%.1f, aOrd=%d)\n",
+                     marginDb, kF5MarginDb, f1, f2, aOrd);
     }
 
     // Soft mode uses an adaptive threshold, so its reduction is invariant to input
@@ -3907,6 +4231,7 @@ int main (int argc, char** argv)
     else          rates = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
 
     fftTest();
+    detailParamMathTest();
     reductionProfileTest();
     reductionDefaultIdentityTest();
     widthSweepTest();
@@ -3927,6 +4252,9 @@ int main (int argc, char** argv)
         softCapTransparencyTest (Fs);
         softCapSlewBoundTest (Fs);
         softCapHfEfficacyTest (Fs);
+        engineSoftDepthBoundTest (Fs);
+        gainSmoothWidthExtremesTest (Fs);
+        fullChainArtifactTest (Fs);
         profileTest (Fs);
         preSpectrumTest (Fs);
         listenProfileTest (Fs);
