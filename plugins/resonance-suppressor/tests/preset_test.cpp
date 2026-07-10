@@ -29,6 +29,10 @@
 //      through the same name); overwrite replaces in place (no duplicate row).
 //      Runs entirely against a scratch temp directory (the File-override
 //      constructor) — never touches the real userAppData.
+//   9. (v2.1) "detail" state migration: a v2.0.1-shaped state (legacy
+//      sharpness/selectivity, no detail) loads detail at (sharp% + sel%)/2;
+//      a new-format state (detail present) is taken verbatim. check 7 also
+//      asserts the migration value against its v1.2.0 fixture.
 //
 #include "PluginProcessor.h"
 #include "FactoryPresets.h"
@@ -290,6 +294,11 @@ namespace
     // v1.3.0: selectivity/tilt/quality. v1.5.0 (Pass 3B routing): linkAmt/channelMode/
     // scEnable/scListen. v1.6.0 (Phase 4: 8-band width EQ): b4..b7 on/freq/type/sens
     // (bands 5-8, off by default) and b0..b7 width (all 8 bands, default 0.50).
+    // v2.1: "out" (default 0 dB). NOTE: v2.1's "detail" is deliberately NOT in this
+    // list -- setStateInformation MIGRATES it from the legacy sharpness/selectivity
+    // values when it is absent, so a pre-detail state loads it at (sharp% + sel%)/2
+    // rather than its default; check7 asserts that migration value explicitly, and
+    // check9 covers the v2.0.1-shaped fixtures.
     const char* const kV120NewParams[] = { "selectivity", "tilt", "quality",
                                            "linkAmt", "channelMode", "scEnable", "scListen",
                                            "b4_on", "b4_freq", "b4_type", "b4_sens",
@@ -297,7 +306,8 @@ namespace
                                            "b6_on", "b6_freq", "b6_type", "b6_sens",
                                            "b7_on", "b7_freq", "b7_type", "b7_sens",
                                            "b0_width", "b1_width", "b2_width", "b3_width",
-                                           "b4_width", "b5_width", "b6_width", "b7_width" };
+                                           "b4_width", "b5_width", "b6_width", "b7_width",
+                                           "out" };
 
     // Tolerance mirrors checks 3/6: an absolute floor plus a range-proportional term
     // (denorm -> norm -> denorm is lossy for skewed ranges within ~this bound).
@@ -353,6 +363,19 @@ namespace
                 fail (std::string ("new param '") + np + "' is " + std::to_string (got)
                       + " after loading v1.2.0 state (expected default " + std::to_string (def) + ")");
         }
+
+        // (c) v2.1 "detail" migration: the fixture lists sharpness = 80 and (being
+        // v1.2.0) no selectivity, which the migration defaults to 50 -- so detail
+        // must load as (80 + 50) / 2 = 65, NOT its default 50. Oracle: the spec
+        // formula, restated here by hand.
+        if (auto* rp = rangedParam (*p, "detail"))
+        {
+            const double got = readReal (rp);
+            if (std::abs (got - 65.0) > roundTripTol (rp))
+                fail ("v2.1 'detail' migrated to " + std::to_string (got)
+                      + " from the v1.2.0 fixture (expected (80+50)/2 = 65)");
+        }
+        else fail ("v2.1 param 'detail' missing from layout");
     }
 
     // ------------------------------------------------------------------------
@@ -448,6 +471,67 @@ namespace
 
         tempDir.deleteRecursively(); // leave no artefact behind, pass or fail
     }
+
+    // ------------------------------------------------------------------------
+    // check 9 — v2.0.1 -> v2.1 "detail" state migration (setStateInformation).
+    //
+    // A v2.0.1-generation state carries the legacy sharpness/selectivity pair
+    // and no "detail" child; loading it must inject detail = (sharp% + sel%)/2
+    // (the migration inverse of the two detail->engine maps) BEFORE
+    // applyStateXml, while a new-format state (detail present) must pass
+    // through untouched (no double-migration). Minimal PARAMS-shaped fixtures
+    // (applyStateXml only needs the matching root tag); the oracle is the spec
+    // formula restated by hand. The migration MATH itself is additionally
+    // covered headlessly in tests/dsp_test.cpp (detailParamMathTest); this
+    // check covers the XML plumbing end to end through the production
+    // setStateInformation path.
+    void check9_detail_migration()
+    {
+        std::printf ("9. v2.0.1 state migrates detail = (sharpness + selectivity) / 2\n");
+
+        auto loadFixture = [] (const char* fixtureXml)
+        {
+            auto xml = juce::parseXML (juce::String (fixtureXml));
+            auto p = std::make_unique<ResonanceSuppressorAudioProcessor>();
+            if (xml == nullptr) { fail ("check9 fixture XML did not parse"); return p; }
+            juce::MemoryBlock blob;
+            p->copyXmlToBinary (*xml, blob); // the production binary shape
+            p->setStateInformation (blob.getData(), (int) blob.getSize());
+            return p;
+        };
+
+        // (a) v2.0.1-shaped state: legacy pair present, no detail -> migrated.
+        {
+            auto p = loadFixture (R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<PARAMS presetIndex="0">
+  <PARAM id="sharpness" value="70.0"/>
+  <PARAM id="selectivity" value="60.0"/>
+</PARAMS>)XML");
+            auto* rp = rangedParam (*p, "detail");
+            if (rp == nullptr) { fail ("check9: 'detail' missing from layout"); return; }
+            const double got = readReal (rp);
+            if (std::abs (got - 65.0) > roundTripTol (rp))
+                fail ("check9: detail migrated to " + std::to_string (got)
+                      + " (expected (70+60)/2 = 65)");
+        }
+
+        // (b) New-format state: detail present -> taken verbatim, legacy pair
+        // ignored by the migration (no double-migration).
+        {
+            auto p = loadFixture (R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<PARAMS presetIndex="0">
+  <PARAM id="sharpness" value="70.0"/>
+  <PARAM id="selectivity" value="60.0"/>
+  <PARAM id="detail" value="33.0"/>
+</PARAMS>)XML");
+            auto* rp = rangedParam (*p, "detail");
+            if (rp == nullptr) { fail ("check9: 'detail' missing from layout"); return; }
+            const double got = readReal (rp);
+            if (std::abs (got - 33.0) > roundTripTol (rp))
+                fail ("check9: new-format detail was re-migrated to " + std::to_string (got)
+                      + " (expected the stored 33)");
+        }
+    }
 }
 
 int main()
@@ -471,6 +555,7 @@ int main()
     check6_full_state_roundtrip (*processor);
     check7_v120_state_compat();
     check8_user_preset_store();
+    check9_detail_migration();
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

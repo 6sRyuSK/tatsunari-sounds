@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "DetailParam.h"
 
 #include <cmath>
 
@@ -48,8 +49,13 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 30.0f,
         AudioParameterFloatAttributes().withLabel (" %")));
 
+    // v2.1: "sharpness" (and "selectivity" below) are LEGACY — the DSP now
+    // reads only "detail" (see below). They stay registered with unchanged
+    // IDs/ranges so VST3 automation lanes and old sessions keep resolving
+    // (removing a parameter is a state/automation break = major bump); their
+    // values are simply no longer consumed. Display names say so.
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "sharpness", 1 }, "Sharpness",
+        ParameterID { "sharpness", 1 }, "Sharpness (legacy)",
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
         AudioParameterFloatAttributes().withLabel (" %")));
 
@@ -98,8 +104,8 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     // --- Phase 1 detector controls (Selectivity / Tilt / Quality) ---
     // Version hint 2: these arrived in v1.3.0, after the original v1.x set, so a
     // v1.2.0 session (which lacks them) still loads — its state simply leaves them
-    // at the defaults below (verified by preset_test's v1.2.0 fixture). Applied
-    // every block in processBlock like depth/sharpness; the engine epsilon-compares
+    // at the defaults below (verified by preset_test's v1.2.0 fixture). Tilt and
+    // Quality are applied every block in processBlock; the engine epsilon-compares
     // and rebuilds lazily, so no SmoothedValue is needed.
     // Phase 6 DEFAULTS DRAFT: selectivity/depth/sharpness reviewed and left
     // UNCHANGED (conservative) -- 50% is already the soft-knee law's own
@@ -107,9 +113,29 @@ ResonanceSuppressorAudioProcessor::createParameterLayout()
     // W=4dB), and depth/sharpness are audition-first-impression choices better
     // judged by ear against the Phase 6 pack than re-guessed here.
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "selectivity", 2 }, "Selectivity",
+        ParameterID { "selectivity", 2 }, "Selectivity (legacy)",
         NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
         AudioParameterFloatAttributes().withLabel (" %")));
+
+    // --- v2.1 macro + output controls (version hint 3: new in v2.1) ---
+    // Detail replaces the sharpness/selectivity pair as the single detection
+    // macro: sharpOct = 0.15 + 0.85*d/100, selectivity = d/100, and it also
+    // drives the reduction-smoothing width, (1/12)*2^((50-d)/50) oct clamped
+    // to [1/24, 1/6] (DetailParam.h). d = 50 reproduces the v2.0.1 defaults
+    // bit-exactly. Pre-detail sessions are migrated in setStateInformation
+    // (detail = mean of the legacy pair).
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "detail", 3 }, "Detail",
+        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
+        AudioParameterFloatAttributes().withLabel (" %")));
+
+    // Output trim, applied AFTER the suppressor (post Mix, also in Delta) via
+    // a ~20 ms SmoothedValue in processBlock; NOT applied while the internal
+    // bypass is active (bypass stays a unity passthrough).
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "out", 3 }, "Output",
+        NormalisableRange<float> { -24.0f, 24.0f, 0.1f }, 0.0f,
+        AudioParameterFloatAttributes().withLabel (" dB")));
 
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "tilt", 2 }, "Tilt",
@@ -217,7 +243,8 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
       apvts (*this, &undoManager, "PARAMS", createParameterLayout())
 {
     depthParam  = apvts.getRawParameterValue ("depth");
-    sharpParam  = apvts.getRawParameterValue ("sharpness");
+    detailParam = apvts.getRawParameterValue ("detail");
+    outParam    = apvts.getRawParameterValue ("out");
     atkParam    = apvts.getRawParameterValue ("attack");
     relParam    = apvts.getRawParameterValue ("release");
     mixParam    = apvts.getRawParameterValue ("mix");
@@ -226,7 +253,6 @@ ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()
     bypassParam = apvts.getRawParameterValue ("bypass");
     bypassParamPtr = apvts.getParameter ("bypass");
     modeParam   = apvts.getRawParameterValue ("mode");
-    selParam    = apvts.getRawParameterValue ("selectivity");
     tiltParam   = apvts.getRawParameterValue ("tilt");
     qualityParam = apvts.getRawParameterValue ("quality");
     linkAmtParam     = apvts.getRawParameterValue ("linkAmt");
@@ -276,6 +302,13 @@ void ResonanceSuppressorAudioProcessor::prepareToPlay (double sampleRate, int)
     // High quality (its maxOrder defaults to order + 1, capped at kMaxFftOrder).
     currentFftOrder   = factory_core::fftOrderForSampleRate (sampleRate, kBaseFftOrder, kRefSampleRate, kMaxFftOrder);
     suppressor.prepare (sampleRate, currentFftOrder);
+    // Output trim smoother (~20 ms, continuous-param rule): seed at the CURRENT
+    // effective target -- unity while bypassed, the dB value otherwise -- so
+    // playback never starts with a trim ramp.
+    outGain.reset (sampleRate, 0.02);
+    outGain.setCurrentAndTargetValue (bypassParam->load() > 0.5f
+                                          ? 1.0
+                                          : std::pow (10.0, (double) outParam->load() / 20.0));
     // Display-only spectral smoothing (~50 ms): restores the v1 analyser's smooth
     // feel on top of v2's dual-resolution engine (whose airband window is only
     // ~10.7 ms). Opt-in and display-ONLY -- it low-passes what the analyser draws
@@ -390,9 +423,25 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // Listen. < 0 is the normal path, unchanged.
     const int listen = listenNode.load (std::memory_order_relaxed);
 
-    suppressor.setDepth       ((double) depthParam->load() / 100.0 * 1.5);
-    suppressor.setSharpness   (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
-    suppressor.setSelectivity ((double) selParam->load() / 100.0);  // 0..100 % -> 0..1
+    // Analyzer DEV mode (P3b): live display-smoothing override. atomic load only
+    // -- no alloc/lock/syscall. prepareToPlay still seeds the core at 50 ms; this
+    // re-applies every block so the DEV panel can change it live.
+    suppressor.setDisplaySmoothingMs ((double) displaySmoothMsUi.load (std::memory_order_relaxed));
+
+    // Mode read ONCE per block: it steers both the Depth mapping (F2) and
+    // setMode below, so the engine always sees a consistent mode+depth pair.
+    const bool hardMode = ((int) modeParam->load()) == 1;
+    // F2: Soft depth tops out at 1.0 (100 % = flatten-to-envelope, never below
+    // at profile 1); Hard keeps the historical 1.5 span (Depth doubles as its
+    // absolute-threshold sweep). Mapping lives in DetailParam.h.
+    suppressor.setDepth       (resonance_suppressor_detail::engineDepthForPct ((double) depthParam->load(), hardMode));
+    // v2.1 Detail macro drives all three detection shape controls (the legacy
+    // sharpness/selectivity params are registered but no longer read); d = 50
+    // reproduces the v2.0.1 defaults bit-exactly (DetailParam.h).
+    const double detail = (double) detailParam->load();
+    suppressor.setSharpness      (resonance_suppressor_detail::sharpOctForDetail (detail));
+    suppressor.setSelectivity    (resonance_suppressor_detail::selectivityForDetail (detail));
+    suppressor.setSmoothingWidth (resonance_suppressor_detail::gainSmoothOctForDetail (detail));
     suppressor.setTilt        ((double) tiltParam->load() / 100.0); // -100..+100 % -> -1..+1
     suppressor.setRange       (20.0, 20000.0); // full band; the low/high cut nodes bound processing via the profile
     suppressor.setTimes       (atkParam->load(), relParam->load());
@@ -413,7 +462,7 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     const bool scListen = (listen < 0) && (scListenParam->load() > 0.5f);
     suppressor.setSidechain   (scEnable && scConnected);
     suppressor.setScListen    (scListen && scEnable && scConnected);
-    suppressor.setMode        ((int) modeParam->load());
+    suppressor.setMode        (hardMode ? 1 : 0); // same block-consistent read as the Depth mapping above
     // Quality is latched here; the engine applies the config + latency change at its
     // next frame boundary inside process() below, so PDC is renegotiated after the
     // sample loop (see the setLatencySamples call there).
@@ -439,6 +488,16 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     const float* scL = scConnected ? scBus.getReadPointer (0) : nullptr;
     const float* scR = scConnected ? scBus.getReadPointer (scChannels > 1 ? 1 : 0) : nullptr;
 
+    // Output trim (v2.1 "out"): applied AFTER the suppressor -- post Mix, and
+    // in Delta too (it trims whatever the plugin emits). While the internal
+    // bypass is active the target is unity so bypass stays a bit-transparent
+    // passthrough once the ~20 ms ramp lands (matching the engine's own 10 ms
+    // bypass crossfade in spirit; hard-switching would click mid-ramp). One
+    // shared per-sample gain for both channels; no allocation or locks.
+    outGain.setTargetValue (bypassParam->load() > 0.5f
+                                ? 1.0
+                                : std::pow (10.0, (double) outParam->load() / 20.0));
+
     for (int i = 0; i < numSamples; ++i)
     {
         double l = L[i];
@@ -448,8 +507,9 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
         const double sl = (scL != nullptr) ? (double) scL[i] : l;
         const double sr = (scR != nullptr) ? (double) scR[i] : r;
         suppressor.process (l, r, sl, sr);
-        L[i] = (float) l;
-        if (R != nullptr) R[i] = (float) r;
+        const double og = outGain.getNextValue();
+        L[i] = (float) (l * og);
+        if (R != nullptr) R[i] = (float) (r * og);
     }
 
     // A Quality switch (applied at a frame boundary in the loop above) changes the
@@ -495,7 +555,39 @@ void ResonanceSuppressorAudioProcessor::getStateInformation (juce::MemoryBlock& 
 
 void ResonanceSuppressorAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+
+    // v2.0.x -> v2.1 migration: a state saved before the "detail" parameter
+    // existed (no PARAM child with id="detail") carries the legacy
+    // sharpness/selectivity pair instead; inject the equivalent detail (their
+    // mean, DetailParam.h) BEFORE applyStateXml so the old session reproduces
+    // its old detection shape through the new macro. New-format states pass
+    // through untouched, and everything else (including the "out" parameter,
+    // absent from old states) keeps the exact pre-v2.1 applyStateXml
+    // semantics -- the shared helper (ProgramAdapter.h) is deliberately not
+    // forked. A/B slots are seeded in-session (always new-format), so
+    // loadStateFromSlot needs no migration.
+    if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+    {
+        bool   hasDetail = false;
+        double sharpPct = 50.0, selPct = 50.0; // layout defaults if absent
+        for (auto* e : xml->getChildIterator())
+        {
+            if (! e->hasTagName ("PARAM")) continue;
+            const auto id = e->getStringAttribute ("id");
+            if      (id == "detail")      hasDetail = true;
+            else if (id == "sharpness")   sharpPct = e->getDoubleAttribute ("value", 50.0);
+            else if (id == "selectivity") selPct   = e->getDoubleAttribute ("value", 50.0);
+        }
+        if (! hasDetail)
+        {
+            auto* p = xml->createNewChildElement ("PARAM");
+            p->setAttribute ("id", "detail");
+            p->setAttribute ("value", resonance_suppressor_detail::detailFromLegacy (sharpPct, selPct));
+        }
+    }
+
+    factory_presets::applyStateXml (apvts, programs, xml.get());
 }
 
 // --- A/B compare (Phase 5b-1) ---------------------------------------------

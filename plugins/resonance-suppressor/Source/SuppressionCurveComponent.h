@@ -4,6 +4,9 @@
 
 #include "PluginProcessor.h"
 #include "NodePanel.h"
+#include "RsTheme.h"
+#include "AnalyzerStyle.h"
+#include "AnalyzerDevPanel.h"
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
 #include "factory_ui/SpectrumDisplay.h"
@@ -46,15 +49,63 @@ public:
         : processor (p), apvts (s), panel (p, s)
     {
         addChildComponent (panel); // shown when a node is selected
+        panel.onCloseRequested = [this] { selectNode (-1); }; // ✕ -> fully deselect (drops Listen too, see selectNode())
         setWantsKeyboardFocus (true); // Delete/Backspace + arrow-key nudge on the selected node
         startTimerHz (30);
+
+        // DEV panel: hidden until Alt+clicked in the top-right gate (see mouseDown).
+        addChildComponent (devPanel);
+        devPanel.onStyleChanged = [this] (const rs::AnalyzerStyle& st)
+        {
+            setAnalyzerStyle (st);                               // P3a: repaint with the new look
+            processor.setDisplaySmoothMs (st.tempoSmoothingMs);  // P3b-A: RT-safe live display smoothing
+            // Skip the save-back while the just-loaded saved style is being
+            // applied below (loadingDevSettings guard) -- otherwise every
+            // editor open writes the settings file right back to itself.
+            if (! loadingDevSettings)
+                saveDevSettings();                               // persist (below)
+        };
+        devPanel.onClose = [this] { devPanel.setVisible (false); repaint(); };
+
+        // Persist DEV style in a user-global PropertiesFile -- deliberately NOT the
+        // plugin's APVTS state/preset, so state/preset compatibility is untouched.
+        // millisecondsBeforeSaving coalesces rapid changes (a dragged blend/
+        // Advanced slider fires onStyleChanged continuously) into one delayed
+        // background write instead of a synchronous disk write per drag tick
+        // (see saveDevSettings()).
+        juce::PropertiesFile::Options o;
+        o.applicationName          = "ResonanceTatSuppressor";
+        o.filenameSuffix           = "settings";
+        o.folderName               = "TatsunariSounds";
+        o.osxLibrarySubFolder      = "Application Support";
+        o.millisecondsBeforeSaving = 800;
+        devProps.setStorageParameters (o);
+        if (auto* us = devProps.getUserSettings())
+        {
+            const auto saved = us->getValue ("analyzerDevStyle", juce::String());
+            if (saved.isNotEmpty())
+            {
+                loadingDevSettings = true;
+                devPanel.setStateString (saved); // fires onStyleChanged -> applies style+tempo (save-back suppressed above)
+                loadingDevSettings = false;
+            }
+        }
     }
 
     void paint (juce::Graphics& g) override
     {
-        factory_ui::paintCard (g, getLocalBounds().toFloat(), 10.0f);
-        auto r = getLocalBounds().toFloat().reduced (12.0f);
-        controlsRow = r.removeFromTop (12.0f); // mode/freeze chips + GR badge
+        // Analyzer container / plot background (demo-analysis SS3.1): warm peach
+        // vertical gradient + a 1 px inset hairline (replaces the old white card).
+        auto full = getLocalBounds().toFloat();
+        juce::ColourGradient plotBg (rs::colour::plotTop(), 0.0f, full.getY(),
+                                     rs::colour::plotBottom(), 0.0f, full.getBottom(), false);
+        g.setGradientFill (plotBg);
+        g.fillRoundedRectangle (full, 14.0f);
+        g.setColour (rs::colour::border());
+        g.drawRoundedRectangle (full.reduced (0.5f), 14.0f, 1.0f);
+
+        auto r = full.reduced (12.0f);
+        controlsRow = r.removeFromTop (22.0f); // mode/freeze chips + GR badge
         r.removeFromTop (14.0f);               // Hz labels sit above the plot
         plot = r;
         layoutControlsRow();
@@ -70,16 +121,25 @@ public:
         // Soft shadow so the selected-node editor floats above the analyser.
         if (panel.isVisible())
             factory_ui::dropShadowFor (g, panel.getBounds(), 12.0f);
+
+        if (devPanel.isVisible())
+            factory_ui::dropShadowFor (g, devPanel.getBounds(), 12.0f);
     }
 
     void resized() override
     {
         if (panel.isVisible()) positionPanel();
+
+        auto full = getLocalBounds().toFloat();
+        constexpr float gate = 30.0f;
+        devGateBounds = juce::Rectangle<float> (full.getRight() - gate - 6.0f, full.getY() + 6.0f, gate, gate);
+        if (devPanel.isVisible()) positionDevPanel();
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (e.mods.isPopupMenu()) { showContextMenu (e.position); return; }
+        if (e.mods.isAltDown() && devGateBounds.contains (e.position)) { toggleDevPanel(); return; }
 
         if (hitsModeChip (e.position))   { cycleAnalyzerMode(); repaint(); return; }
         if (hitsFreezeChip (e.position)) { freeze = ! freeze;   repaint(); return; }
@@ -188,6 +248,13 @@ public:
         return false;
     }
 
+    // Phase P3a: the DEV panel (P3b) drives the analyzer's look entirely
+    // through this -- swapping `style` between kV201Style/kDemoStyle/a lerp()
+    // blend is the whole mechanism; drawAnalyzer/drawReduction/drawProfile
+    // read nothing hardcoded that this doesn't cover. No caller exists yet
+    // (that's P3b's DEV panel).
+    void setAnalyzerStyle (const rs::AnalyzerStyle& s) { style = s; repaint(); }
+
 private:
     void timerCallback() override
     {
@@ -221,13 +288,18 @@ private:
     static constexpr float kMinDb = -90.0f, kMaxDb = 6.0f;    // analyser axis
     static constexpr float kSensMin = -30.0f, kSensMax = 30.0f; // profile (sens) axis
     static constexpr int   kNumNodes = 2 + ResonanceSuppressorAudioProcessor::kNumBands; // LC, HC, bands
+    // Phase P3a: point count for the combined/profile curve when
+    // style.pathProfileCurved == false -- a fixed count (not plot-width
+    // dependent), matching the demo's viewBox-space vertex count staying put
+    // regardless of window size (rs-ui-work/demo-analysis.md SS3.2 Layer 4).
+    static constexpr int kSparseProfileSteps = 48;
 
     enum class AnalyzerMode { Both, Pre, Post };
 
     juce::Rectangle<float> plotRect() const
     {
         auto r = getLocalBounds().toFloat().reduced (12.0f);
-        r.removeFromTop (12.0f); // controls row (mode/freeze chips, GR badge)
+        r.removeFromTop (22.0f); // controls row (mode/freeze chips, GR badge) -- must match paint()
         r.removeFromTop (14.0f); // Hz labels sit above the plot
         return r;
     }
@@ -285,25 +357,53 @@ private:
 
     juce::Point<float> nodePos (int id) const { return { freqToX (nodeFreq (id)), sensToY (nodeSens (id)) }; }
 
+    // demo-analysis SS3.1: decade freq lines (100/1k/10k) + the 0 dB reference
+    // line are the "strong" grid tier (#f2ddd4); everything else is "faint"
+    // (#f7e7e0). Same freqToX / label set / dB step as before -- colour only.
     void drawGrid (juce::Graphics& g)
     {
-        g.setFont (juce::Font (juce::FontOptions (10.0f)));
-        struct FL { float f; const char* s; };
-        for (auto fl : { FL{50,"50"}, FL{100,"100"}, FL{200,"200"}, FL{500,"500"},
-                         FL{1000,"1k"}, FL{2000,"2k"}, FL{5000,"5k"}, FL{10000,"10k"} })
+        g.setFont (rs::font (rs::FontKind::Ui, 10.0f, 600));
+        struct FL { float f; const char* s; bool strong; };
+        for (auto fl : { FL{50,"50",false}, FL{100,"100",true}, FL{200,"200",false}, FL{500,"500",false},
+                         FL{1000,"1k",true}, FL{2000,"2k",false}, FL{5000,"5k",false}, FL{10000,"10k",true} })
         {
             const float x = freqToX (fl.f);
-            g.setColour (FactoryLookAndFeel::track().withAlpha (0.7f));
+            g.setColour (fl.strong ? rs::colour::border() : rs::colour::borderLight());
             g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-            g.setColour (FactoryLookAndFeel::textDim());
+            g.setColour (fl.strong ? rs::colour::textMuted() : rs::colour::textFaint());
             g.drawText (fl.s, juce::Rectangle<float> (x - 18.0f, plot.getY() - 13.0f, 36.0f, 12.0f),
                         juce::Justification::centred);
         }
         for (float db = 0.0f; db >= -60.0f; db -= 12.0f)
         {
             const float y = dbToY (db);
-            g.setColour (FactoryLookAndFeel::track().withAlpha (db == 0.0f ? 0.9f : 0.4f));
+            g.setColour (db == 0.0f ? rs::colour::border() : rs::colour::borderLight());
             g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
+        }
+    }
+
+    // Phase P3a: 1/N-octave moving-average smoothing across frequency bins,
+    // applied only to the GUI's PRE/POST/delta display traces (GUI-thread
+    // only, small temporary buffers -- never touches processBlock). `octFrac
+    // <= 0` is a no-op (0 == raw == exact pre-P3a behaviour). Deliberately a
+    // simple per-bin box average in dB space over the bins within +/-
+    // octFrac/2 octaves of each bin's frequency -- a DEV-panel cosmetic knob,
+    // not a measurement filter.
+    static void smoothOctaveBins (std::array<float, ResonanceSuppressorAudioProcessor::kMaxBins>& data,
+                                  int numBins, double sampleRate, int fftN, float octFrac)
+    {
+        if (octFrac <= 0.0f || numBins <= 2 || fftN <= 0) return;
+        const auto src = data; // every output bin must read unsmoothed inputs
+        const double halfOctMul = std::pow (2.0, 0.5 * (double) octFrac);
+        for (int k = 1; k < numBins; ++k)
+        {
+            const double fk = (double) k * sampleRate / fftN;
+            if (fk <= 0.0) continue;
+            const int kLo = juce::jlimit (1, numBins - 1, (int) std::floor (fk / halfOctMul * fftN / sampleRate));
+            const int kHi = juce::jlimit (kLo,  numBins - 1, (int) std::ceil  (fk * halfOctMul * fftN / sampleRate));
+            double sum = 0.0;
+            for (int j = kLo; j <= kHi; ++j) sum += src[(size_t) j];
+            data[(size_t) k] = (float) (sum / (double) (kHi - kLo + 1));
         }
     }
 
@@ -314,6 +414,14 @@ private:
     {
         const double sr = snapSr; // frozen together with snapBins (see timerCallback)
         const int N = 2 * (snapBins - 1);
+
+        // style.freqSmoothingOct == 0 (kV201Style) takes the early-out inside
+        // smoothOctaveBins() and leaves these byte-identical to lastPre/lastPost.
+        auto smPre  = lastPre;
+        auto smPost = lastPost;
+        smoothOctaveBins (smPre,  snapBins, sr, N, style.freqSmoothingOct);
+        smoothOctaveBins (smPost, snapBins, sr, N, style.freqSmoothingOct);
+
         auto buildTrace = [&] (const std::array<float, ResonanceSuppressorAudioProcessor::kMaxBins>& data)
         {
             factory_ui::SpectrumTrace trace;
@@ -327,45 +435,75 @@ private:
             return trace;
         };
 
+        // style.inputMode has exactly one value today (FilledArea); kept as
+        // an enum in the schema for a future DEV mode, not switched on here.
+        const auto joint = style.traceRoundJoin ? juce::PathStrokeType::curved : juce::PathStrokeType::mitered;
+
         if (analyzerMode != AnalyzerMode::Post)
         {
-            auto trace = buildTrace (lastPre);
+            auto trace = buildTrace (smPre);
             if (! trace.isEmpty())
-                factory_ui::fillSpectrumArea (g, trace.area(), FactoryLookAndFeel::textDim(), plot, 0.22f, 0.02f);
+            {
+                factory_ui::fillSpectrumArea (g, trace.area(), style.inputColour, plot,
+                                              style.inputFillTopAlpha, style.inputFillBotAlpha);
+                if (style.inputLineWidth > 0.0f && style.inputLineAlpha > 0.0f)
+                {
+                    g.setColour (style.inputColour.withAlpha (style.inputLineAlpha));
+                    g.strokePath (trace.line(), juce::PathStrokeType (style.inputLineWidth, joint));
+                }
+            }
         }
         if (analyzerMode != AnalyzerMode::Pre)
         {
-            auto trace = buildTrace (lastPost);
+            auto trace = buildTrace (smPost);
             if (! trace.isEmpty())
             {
-                g.setColour (FactoryLookAndFeel::accent().withAlpha (0.85f));
-                g.strokePath (trace.line(), juce::PathStrokeType (1.4f));
+                g.setColour (style.postColour.withAlpha (style.postLineAlpha));
+                g.strokePath (trace.line(), juce::PathStrokeType (style.postLineWidth, joint));
             }
         }
     }
 
-    // Live gain reduction hanging from the 0 dB line — the suppressor at work.
+    // Live gain reduction hanging from the 0 dB line (style.deltaMode ==
+    // AreaFromZero, v2.0.1) or from the plot's physical top edge, optionally
+    // clamped to style.deltaClampFrac of the plot height (CurtainFromTop, the
+    // demo's Layer 2) -- the suppressor at work.
     void drawReduction (juce::Graphics& g)
     {
         const double sr = snapSr; // frozen together with snapBins (see timerCallback)
         const int N = 2 * (snapBins - 1);
-        const float top = dbToY (0.0f);
+
+        auto smRed = lastRed;
+        smoothOctaveBins (smRed, snapBins, sr, N, style.freqSmoothingOct);
+
+        const bool  fromTop = style.deltaMode == rs::AnalyzerStyle::DeltaMode::CurtainFromTop;
+        const float top     = fromTop ? plot.getY() : dbToY (0.0f);
+        const float maxY    = top + style.deltaClampFrac * plot.getHeight(); // 1.0 == unclamped (see below)
+
         factory_ui::SpectrumTrace trace;
-        trace.begin (top, plot.getRight()); // reduction hangs from the 0 dB line
+        trace.begin (top, plot.getRight());
         for (int k = 1; k < snapBins; ++k)
         {
             const float f = (float) ((double) k * sr / N);
             if (f < 20.0f || f > 20000.0f) continue;
-            const float red = juce::jlimit (-60.0f, 0.0f, lastRed[(size_t) k]);
-            trace.addPoint (freqToX (f), dbToY (red)); // red <= 0 -> below the top line
+            const float red = juce::jlimit (-60.0f, 0.0f, smRed[(size_t) k]);
+            // Same dB->pixel scale as dbToY() in both modes, just re-based so
+            // AreaFromZero anchors at the 0 dB line (top == dbToY(0), so this
+            // reduces exactly to dbToY(red) -- byte-identical to pre-P3a) and
+            // CurtainFromTop anchors at the plot's physical top edge instead.
+            const float y = juce::jmin (top + (dbToY (red) - dbToY (0.0f)), maxY);
+            trace.addPoint (freqToX (f), y); // red <= 0 -> at/below `top`
         }
         if (! trace.isEmpty())
         {
             const auto fill = trace.area();
-            g.setColour (kTeal.withAlpha (0.28f));
+            g.setColour (kTeal.withAlpha (style.deltaFillAlpha));
             g.fillPath (fill);
-            g.setColour (kTeal.withAlpha (0.8f));
-            g.strokePath (fill, juce::PathStrokeType (1.0f));
+            if (style.deltaStrokeAlpha > 0.0f && style.deltaStrokeWidth > 0.0f)
+            {
+                g.setColour (kTeal.withAlpha (style.deltaStrokeAlpha));
+                g.strokePath (fill, juce::PathStrokeType (style.deltaStrokeWidth));
+            }
         }
     }
 
@@ -381,60 +519,132 @@ private:
 
     // The reduction-profile curve — the SAME shape functions the audio rasteriser
     // uses (factory_core::reductionProfileDbAt), so what you see is what runs.
-    // Modern-EQ styling (like the dynamic EQ): each active node draws its own
-    // translucent filled curve, over which the combined response is a bright
-    // stroke with a soft glow.
+    // style.curveMode picks between v2.0.1's modern-EQ look (each active
+    // node's own translucent fill+stroke, under a glowing combined-response
+    // stroke) and the demo's look (a single dashed combined curve, no
+    // per-node curves at all -- demo-analysis SS3.2 Layer 4 / SS5.2).
     void drawProfile (juce::Graphics& g)
     {
+        using CurveMode = rs::AnalyzerStyle::CurveMode;
         const auto nodes = ResonanceSuppressorAudioProcessor::readNodes (apvts);
-        const int steps = juce::jmax (2, (int) plot.getWidth());
+        // pathProfileCurved: dense ~1-point-per-pixel sampling (current --
+        // reads as smooth purely from point density) vs a fixed sparse point
+        // count with straight segments (kSparseProfileSteps; closer to the
+        // demo's hand-authored, visibly-faceted polyline).
+        const int steps = style.pathProfileCurved ? juce::jmax (2, (int) plot.getWidth())
+                                                   : kSparseProfileSteps;
         const float y0 = sensToY (0.0f); // nominal (0 dB) line
+
+        const bool wantPerNode  = style.curveMode != CurveMode::CombinedOnly;
+        const bool wantCombined = style.curveMode != CurveMode::PerNodeFillsOnly;
 
         std::array<factory_core::ReductionNodes, kNumNodes> single;
         std::array<juce::Path, kNumNodes> nodePath;
         std::array<bool, kNumNodes> started {};
-        for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
+        if (wantPerNode)
+            for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
 
         juce::Path combined;
+        // Trim "floored" runs from the combined curve: where a low-/high-cut has
+        // rolled all the way down to the plot floor, don't draw the flat line out
+        // to the analyzer edge -- cut it at the roll-off point. The descent to /
+        // ascent from the floor is preserved (a single anchor point) so the curve
+        // still visibly meets the floor before it stops.
+        const float floorY = plot.getBottom();
+        bool combPenDown = false, combHaveAnchor = false;
+        juce::Point<float> combAnchor;
         for (int i = 0; i <= steps; ++i)
         {
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
             const float f = xToFreq (x);
-            const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
-            if (i == 0) combined.startNewSubPath (x, yT);
-            else        combined.lineTo (x, yT);
 
-            for (int id = 0; id < kNumNodes; ++id)
+            if (wantCombined)
             {
-                if (! nodeOn (id)) continue;
-                const float yB = sensToY ((float) factory_core::reductionProfileDbAt (f, single[(size_t) id]));
-                if (! started[(size_t) id]) { nodePath[(size_t) id].startNewSubPath (x, yB); started[(size_t) id] = true; }
-                else nodePath[(size_t) id].lineTo (x, yB);
+                const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
+                if (yT >= floorY - 0.5f) // at the floor: hold the pen, don't stroke a horizontal run
+                {
+                    if (combPenDown) { combined.lineTo (x, yT); combPenDown = false; } // land on the floor, then lift
+                    combAnchor = { x, yT }; combHaveAnchor = true;
+                }
+                else if (! combPenDown) // lifting off the floor: rise out of the last floor point
+                {
+                    if (combHaveAnchor) { combined.startNewSubPath (combAnchor.x, combAnchor.y); combined.lineTo (x, yT); }
+                    else                combined.startNewSubPath (x, yT);
+                    combPenDown = true; combHaveAnchor = false;
+                }
+                else combined.lineTo (x, yT);
+            }
+
+            if (wantPerNode)
+            {
+                for (int id = 0; id < kNumNodes; ++id)
+                {
+                    if (! nodeOn (id)) continue;
+                    const float yB = sensToY ((float) factory_core::reductionProfileDbAt (f, single[(size_t) id]));
+                    if (! started[(size_t) id]) { nodePath[(size_t) id].startNewSubPath (x, yB); started[(size_t) id] = true; }
+                    else nodePath[(size_t) id].lineTo (x, yB);
+                }
             }
         }
 
         // Per-node translucent fill (from the nominal line) + coloured stroke.
-        for (int id = 0; id < kNumNodes; ++id)
+        if (wantPerNode)
         {
-            if (! started[(size_t) id]) continue;
-            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
-            auto fp = nodePath[(size_t) id];
-            fp.lineTo (plot.getRight(), y0);
-            fp.lineTo (plot.getX(), y0);
-            fp.closeSubPath();
-            g.setColour (col.withAlpha (0.12f));
-            g.fillPath (fp);
-            g.setColour (col.withAlpha (0.7f));
-            g.strokePath (nodePath[(size_t) id], juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
+            for (int id = 0; id < kNumNodes; ++id)
+            {
+                if (! started[(size_t) id]) continue;
+                const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
+                if (style.perNodeFillAlpha > 0.0f)
+                {
+                    auto fp = nodePath[(size_t) id];
+                    fp.lineTo (plot.getRight(), y0);
+                    fp.lineTo (plot.getX(), y0);
+                    fp.closeSubPath();
+                    g.setColour (col.withAlpha (style.perNodeFillAlpha));
+                    g.fillPath (fp);
+                }
+                if (style.perNodeStrokeAlpha > 0.0f)
+                {
+                    g.setColour (col.withAlpha (style.perNodeStrokeAlpha));
+                    g.strokePath (nodePath[(size_t) id], juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
+                }
+            }
         }
 
-        // Combined response: soft coral glow under a crisp coral stroke.
-        g.setColour (FactoryLookAndFeel::accent().withAlpha (0.22f));
-        g.strokePath (combined, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (FactoryLookAndFeel::accent());
-        g.strokePath (combined, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        // Combined response: optional soft glow under a crisp stroke, solid
+        // or dashed (style.combinedDashLen > 0).
+        if (wantCombined)
+        {
+            if (style.combinedGlowAlpha > 0.0f && style.combinedGlowWidth > 0.0f)
+            {
+                g.setColour (style.combinedColour.withAlpha (style.combinedGlowAlpha));
+                g.strokePath (combined, juce::PathStrokeType (style.combinedGlowWidth,
+                              juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+
+            g.setColour (style.combinedColour.withAlpha (style.combinedStrokeAlpha));
+            const juce::PathStrokeType combinedStroke (style.combinedStrokeWidth,
+                                                        juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+            if (style.combinedDashLen > 0.0f)
+            {
+                juce::Path dashed;
+                const float dl[] = { style.combinedDashLen, style.combinedDashGap };
+                combinedStroke.createDashedStroke (dashed, combined, dl, 2);
+                g.fillPath (dashed);
+            }
+            else
+            {
+                g.strokePath (combined, combinedStroke);
+            }
+        }
     }
 
+    // demo-analysis SS3.5: band nodes are plain pastel dots (15px dia., 20px selected)
+    // with a white halo + soft drop shadow; cuts are square handles (13x13 r4)
+    // with a coloured ring + a dashed vertical guide. Neither carries a text
+    // label in the demo (identity now reads from position/colour/the popover's
+    // "Band N" header) -- everything else (skip/dim rules, listen ring, the
+    // selected node growing) is the same semantics as before, just restyled.
     void drawNodes (juce::Graphics& g)
     {
         const int listen = processor.getListenNode();
@@ -447,38 +657,72 @@ private:
             if (! isCut (id) && ! on) continue;
             const float a = on ? 1.0f : 0.3f;
             const auto p = nodePos (id);
-            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
+            const bool selected = (id == selectedNode);
 
-            if (id == listen) // Listen ring, outermost so it doesn't collide with the selection ring
+            if (isCut (id))
             {
-                g.setColour (kTeal.withAlpha (0.9f));
-                g.drawEllipse (juce::Rectangle<float> (25.0f, 25.0f).withCentre (p), 2.0f);
-            }
+                const auto ring = (id == 0) ? rs::colour::orange() : kHighCutRing; // LC / HC
+                const float dashes[] = { 4.0f, 4.0f };
+                g.setColour (rs::colour::textFaint().withAlpha (a));
+                g.drawDashedLine (juce::Line<float> (p.x, plot.getY(), p.x, plot.getBottom()), dashes, 2, 1.0f);
 
-            g.setColour (juce::Colours::white.withAlpha (a));
-            g.fillEllipse (juce::Rectangle<float> (18.0f, 18.0f).withCentre (p));
-            g.setColour (col.withAlpha (a));
-            g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre (p));
-            if (id == selectedNode) // ring the node whose editor is open
-            {
-                g.setColour (FactoryLookAndFeel::text().withAlpha (0.9f));
-                g.drawEllipse (juce::Rectangle<float> (21.0f, 21.0f).withCentre (p), 1.6f);
+                const float sz = selected ? 18.0f : 13.0f; // demo: 13x13px r4 (grown when selected)
+                const auto sq = juce::Rectangle<float> (sz, sz).withCentre (p);
+
+                if (id == listen) // Listen ring, outermost
+                {
+                    g.setColour (kTeal.withAlpha (0.9f));
+                    g.drawRoundedRectangle (sq.expanded (5.0f), rs::radius::cutHandle + 3.0f, 2.0f);
+                }
+                { // soft drop shadow (approximates the demo's "0 2px 5px rgba(107,87,80,.25)")
+                    juce::DropShadow ds (juce::Colour::fromFloatRGBA (107.0f / 255.0f, 87.0f / 255.0f, 80.0f / 255.0f, 0.25f * a),
+                                         5, { 0, 2 });
+                    juce::Path sp; sp.addRoundedRectangle (sq, rs::radius::cutHandle);
+                    ds.drawForPath (g, sp);
+                }
+                g.setColour (ring.withAlpha (a)); // 2 px colour ring (box-shadow spread, approximated as a fill)
+                g.fillRoundedRectangle (sq.expanded (2.0f), rs::radius::cutHandle + 1.5f);
+                g.setColour (rs::colour::footerBg().withAlpha (a)); // handle bg #fff4ee
+                g.fillRoundedRectangle (sq, rs::radius::cutHandle);
             }
-            g.setColour (juce::Colours::white.withAlpha (a));
-            g.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
-            const juce::String label = isCut (id) ? (id == 0 ? "LC" : "HC") : juce::String (id - 1);
-            g.drawText (label, juce::Rectangle<float> (16.0f, 16.0f).withCentre (p), juce::Justification::centred);
+            else
+            {
+                const auto col = FactoryLookAndFeel::bandColour (id - 2);
+                const float dotD  = selected ? 20.0f : 15.0f; // demo: 15px dia., 20px selected
+                const float haloD = dotD + 6.0f;               // "0 0 0 3px #fff" halo
+                const auto dotR  = juce::Rectangle<float> (dotD, dotD).withCentre (p);
+                const auto haloR = juce::Rectangle<float> (haloD, haloD).withCentre (p);
+
+                if (id == listen) // Listen ring, outermost so it doesn't collide with the halo
+                {
+                    g.setColour (kTeal.withAlpha (0.9f));
+                    g.drawEllipse (juce::Rectangle<float> (haloD + 7.0f, haloD + 7.0f).withCentre (p), 2.0f);
+                }
+                { // soft drop shadow ("0 2px 6px rgba(107,87,80,.28)")
+                    juce::DropShadow ds (juce::Colour::fromFloatRGBA (107.0f / 255.0f, 87.0f / 255.0f, 80.0f / 255.0f, 0.28f),
+                                         6, { 0, 2 });
+                    juce::Path dp; dp.addEllipse (dotR);
+                    ds.drawForPath (g, dp);
+                }
+                g.setColour (rs::colour::white());
+                g.fillEllipse (haloR);
+                g.setColour (col);
+                g.fillEllipse (dotR);
+            }
         }
     }
 
-    // Small header chips (Pre/Post/Both, Freeze) + the GR badge.
+    // Small header chips (Pre/Post/Both, Freeze) + the GR badge. demo-analysis
+    // SS2.2: Pre/Post/Both sits top-left (A1); Freeze + GR sit top-right,
+    // Freeze left of GR (A2/A3) -- unlike the old layout, which grouped Freeze
+    // next to the mode chip on the left.
     void layoutControlsRow()
     {
         auto r = controlsRow;
-        modeChipBounds   = r.removeFromLeft (54.0f);
-        r.removeFromLeft (4.0f);
-        freezeChipBounds = r.removeFromLeft (50.0f);
-        grBadgeBounds    = r.removeFromRight (100.0f);
+        modeChipBounds = r.removeFromLeft (132.0f);
+        grBadgeBounds  = r.removeFromRight (100.0f);
+        r.removeFromRight (6.0f);
+        freezeChipBounds = r.removeFromRight (66.0f);
     }
 
     bool hitsModeChip   (juce::Point<float> pos) const { return modeChipBounds.contains (pos); }
@@ -491,26 +735,57 @@ private:
                                                               : AnalyzerMode::Both;
     }
 
+    // demo-analysis SS2.2 A1-A3. The mode chip keeps ONE click region over all
+    // 3 segments (hitsModeChip/cycleAnalyzerMode below are unchanged) -- only
+    // the paint gains the demo's 3-segment look, with whichever segment equals
+    // the live analyzerMode drawn as the active coral pill (matches the demo,
+    // where "Both" is the one shown active).
     void drawHeaderControls (juce::Graphics& g)
     {
-        auto chip = [&] (juce::Rectangle<float> b, const juce::String& text, bool active)
+        auto chipShell = [&] (juce::Rectangle<float> b)
         {
-            if (active)
-            {
-                g.setColour (FactoryLookAndFeel::accent().withAlpha (0.16f));
-                g.fillRoundedRectangle (b, 5.0f);
-            }
-            g.setColour (active ? FactoryLookAndFeel::accent() : FactoryLookAndFeel::textDim());
-            g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-            g.drawText (text, b, juce::Justification::centred);
+            g.setColour (rs::colour::chipBg());
+            g.fillRoundedRectangle (b, rs::radius::badge);
+            g.setColour (rs::colour::border());
+            g.drawRoundedRectangle (b.reduced (0.5f), rs::radius::badge, 1.0f);
         };
-        static constexpr const char* kModeNames[] = { "Both", "Pre", "Post" };
-        chip (modeChipBounds, kModeNames[(int) analyzerMode], analyzerMode != AnalyzerMode::Both);
-        chip (freezeChipBounds, freeze ? "Frozen" : "Freeze", freeze);
 
-        g.setColour (kTeal.withAlpha (0.85f));
-        g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-        g.drawText ("GR " + juce::String (grPeakDb, 1) + " dB", grBadgeBounds, juce::Justification::centredRight);
+        // A1: Pre / Post / Both.
+        chipShell (modeChipBounds);
+        {
+            static constexpr const char* kSegNames[] = { "Pre", "Post", "Both" };
+            static constexpr AnalyzerMode kSegModes[] = { AnalyzerMode::Pre, AnalyzerMode::Post, AnalyzerMode::Both };
+            auto inner = modeChipBounds.reduced (3.0f);
+            const float segW = inner.getWidth() / 3.0f;
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto seg = juce::Rectangle<float> (inner.getX() + (float) i * segW, inner.getY(), segW, inner.getHeight());
+                const bool active = (analyzerMode == kSegModes[i]);
+                if (active)
+                {
+                    g.setColour (rs::colour::accent());
+                    g.fillRoundedRectangle (seg.reduced (1.0f), rs::radius::badge - 2.0f);
+                }
+                g.setColour (active ? rs::colour::white() : rs::colour::textMuted());
+                g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+                g.drawText (kSegNames[i], seg, juce::Justification::centred);
+            }
+        }
+
+        // A2: Freeze.
+        chipShell (freezeChipBounds);
+        g.setColour (rs::colour::textSecondary());
+        g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+        g.drawText (freeze ? "Frozen" : "Freeze", freezeChipBounds, juce::Justification::centred);
+
+        // A3: GR peak-hold badge.
+        g.setColour (kGrBg);
+        g.fillRoundedRectangle (grBadgeBounds, rs::radius::badge);
+        g.setColour (kGrBorder);
+        g.drawRoundedRectangle (grBadgeBounds.reduced (0.5f), rs::radius::badge, 1.0f);
+        g.setColour (kGrText);
+        g.setFont (rs::font (rs::FontKind::Ui, 9.5f, 800));
+        g.drawText ("GR " + juce::String (grPeakDb, 1) + " dB", grBadgeBounds, juce::Justification::centred);
     }
 
     // GR badge peak-hold: jump immediately to a bigger (more negative) cut, hold
@@ -601,6 +876,39 @@ private:
         x = juce::jlimit ((int) pr.getX(), juce::jmax ((int) pr.getX(), (int) pr.getRight() - w), x);
         const int y = juce::roundToInt (pr.getBottom()) - h - 6;
         panel.setBounds (x, y, w, h);
+    }
+
+    void saveDevSettings()
+    {
+        // setValue() alone marks the file dirty and (re)starts PropertiesFile's
+        // own millisecondsBeforeSaving timer (see the ctor) -- it must NOT be
+        // followed by an explicit saveIfNeeded() here, which would force an
+        // immediate synchronous disk write on every call regardless of that
+        // timer (this fired on every drag tick of a DEV-panel blend/Advanced
+        // slider before this fix). The coalesced write still lands within
+        // ~800 ms of the last change, and PropertiesFile itself flushes
+        // on destruction if one is still pending.
+        if (auto* us = devProps.getUserSettings())
+            us->setValue ("analyzerDevStyle", devPanel.getStateString());
+    }
+
+    void positionDevPanel()
+    {
+        // Top-right of the analyzer, clamped to the visible height; the panel's
+        // internal Viewport scrolls any overflow (its natural 560 px can exceed a
+        // short analyzer). Kept just inside the rounded card + clear of the corner.
+        const int w = devPanel.preferredWidth();
+        auto full = getLocalBounds().reduced (14);
+        const int h = juce::jmin (devPanel.preferredHeight(), full.getHeight());
+        devPanel.setBounds (full.getRight() - w, full.getY(), w, h);
+    }
+
+    void toggleDevPanel()
+    {
+        const bool show = ! devPanel.isVisible();
+        if (show) { positionDevPanel(); devPanel.setVisible (true); devPanel.toFront (false); }
+        else        devPanel.setVisible (false);
+        repaint();
     }
 
     void setParam (const juce::String& id, float value)
@@ -748,16 +1056,32 @@ private:
         if (result >= 200 && result < 204) { setParamGestured (pid (id, "slope"), (float) (result - 200)); return; }
     }
 
-    inline static const juce::Colour kTeal { juce::Colour (0xff45b8acu) };
+    inline static const juce::Colour kTeal        { juce::Colour (0xff45b8acu) };
+    // A few demo hex values (demo-analysis SS1.3) with no rs::colour role of
+    // their own (RsTheme.h is out of scope for this phase) -- kept local, same
+    // pattern as kTeal above.
+    inline static const juce::Colour kHighCutRing { juce::Colour (0xff79b8efu) }; // high-cut handle ring
+    inline static const juce::Colour kGrBg        { juce::Colour (0xffeafaf7u) }; // GR badge bg
+    inline static const juce::Colour kGrBorder    { juce::Colour (0xffb8e8e2u) }; // GR badge border
+    inline static const juce::Colour kGrText      { juce::Colour (0xff2f9488u) }; // GR badge text
 
     ResonanceSuppressorAudioProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
     NodePanel panel;
+    rs::AnalyzerDevPanel  devPanel;                 // アナライザーDEVモードのオーバーレイ(既定非表示)
+    juce::ApplicationProperties devProps;           // DEV設定の永続化(plugin state/presetとは別・非汚染)
+    bool loadingDevSettings = false;                // ctor内でsetStateString適用中、onStyleChangedの保存書き戻しを抑止するガード
+    juce::Rectangle<float> devGateBounds;           // 右上隅の控えめなAlt+クリック開閉ホットゾーン(非表示)
     juce::Rectangle<float> plot;
     int dragging = -1;
     int selectedNode = -1;
     int hoverNode = -1;
     juce::Point<float> dragAnchor, dragVirtual;
+
+    // Phase P3a: the analyzer's configurable render style (see
+    // AnalyzerStyle.h) -- defaults to kV201Style so nothing changes until a
+    // caller (P3b's DEV panel) calls setAnalyzerStyle().
+    rs::AnalyzerStyle style { rs::kV201Style };
 
     // Analyser display state (Phase 5a-2): last-captured frame (so Freeze can
     // hold it), the mode chip, and the GR peak-hold badge.

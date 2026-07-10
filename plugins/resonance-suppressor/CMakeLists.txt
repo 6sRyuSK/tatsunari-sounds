@@ -47,6 +47,11 @@ target_link_libraries(ResonanceSuppressor
 # ---------------------------------------------------------------- DSP tests
 add_executable(resonance_suppressor_dsp_test tests/dsp_test.cpp)
 target_link_libraries(resonance_suppressor_dsp_test PRIVATE factory_core)
+# Source/ is on the include path ONLY for the JUCE-free Source/DetailParam.h
+# (the detail-macro / migration math shared verbatim with PluginProcessor, so
+# the headless test asserts the exact shipped mapping). The test still links
+# factory_core alone -- DetailParam.h must never grow a JUCE dependency.
+target_include_directories(resonance_suppressor_dsp_test PRIVATE Source)
 target_compile_features(resonance_suppressor_dsp_test PRIVATE cxx_std_20)
 
 # Full standard sample-rate matrix, up to 192 kHz (regression coverage for the

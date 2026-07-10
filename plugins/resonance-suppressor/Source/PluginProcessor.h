@@ -136,6 +136,11 @@ public:
     void setListenNode (int id) noexcept { listenNode.store (id, std::memory_order_relaxed); }
     int  getListenNode() const noexcept { return listenNode.load (std::memory_order_relaxed); }
 
+    // Analyzer DEV mode (P3b): live-adjustable DISPLAY time smoothing (ms) for
+    // the analyzer traces. GUI thread -> audio thread, lock-free (see
+    // displaySmoothMsUi). Clamped to >= 0; applied at the top of processBlock.
+    void setDisplaySmoothMs (float ms) noexcept { displaySmoothMsUi.store (juce::jmax (0.0f, ms), std::memory_order_relaxed); }
+
     // A/B compare (Phase 5b-1): two session-only state slots, same scope as
     // getStateInformation (APVTS + program index) -- NOT listenNode or other
     // transient execution state. Host persistence is unchanged: getStateInformation
@@ -160,7 +165,8 @@ private:
     void rasterizeListenProfile (int nodeId);
 
     std::atomic<float>* depthParam  = nullptr;
-    std::atomic<float>* sharpParam  = nullptr;
+    std::atomic<float>* detailParam = nullptr; // v2.1 Detail macro (0..100 %) -- replaces sharpness/selectivity as the DSP driver
+    std::atomic<float>* outParam    = nullptr; // v2.1 Output trim (-24..+24 dB), applied post-suppressor
     std::atomic<float>* atkParam    = nullptr;
     std::atomic<float>* relParam    = nullptr;
     std::atomic<float>* mixParam    = nullptr;
@@ -168,7 +174,6 @@ private:
     std::atomic<float>* linkParam   = nullptr;
     std::atomic<float>* bypassParam = nullptr;
     std::atomic<float>* modeParam   = nullptr;
-    std::atomic<float>* selParam    = nullptr; // Selectivity (0..100 %)
     std::atomic<float>* tiltParam   = nullptr; // Tilt (-100..+100 %)
     std::atomic<float>* qualityParam = nullptr; // Quality choice (0 Fast, 1 Normal, 2 High)
     // Pass 3B routing params.
@@ -196,6 +201,10 @@ private:
     factory_core::ReductionNodes currentNodes() const noexcept;
 
     factory_core::MultiResSuppressor suppressor;
+    // v2.1 Output trim smoother (~20 ms linear ramp on the linear gain; reset
+    // in prepareToPlay, target set once per block, advanced per sample). Holds
+    // unity while the internal bypass is active so bypass stays a passthrough.
+    juce::SmoothedValue<double> outGain { 1.0 };
     double currentSampleRate = kRefSampleRate;
     int    currentFftOrder   = kBaseFftOrder;
     std::atomic<int> activeBins { (1 << kBaseFftOrder) / 2 + 1 };
@@ -211,6 +220,13 @@ private:
     // Listen target: -1 = disabled (normal processing). GUI thread writes,
     // audio thread reads once per block (see setListenNode/getListenNode).
     std::atomic<int> listenNode { -1 };
+
+    // Analyzer DEV mode (P3b): live-adjustable DISPLAY time smoothing (ms) for
+    // the analyzer traces, pushed to the core each block. GUI writes, audio
+    // reads -- lock-free, like listenNode. Initial 50.0 == prepareToPlay's
+    // fixed setDisplaySmoothingMs(50.0), so nothing changes until the DEV
+    // panel writes a new value. NOT an APVTS param -> never saved in state.
+    std::atomic<float> displaySmoothMsUi { 50.0f };
 
     std::array<std::atomic<float>, kMaxBins> pubMag {};
     std::array<std::atomic<float>, kMaxBins> pubRed {};

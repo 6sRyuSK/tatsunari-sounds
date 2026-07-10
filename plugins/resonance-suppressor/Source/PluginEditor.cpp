@@ -1,162 +1,158 @@
 #include "PluginEditor.h"
 #include "factory_ui/FactoryChrome.h"
 
+#include <cmath>
+
 ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor (ResonanceSuppressorAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), presetController (*this, p), curve (p, p.apvts)
 {
-    setLookAndFeel (&lnf);
+    setLookAndFeel (&rsLnf);
 
-    titleLabel.setText ("Resonance Suppressor", juce::dontSendNotification);
-    titleLabel.setFont (juce::Font (juce::FontOptions (22.0f, juce::Font::bold)));
-    titleLabel.setColour (juce::Label::textColourId, FactoryLookAndFeel::accent());
-    addAndMakeVisible (titleLabel);
+    // ------------------------------------------------------------ Header
+    addAndMakeVisible (brand);
+    // presetController added its selector to this editor in its ctor; the shared
+    // controller (host/user sync, Save/Overwrite/Delete) is reused verbatim --
+    // only restyled, by the RsLookAndFeel set above. Clicking the name opens the
+    // preset menu (the added menu affordance).
 
-    deltaB.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xff45b8acu)); // teal, matches the reduction trace
-    addAndMakeVisible (deltaB);
-    addAndMakeVisible (linkB);
-    addAndMakeVisible (bypassB);
+    abSeg.setSegments ({ "A", "B" });
+    abSeg.setAccent (rs::colour::accent());
+    abSeg.onSelect = [this] (int i) { processor.setABSlot (i); updateABUI(); };
+    addAndMakeVisible (abSeg);
 
-    // Detection mode selector. Items must be added manually (the attachment does
-    // not populate the box in this JUCE version — same pattern as the other
-    // plugins' combos); item IDs 1,2 map to parameter indices 0,1 (Soft, Hard).
-    modeBox.addItemList ({ "Soft", "Hard" }, 1);
-    modeBox.setJustificationType (juce::Justification::centred);
-    modeBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
-    modeBox.setTooltip ("Soft: adaptive, level-independent.  Hard: absolute level (Depth = threshold).");
-    addAndMakeVisible (modeBox);
-    modeAtt = std::make_unique<CA> (processor.apvts, "mode", modeBox);
+    copyBtn.setDirection (false); // directional A->B glyph; kept in sync with the active slot in updateABUI()
+    copyBtn.setColours (rs::colour::accent(), rs::colour::textFaint());
+    copyBtn.onClick = [this] { processor.copyActiveToOther(); updateABUI(); };
+    addAndMakeVisible (copyBtn);
 
-    // Quality selector, sitting left of Mode. Items added manually like modeBox;
-    // item IDs 1..3 map to parameter indices 0..2 (Fast, Normal, High). Tooltip
-    // only (no modal) — the trade-off is latency vs. low-frequency resolution.
-    qualityBox.addItemList ({ "Fast", "Normal", "High" }, 1);
-    qualityBox.setJustificationType (juce::Justification::centred);
-    qualityBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
-    qualityBox.setTooltip ("Fast: half latency, half low-frequency resolution. High: double resolution, double latency.");
-    addAndMakeVisible (qualityBox);
-    qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualityBox);
+    undoBtn.setGlyph (rs::icons::undo());
+    undoBtn.setColours (rs::colour::text(), rs::colour::textFaint());
+    undoBtn.setTooltip ("Undo the last parameter change.");
+    undoBtn.onClick = [this] { processor.getUndoManager().undo(); refreshUndoRedoButtons(); };
+    addAndMakeVisible (undoBtn);
 
-    // --- Second header row: Mode/Quality/Channel/Sidechain/SC Listen/Delta/Link + Link Amt. ---
-    // Channel mode combo. Manual addItemList like the others; item IDs 1,2 -> 0,1.
-    channelBox.addItemList ({ "Stereo", "Mid-Side" }, 1);
-    channelBox.setJustificationType (juce::Justification::centred);
-    channelBox.setColour (juce::ComboBox::textColourId, FactoryLookAndFeel::text());
-    channelBox.setTooltip ("Stereo: process L/R. Mid-Side: process the M/S encode (bypass stays bit-transparent).");
-    addAndMakeVisible (channelBox);
-    channelAtt = std::make_unique<CA> (processor.apvts, "channelMode", channelBox);
+    redoBtn.setGlyph (rs::icons::redo());
+    redoBtn.setColours (rs::colour::text(), rs::colour::textFaint());
+    redoBtn.setTooltip ("Redo.");
+    redoBtn.onClick = [this] { processor.getUndoManager().redo(); refreshUndoRedoButtons(); };
+    addAndMakeVisible (redoBtn);
 
-    scEnableB.setTooltip ("Key detection off the Sidechain input bus (falls back to internal when unpatched).");
-    scListenB.setTooltip ("Monitor the raw sidechain (delayed to the plugin latency).");
-    addAndMakeVisible (scEnableB);
-    addAndMakeVisible (scListenB);
-    scEnableAtt = std::make_unique<BA> (processor.apvts, "scEnable", scEnableB);
-    scListenAtt = std::make_unique<BA> (processor.apvts, "scListen", scListenB);
+    bypassToggle.setOnColour (rs::colour::teal());
+    bypassToggle.setPillSize (42, 23);
+    bypassToggle.setTooltip ("Bypass (bit-transparent; the engine keeps running through its latency).");
+    addAndMakeVisible (bypassToggle);
+    bypassAtt = std::make_unique<BA> (processor.apvts, "bypass", bypassToggle);
 
-    // Link Amount: horizontal slider with a small caption on its left. Colours come
-    // from the LookAndFeel; % integer text (setSliderDecimals must run AFTER the
-    // attachment — see #23).
-    linkAmtL.setText ("Link Amt", juce::dontSendNotification);
-    linkAmtL.setColour (juce::Label::textColourId, FactoryLookAndFeel::textDim());
-    linkAmtL.setJustificationType (juce::Justification::centredRight);
-    addAndMakeVisible (linkAmtL);
-    linkAmtS.setSliderStyle (juce::Slider::LinearHorizontal);
-    linkAmtS.setTextBoxStyle (juce::Slider::TextBoxRight, false, 42, 18);
-    linkAmtS.setColour (juce::Slider::textBoxTextColourId, FactoryLookAndFeel::text());
-    linkAmtS.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    linkAmtS.setTextValueSuffix (" %");
-    addAndMakeVisible (linkAmtS);
-    linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtS);
-    factory_ui::setSliderDecimals (linkAmtS, 0); // % integer, after the attachment (#23)
+    // ---------------------------------------------------------- Analyzer
+    addAndMakeVisible (curve); // placed only; SuppressionCurveComponent internals untouched (P2)
 
-    // --- Phase 5b-1: A/B compare. A two-way radio pair (mutually-exclusive
-    // highlight via a shared radio group ID) plus a Copy button that copies the
-    // active slot's live state onto the inactive one. Palette only: panel() for
-    // the unselected fill, accent() for the selected fill, text()/white for the
-    // label so the selected pill reads clearly against the coral fill.
-    for (auto* b : { &abAButton, &abBButton })
+    // ------------------------------------------------------ Footer: knobs
+    // v2.1: "detail" replaces the legacy sharpness/selectivity pair as the
+    // second big knob (they stay registered for automation compat but are no
+    // longer surfaced in the UI -- see DetailParam.h / PluginProcessor.cpp).
+    addKnob (depthK,  "DEPTH",  rs::colour::accent(), true,  " %",  "depth",  0);
+    addKnob (detailK, "DETAIL", rs::colour::accent(), true,  " %",  "detail", 0);
+    addKnob (atkK,    "ATK",    rs::colour::amber(),  false, " ms", "attack",  2);
+    addKnob (relK,    "REL",    rs::colour::amber(),  false, " ms", "release", 2);
+    addKnob (tiltK,   "TILT",   rs::colour::mint(),   false, " %",  "tilt",    0);
+
+    // ------------------------------------------ Footer: MODE + settings
+    modeSeg.setSegments ({ "Soft", "Hard" }, { rs::icons::modeSoft(), rs::icons::modeHard() });
+    modeSeg.setAccent (rs::colour::accent());
+    addAndMakeVisible (modeSeg);
+    modeAtt = std::make_unique<CA> (processor.apvts, "mode", modeSeg.comboBox());
+
+    struct { rs::RsPillToggle* t; juce::Colour on; const char* tip; } pills[] = {
+        { &deltaToggle,    rs::colour::accent(), "Delta: monitor only the removed signal." },
+        { &scEnableToggle, rs::colour::teal(),   "Key detection off the Sidechain input bus (falls back to internal when unpatched)." },
+        { &scListenToggle, rs::colour::teal(),   "Monitor the raw sidechain (delayed to the plugin latency)." },
+        { &linkToggle,     rs::colour::accent(), "Link stereo detection (blend amount set by STEREO LINK)." },
+    };
+    for (auto& q : pills)
     {
-        b->setClickingTogglesState (true);
-        b->setRadioGroupId (0x4142, juce::dontSendNotification); // 'AB'
-        b->setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
-        b->setColour (juce::TextButton::buttonOnColourId, FactoryLookAndFeel::accent());
-        b->setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::text());
-        b->setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-        addAndMakeVisible (*b);
+        q.t->setOnColour (q.on);
+        q.t->setPillSize (34, 19);
+        q.t->setPillRightInset (9); // keep the pill inside the card (fixes overflow past the rounded edge)
+        q.t->setTooltip (q.tip);
+        addAndMakeVisible (*q.t);
     }
-    abAButton.setToggleState (true, juce::dontSendNotification); // matches abActive == 0 at construction
-    abAButton.setTooltip ("Switch to comparison slot A.");
-    abBButton.setTooltip ("Switch to comparison slot B.");
-    abAButton.onClick = [this] { processor.setABSlot (0); updateABUI(); };
-    abBButton.onClick = [this] { processor.setABSlot (1); updateABUI(); };
+    deltaAtt    = std::make_unique<BA> (processor.apvts, "delta",    deltaToggle);
+    scEnableAtt = std::make_unique<BA> (processor.apvts, "scEnable", scEnableToggle);
+    scListenAtt = std::make_unique<BA> (processor.apvts, "scListen", scListenToggle);
+    linkAtt     = std::make_unique<BA> (processor.apvts, "link",     linkToggle);
 
-    abCopyButton.setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
-    abCopyButton.setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::accent());
-    addAndMakeVisible (abCopyButton);
-    abCopyButton.onClick = [this] { processor.copyActiveToOther(); updateABUI(); };
+    qualitySet.setup (rs::icons::quality(), "QUALITY", { "Fast", "Normal", "High" });
+    qualitySet.setTooltip ("Fast: half latency, half low-frequency resolution. High: double resolution, double latency.");
+    addAndMakeVisible (qualitySet);
+    qualityAtt = std::make_unique<CA> (processor.apvts, "quality", qualitySet.comboBox());
 
-    // --- Phase 5b-2: Undo/Redo. UndoManager lives on the processor (declared
-    // ahead of apvts so the APVTS ctor can bind to it -- see PluginProcessor.h);
-    // enabled state is refreshed on click and by the idle-transaction timer
-    // below (timerCallback()), which also covers host-driven parameter changes.
-    for (auto* b : { &undoButton, &redoButton })
-    {
-        b->setColour (juce::TextButton::buttonColourId, FactoryLookAndFeel::panel());
-        b->setColour (juce::TextButton::textColourOffId, FactoryLookAndFeel::text());
-        addAndMakeVisible (*b);
-    }
-    undoButton.setTooltip ("Undo the last parameter change.");
-    redoButton.setTooltip ("Redo.");
-    undoButton.onClick = [this] { processor.getUndoManager().undo(); refreshUndoRedoButtons(); };
-    redoButton.onClick = [this] { processor.getUndoManager().redo(); refreshUndoRedoButtons(); };
+    chSet.setup (rs::icons::channel(), "CH", { "Stereo", "Mid-Side" });
+    chSet.setTooltip ("Stereo: process L/R. Mid-Side: process the M/S encode (bypass stays bit-transparent).");
+    addAndMakeVisible (chSet);
+    channelAtt = std::make_unique<CA> (processor.apvts, "channelMode", chSet.comboBox());
 
-    addAndMakeVisible (curve);
+    // setup() reproduces the pre-parameterization hardcoded look exactly (icon
+    // + "STEREO LINK" + 86px caption column); the "% " format below is also
+    // unchanged ("roundToInt(value)+'%'", no space) but now rides the normal
+    // suffix/decimals path instead of a bespoke format string (#23: decimals
+    // after the attachment).
+    linkAmtSlider.setup ("STEREO LINK", rs::icons::link(), 86);
+    linkAmtSlider.setTooltip ("Stereo Link amount: per-channel <-> stereo-linked detection blend.");
+    addAndMakeVisible (linkAmtSlider);
+    linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtSlider);
+    linkAmtSlider.setTextValueSuffix ("%");
+    factory_ui::setSliderDecimals (linkAmtSlider, 0);
 
-    addKnob (depthS, depthL, "Depth",       " %",  "depth");
-    addKnob (sharpS, sharpL, "Sharpness",   " %",  "sharpness");
-    addKnob (selS,   selL,   "Selectivity", " %",  "selectivity");
-    addKnob (atkS,   atkL,   "Attack",      " ms", "attack");
-    addKnob (relS,   relL,   "Release",     " ms", "release");
-    addKnob (tiltS,  tiltL,  "Tilt",        " %",  "tilt");
-    addKnob (mixS,   mixL,   "Mix",         " %",  "mix");
+    // ------------------------------------------ Footer: Mix + Out (v2.1)
+    // New 5th col3 row, below STEREO LINK: no glyph (neither has a natural
+    // fitting icon), narrower caption column than STEREO LINK since "MIX"/
+    // "OUT" are short.
+    mixSlider.setup ("MIX", 34);
+    mixSlider.setTooltip ("Dry/Wet blend of the suppressed signal.");
+    addAndMakeVisible (mixSlider);
+    mixAtt = std::make_unique<SA> (processor.apvts, "mix", mixSlider);
+    mixSlider.setTextValueSuffix ("%");
+    factory_ui::setSliderDecimals (mixSlider, 0);
 
-    deltaAtt  = std::make_unique<BA> (processor.apvts, "delta",  deltaB);
-    linkAtt   = std::make_unique<BA> (processor.apvts, "link",   linkB);
-    bypassAtt = std::make_unique<BA> (processor.apvts, "bypass", bypassB);
+    outSlider.setup ("OUT", 34);
+    outSlider.setTooltip ("Output trim, applied after the suppressor (post Mix, also in Delta).");
+    addAndMakeVisible (outSlider);
+    outAtt = std::make_unique<SA> (processor.apvts, "out", outSlider);
+    outSlider.setTextValueSuffix ("dB");
+    factory_ui::setSliderDecimals (outSlider, 1);
 
     updateABUI();
     refreshUndoRedoButtons();
-    startTimer (500); // idle-transaction boundary + Undo/Redo enable refresh (Phase 5b-2)
+    startTimer (500); // idle-transaction boundary + Undo/Redo enable refresh (Phase 5b-2, preserved)
 
+    // Default to the demo's authored size; fixed aspect so the whole chrome
+    // scales as a unit (resized() derives a scale factor from the design height).
     setResizable (true, true);
-    // Phase 5b: the busier 2-row header (A/B + Undo/Redo added to row 1; Mode/
-    // Quality/Delta/Link moved down into row 2 alongside Channel/Sidechain/SC
-    // Listen/Link Amt) no longer fits the old 640x440 floor -- measured against
-    // the actual row-1/row-2 control widths below (see resized()), 860x590 is
-    // the smallest size that lays out every control without overlap or clipping
-    // (verified against a Standalone build). Aspect ratio re-derived from that
-    // floor (was 760/520) rather than kept arbitrarily.
-    setResizeLimits (860, 590, 1300, 892);
+    setResizeLimits (940, 657, 1320, 922);
     if (auto* c = getConstrainer())
-        c->setFixedAspectRatio (860.0 / 590.0);
-    setSize (1032, 708); // default 20% larger than the 860x590 reference (same aspect)
+        c->setFixedAspectRatio ((double) rs::layout::designWidth / (double) rs::layout::designHeight);
+    setSize (rs::layout::designWidth, rs::layout::designHeight);
 }
 
 ResonanceSuppressorAudioProcessorEditor::~ResonanceSuppressorAudioProcessorEditor()
 {
     stopTimer();
-    processor.setListenNode (-1); // Phase 5a-2: never leave Listen soloed after the editor closes
+    processor.setListenNode (-1); // never leave a node soloed after the editor closes (preserved)
     setLookAndFeel (nullptr);
+}
+
+void ResonanceSuppressorAudioProcessorEditor::addKnob (rs::RsKnob& k, const juce::String& name, juce::Colour accent,
+                                                       bool big, const juce::String& suffix, const juce::String& id,
+                                                       int decimals)
+{
+    k.setup (name, accent, big, suffix);
+    addAndMakeVisible (k);
+    knobAtts.push_back (std::make_unique<SA> (processor.apvts, id, k.slider()));
+    factory_ui::setSliderDecimals (k.slider(), decimals); // after the attachment (#23)
 }
 
 void ResonanceSuppressorAudioProcessorEditor::timerCallback()
 {
-    // Idle-transaction boundary (Phase 5b-2): the APVTS's own value -> ValueTree
-    // flush timer routes every parameter write through the UndoManager, but
-    // without transaction breaks a whole session collapses into one undo step.
-    // Closing the transaction here every 500 ms turns each burst of edits
-    // (a knob drag, a curve-node drag, a click) into its own discrete step
-    // without needing per-gesture hooks into every attachment / the curve's
-    // own begin/endGesture calls.
     processor.getUndoManager().beginNewTransaction();
     refreshUndoRedoButtons();
 }
@@ -164,105 +160,242 @@ void ResonanceSuppressorAudioProcessorEditor::timerCallback()
 void ResonanceSuppressorAudioProcessorEditor::refreshUndoRedoButtons()
 {
     auto& um = processor.getUndoManager();
-    undoButton.setEnabled (um.canUndo());
-    redoButton.setEnabled (um.canRedo());
+    undoBtn.setEnabled (um.canUndo());
+    redoBtn.setEnabled (um.canRedo());
 }
 
 void ResonanceSuppressorAudioProcessorEditor::updateABUI()
 {
     const bool isA = processor.getABSlot() == 0;
-    abAButton.setToggleState (isA, juce::dontSendNotification);
-    abBButton.setToggleState (! isA, juce::dontSendNotification);
-    abCopyButton.setButtonText (isA ? "Copy A>B" : "Copy B>A");
-    abCopyButton.setTooltip (juce::String ("Copy slot ") + (isA ? "A" : "B") + " onto slot " + (isA ? "B" : "A") + ".");
+    abSeg.setSelectedIndex (isA ? 0 : 1, juce::dontSendNotification);
+    copyBtn.setTooltip (juce::String ("Copy slot ") + (isA ? "A" : "B") + " onto slot " + (isA ? "B" : "A") + ".");
+    copyBtn.setDirection (! isA); // A active => "A>B"; B active => "B>A"
 }
 
-void ResonanceSuppressorAudioProcessorEditor::addKnob (juce::Slider& s, juce::Label& l,
-                                                       const juce::String& name, const juce::String& suffix,
-                                                       const juce::String& id)
+void ResonanceSuppressorAudioProcessorEditor::layoutPillRow (juce::Rectangle<int> row,
+                                                             rs::RsPillToggle& left,  rs::icons::Glyph lg, const juce::String& lcap,
+                                                             rs::RsPillToggle& right, rs::icons::Glyph rg, const juce::String& rcap)
 {
-    factory_ui::styleKnob (s, l, name, suffix);
-    addAndMakeVisible (s);
-    addAndMakeVisible (l);
-    knobAtts.push_back (std::make_unique<SA> (processor.apvts, id, s));
-    // % and frequency read as integers; dB / ms to 2 dp. Must run after the
-    // attachment, which otherwise formats with up to 7 decimals (see #23).
-    const bool integer = suffix.containsIgnoreCase ("%") || suffix.containsIgnoreCase ("Hz");
-    factory_ui::setSliderDecimals (s, integer ? 0 : 2);
+    const float k = getHeight() / (float) rs::layout::designHeight;
+    const int gap = juce::jmax (4, (int) std::round (6.0f * k));
+    auto l = row.removeFromLeft ((row.getWidth() - gap) / 2);
+    left.setBounds (l);
+    pillCells.push_back ({ l, std::move (lg), lcap });
+    row.removeFromLeft (gap);
+    right.setBounds (row);
+    pillCells.push_back ({ row, std::move (rg), rcap });
 }
 
 void ResonanceSuppressorAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    factory_ui::paintBackground (g, getLocalBounds());
-    factory_ui::dropShadowFor (g, curve.getBounds());
+    const float k = getHeight() / (float) rs::layout::designHeight;
+
+    // Warm-white panel gradient over the whole editor (the demo's outer 22px
+    // radius / drop shadow only reads against a desktop backdrop, so a plugin
+    // editor fills its full rect -- intentional deviation, see report).
+    auto b = getLocalBounds();
+    juce::ColourGradient bg (rs::colour::panelTop(), 0.0f, (float) b.getY(),
+                             rs::colour::panelBottom(), 0.0f, (float) b.getBottom(), false);
+    g.setGradientFill (bg);
+    g.fillRect (b);
+
+    // Soft warm shadows behind the analyser + footer cards.
+    factory_ui::dropShadowFor (g, curve.getBounds(), rs::radius::card);
+    factory_ui::dropShadowFor (g, footerCardBounds, rs::radius::card);
+
+    // Footer card + inset hairline.
+    auto fc = footerCardBounds.toFloat();
+    g.setColour (rs::colour::footerBg());
+    g.fillRoundedRectangle (fc, rs::radius::card);
+    g.setColour (rs::colour::border());
+    g.drawRoundedRectangle (fc.reduced (0.5f), rs::radius::card, 1.0f);
+
+    // Column dividers.
+    g.setColour (rs::colour::border());
+    const int dy = footerCardBounds.getY() + (int) std::round (14.0f * k);
+    const int dh = footerCardBounds.getHeight() - (int) std::round (28.0f * k);
+    g.fillRect (juce::Rectangle<int> (footerDivX1, dy, 1, dh));
+    g.fillRect (juce::Rectangle<int> (footerDivX2, dy, 1, dh));
+
+    // MODE cell: distinct gradient card + coral border + "MODE" caption.
+    {
+        auto m = modeCellBounds.toFloat();
+        juce::ColourGradient mg (rs::colour::modeBoxTop(), m.getTopLeft(),
+                                 rs::colour::white(), m.getBottomLeft(), false);
+        g.setGradientFill (mg);
+        g.fillRoundedRectangle (m, rs::radius::box);
+        g.setColour (rs::colour::modeBoxBorder());
+        g.drawRoundedRectangle (m.reduced (0.75f), rs::radius::box, 1.5f);
+        g.setColour (rs::colour::text());
+        g.setFont (rs::font (rs::FontKind::Ui, 12.0f, 800, 0.04f));
+        g.drawText ("MODE", modeCellBounds.reduced ((int) std::round (12.0f * k), 0), juce::Justification::centredLeft);
+    }
+
+    // Pill-toggle cells: white card + icon + caption (the pill itself is drawn
+    // by the RsPillToggle child that fills the cell, so a whole-cell click
+    // toggles). Reserve the pill's right-hand strip so a long caption never
+    // slides under it.
+    const int pillReserve = (int) std::round (46.0f * k);
+    for (auto& c : pillCells)
+    {
+        auto cb = c.bounds.toFloat();
+        g.setColour (rs::colour::white());
+        g.fillRoundedRectangle (cb, rs::radius::badge);
+        g.setColour (rs::colour::border());
+        g.drawRoundedRectangle (cb.reduced (0.5f), rs::radius::badge, 1.0f);
+
+        auto inner = cb.reduced (9.0f, 0.0f);
+        inner.removeFromRight ((float) pillReserve);
+        auto gi = inner.removeFromLeft (inner.getHeight());
+        rs::icons::paintGlyph (g, c.glyph, gi.reduced (inner.getHeight() * 0.30f), rs::colour::textSecondary());
+        inner.removeFromLeft (6.0f);
+        g.setColour (rs::colour::textSecondary());
+        g.setFont (rs::font (rs::FontKind::Ui, 11.0f, 800, 0.03f));
+        g.drawText (c.caption, inner, juce::Justification::centredLeft);
+    }
+
+    // Header Bypass caption (the pill is a child; the label sits to its left).
+    g.setColour (rs::colour::textSecondary());
+    g.setFont (rs::font (rs::FontKind::Ui, 12.0f, 700));
+    g.drawText ("Bypass", bypassLabelBounds, juce::Justification::centredRight);
 }
 
 void ResonanceSuppressorAudioProcessorEditor::resized()
 {
-    auto r = getLocalBounds().reduced (16);
+    const float kf = getHeight() / (float) rs::layout::designHeight;
+    auto S = [kf] (float v) { return (int) std::round (v * kf); };
 
-    // ---- Header row 1: title (left) / presets (centre, stretches) / A|B +
-    // Copy / Undo|Redo / Bypass (right). ----
-    auto top = r.removeFromTop (28);
-    bypassB.setBounds (top.removeFromRight (98));
-    top.removeFromRight (10);
-    redoButton.setBounds (top.removeFromRight (50));
-    top.removeFromRight (4);
-    undoButton.setBounds (top.removeFromRight (50));
-    top.removeFromRight (12);
-    abCopyButton.setBounds (top.removeFromRight (78));
-    top.removeFromRight (6);
-    abBButton.setBounds (top.removeFromRight (26));
-    top.removeFromRight (2);
-    abAButton.setBounds (top.removeFromRight (26));
-    top.removeFromRight (12);
-    titleLabel.setBounds (top.removeFromLeft (150));
-    top.removeFromLeft (10);
-    presetController.selector().setBounds (top);
+    pillCells.clear();
 
-    // ---- Header row 2: Mode / Quality / Channel / Sidechain / SC Listen /
-    // Delta / Link + Link Amt. Mode/Quality/Delta/Link moved down here from row
-    // 1 (Phase 5b) to make room for A/B + Undo/Redo above; each toggle pill
-    // keeps the width it was tuned to (pill + full caption, see #25) since only
-    // the row changed, not the control. ----
-    auto row2 = r.removeFromTop (26);
-    modeBox.setBounds (row2.removeFromLeft (94));
-    row2.removeFromLeft (6);
-    qualityBox.setBounds (row2.removeFromLeft (80));
-    row2.removeFromLeft (10);
-    channelBox.setBounds (row2.removeFromLeft (100));
-    row2.removeFromLeft (6);
-    scEnableB.setBounds (row2.removeFromLeft (106));
-    row2.removeFromLeft (6);
-    scListenB.setBounds (row2.removeFromLeft (100));
-    row2.removeFromLeft (10);
-    deltaB.setBounds (row2.removeFromLeft (86));
-    row2.removeFromLeft (6);
-    linkB.setBounds (row2.removeFromLeft (82));
-    row2.removeFromLeft (10);
-    // Link Amount takes whatever remains on the right: caption + horizontal slider.
-    linkAmtL.setBounds (row2.removeFromLeft (56));
-    linkAmtS.setBounds (row2);
-    r.removeFromTop (8);
+    auto r = getLocalBounds().reduced (S (20));
 
-    r.removeFromTop (10);
-    // Bottom control row at ~80% of its former height so the analyser gets the
-    // extra vertical space. The row is centred horizontally so the smaller knobs
-    // don't stretch edge-to-edge.
-    auto knobs = r.removeFromBottom (83);
-    r.removeFromBottom (12);
+    // ---- Header: brand (left) / preset pill (centre) / A|B + Copy + Undo/Redo
+    //      + Bypass (right). ----
+    auto header = r.removeFromTop (S (44));
+    r.removeFromTop (S (16));
+
+    auto centreV = [] (juce::Rectangle<int> box, int w, int h)
+    { return box.withSizeKeepingCentre (w, h); };
+
+    brand.setBounds (header.removeFromLeft (S (300)));
+
+    // Right cluster, laid out right-to-left.
+    auto bypassBox = header.removeFromRight (S (118));
+    bypassToggle.setBounds (centreV (bypassBox.removeFromRight (S (48)), S (48), S (24)));
+    bypassLabelBounds = bypassBox;
+    header.removeFromRight (S (14));
+    redoBtn.setBounds (centreV (header.removeFromRight (S (30)), S (30), S (30)));
+    header.removeFromRight (S (4));
+    undoBtn.setBounds (centreV (header.removeFromRight (S (30)), S (30), S (30)));
+    header.removeFromRight (S (14));
+    copyBtn.setBounds (centreV (header.removeFromRight (S (44)), S (44), S (30)));
+    header.removeFromRight (S (10));
+    abSeg.setBounds (centreV (header.removeFromRight (S (74)), S (74), S (26)));
+    header.removeFromRight (S (14));
+
+    // Preset pill fills the centre gap (capped width, centred).
+    {
+        const int pw = juce::jmin (header.getWidth(), S (320));
+        presetController.selector().setBounds (centreV (header, pw, S (30)));
+    }
+
+    // ---- Footer card: three columns (big knobs / small knobs / settings). ----
+    // Tall enough that col3's six stacked rows (MODE / DELTA|S-CHAIN /
+    // QUALITY|CH / SC LISTEN|LINK / STEREO LINK / MIX|OUT) all fit with
+    // margin; grown from the pre-v2.1 S(198) to fit the new MIX|OUT row
+    // (below STEREO LINK) at roughly the same per-row height as before -- the
+    // analyser gives up the extra height (acceptable per review).
+    auto footer = r.removeFromBottom (S (226));
+    footerCardBounds = footer;
+
+    auto inner = footer.reduced (S (14));
+    const int w = inner.getWidth();
+    auto col1 = inner.removeFromLeft ((int) (w * 0.40f));
+    footerDivX1 = inner.getX();
+    auto col2 = inner.removeFromLeft ((int) (w * 0.20f));
+    footerDivX2 = inner.getX();
+    auto col3 = inner;
+
+    // Analyser fills whatever remains in the middle (after header + footer).
     curve.setBounds (r);
 
-    juce::Slider* sl[] = { &depthS, &sharpS, &selS, &atkS, &relS, &tiltS, &mixS };
-    juce::Label*  lb[] = { &depthL, &sharpL, &selL, &atkL, &relL, &tiltL, &mixL };
-    const int n = (int) std::size (sl);
-    const int cw = juce::jmin (96, knobs.getWidth() / n);
-    knobs = knobs.withSizeKeepingCentre (cw * n, knobs.getHeight());
-    for (int i = 0; i < n; ++i)
+    // Column 1: big knobs (Depth / Detail).
     {
-        auto cell = (i == n - 1) ? knobs : knobs.removeFromLeft (cw);
-        cell = cell.reduced (4, 0);
-        lb[i]->setBounds (cell.removeFromTop (16));
-        sl[i]->setBounds (cell);
+        auto c = col1.reduced (S (8), S (6));
+        rs::RsKnob* big[] = { &depthK, &detailK };
+        const int n = (int) std::size (big);
+        const int cw = c.getWidth() / n;
+        for (int i = 0; i < n; ++i)
+        {
+            auto cell = (i == n - 1) ? c : c.removeFromLeft (cw);
+            big[i]->setBounds (cell.reduced (S (4), 0));
+        }
+    }
+
+    // Column 2: three small knobs.
+    {
+        auto c = col2.reduced (S (6), S (6));
+        rs::RsKnob* small[] = { &atkK, &relK, &tiltK };
+        const int n = (int) std::size (small);
+        const int cw = c.getWidth() / n;
+        for (int i = 0; i < n; ++i)
+        {
+            auto cell = (i == n - 1) ? c : c.removeFromLeft (cw);
+            small[i]->setBounds (cell.reduced (S (3), 0));
+        }
+    }
+
+    // Column 3: MODE (full) / DELTA|S-CHAIN / QUALITY|CH / SC LISTEN|LINK /
+    //           STEREO LINK (full) / MIX|OUT.
+    {
+        auto c = col3.reduced (S (10), S (6));
+        const int rowGap = S (6);
+        const int cellGap = juce::jmax (4, S (6));
+
+        modeCellBounds = c.removeFromTop (S (32));
+        {
+            auto m = modeCellBounds.reduced (S (8), S (5));
+            m.removeFromLeft (S (52)); // "MODE" caption sits to the left
+            const int segW = juce::jmin (m.getWidth(), S (140));
+            modeSeg.setBounds (m.removeFromRight (segW).withSizeKeepingCentre (segW, S (24)));
+        }
+        c.removeFromTop (rowGap);
+
+        // The five remaining rows (DELTA|S-CHAIN, QUALITY|CH, SC LISTEN|LINK,
+        // the full-width STEREO LINK slider, and MIX|OUT) SHARE whatever
+        // height is left, so the bottom row can never be clipped regardless of
+        // window size or rounding (5*rowH + 4*rowGap <= remaining by
+        // construction).
+        const int rowH = juce::jmax (S (20), (c.getHeight() - 4 * rowGap) / 5);
+
+        layoutPillRow (c.removeFromTop (rowH),
+                       deltaToggle,    rs::icons::delta(),     "DELTA",
+                       scEnableToggle, rs::icons::sidechain(), "S-CHAIN");
+        c.removeFromTop (rowGap);
+
+        {
+            auto row = c.removeFromTop (rowH);
+            auto l = row.removeFromLeft ((row.getWidth() - cellGap) / 2);
+            qualitySet.setBounds (l);
+            row.removeFromLeft (cellGap);
+            chSet.setBounds (row);
+        }
+        c.removeFromTop (rowGap);
+
+        layoutPillRow (c.removeFromTop (rowH),
+                       scListenToggle, rs::icons::listen(), "SC LISTEN",
+                       linkToggle,     rs::icons::link(),   "LINK");
+        c.removeFromTop (rowGap);
+
+        linkAmtSlider.setBounds (c.removeFromTop (rowH));
+        c.removeFromTop (rowGap);
+
+        {
+            auto row = c.removeFromTop (rowH);
+            auto l = row.removeFromLeft ((row.getWidth() - cellGap) / 2);
+            mixSlider.setBounds (l);
+            row.removeFromLeft (cellGap);
+            outSlider.setBounds (row);
+        }
     }
 }
