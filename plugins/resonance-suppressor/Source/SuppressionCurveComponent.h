@@ -6,6 +6,7 @@
 #include "NodePanel.h"
 #include "RsTheme.h"
 #include "AnalyzerStyle.h"
+#include "AnalyzerDevPanel.h"
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
 #include "factory_ui/SpectrumDisplay.h"
@@ -51,6 +52,31 @@ public:
         panel.onCloseRequested = [this] { selectNode (-1); }; // ✕ -> fully deselect (drops Listen too, see selectNode())
         setWantsKeyboardFocus (true); // Delete/Backspace + arrow-key nudge on the selected node
         startTimerHz (30);
+
+        // DEV panel: hidden until Alt+clicked in the top-right gate (see mouseDown).
+        addChildComponent (devPanel);
+        devPanel.onStyleChanged = [this] (const rs::AnalyzerStyle& st)
+        {
+            setAnalyzerStyle (st);                               // P3a: repaint with the new look
+            processor.setDisplaySmoothMs (st.tempoSmoothingMs);  // P3b-A: RT-safe live display smoothing
+            saveDevSettings();                                   // persist (below)
+        };
+        devPanel.onClose = [this] { devPanel.setVisible (false); repaint(); };
+
+        // Persist DEV style in a user-global PropertiesFile -- deliberately NOT the
+        // plugin's APVTS state/preset, so state/preset compatibility is untouched.
+        juce::PropertiesFile::Options o;
+        o.applicationName     = "ResonanceTatSuppressor";
+        o.filenameSuffix      = "settings";
+        o.folderName          = "TatsunariSounds";
+        o.osxLibrarySubFolder = "Application Support";
+        devProps.setStorageParameters (o);
+        if (auto* us = devProps.getUserSettings())
+        {
+            const auto saved = us->getValue ("analyzerDevStyle", juce::String());
+            if (saved.isNotEmpty())
+                devPanel.setStateString (saved); // fires onStyleChanged -> applies style+tempo (redundant save is harmless)
+        }
     }
 
     void paint (juce::Graphics& g) override
@@ -82,16 +108,25 @@ public:
         // Soft shadow so the selected-node editor floats above the analyser.
         if (panel.isVisible())
             factory_ui::dropShadowFor (g, panel.getBounds(), 12.0f);
+
+        if (devPanel.isVisible())
+            factory_ui::dropShadowFor (g, devPanel.getBounds(), 12.0f);
     }
 
     void resized() override
     {
         if (panel.isVisible()) positionPanel();
+
+        auto full = getLocalBounds().toFloat();
+        constexpr float gate = 30.0f;
+        devGateBounds = juce::Rectangle<float> (full.getRight() - gate - 6.0f, full.getY() + 6.0f, gate, gate);
+        if (devPanel.isVisible()) positionDevPanel();
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (e.mods.isPopupMenu()) { showContextMenu (e.position); return; }
+        if (e.mods.isAltDown() && devGateBounds.contains (e.position)) { toggleDevPanel(); return; }
 
         if (hitsModeChip (e.position))   { cycleAnalyzerMode(); repaint(); return; }
         if (hitsFreezeChip (e.position)) { freeze = ! freeze;   repaint(); return; }
@@ -812,6 +847,34 @@ private:
         panel.setBounds (x, y, w, h);
     }
 
+    void saveDevSettings()
+    {
+        if (auto* us = devProps.getUserSettings())
+        {
+            us->setValue ("analyzerDevStyle", devPanel.getStateString());
+            us->saveIfNeeded();
+        }
+    }
+
+    void positionDevPanel()
+    {
+        // Top-right of the analyzer, clamped to the visible height; the panel's
+        // internal Viewport scrolls any overflow (its natural 560 px can exceed a
+        // short analyzer). Kept just inside the rounded card + clear of the corner.
+        const int w = devPanel.preferredWidth();
+        auto full = getLocalBounds().reduced (14);
+        const int h = juce::jmin (devPanel.preferredHeight(), full.getHeight());
+        devPanel.setBounds (full.getRight() - w, full.getY(), w, h);
+    }
+
+    void toggleDevPanel()
+    {
+        const bool show = ! devPanel.isVisible();
+        if (show) { positionDevPanel(); devPanel.setVisible (true); devPanel.toFront (false); }
+        else        devPanel.setVisible (false);
+        repaint();
+    }
+
     void setParam (const juce::String& id, float value)
     {
         if (auto* p = apvts.getParameter (id)) p->setValueNotifyingHost (p->convertTo0to1 (value));
@@ -969,6 +1032,9 @@ private:
     ResonanceSuppressorAudioProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
     NodePanel panel;
+    rs::AnalyzerDevPanel  devPanel;                 // アナライザーDEVモードのオーバーレイ(既定非表示)
+    juce::ApplicationProperties devProps;           // DEV設定の永続化(plugin state/presetとは別・非汚染)
+    juce::Rectangle<float> devGateBounds;           // 右上隅の控えめなAlt+クリック開閉ホットゾーン(非表示)
     juce::Rectangle<float> plot;
     int dragging = -1;
     int selectedNode = -1;

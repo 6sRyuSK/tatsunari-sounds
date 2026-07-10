@@ -136,6 +136,11 @@ public:
     void setListenNode (int id) noexcept { listenNode.store (id, std::memory_order_relaxed); }
     int  getListenNode() const noexcept { return listenNode.load (std::memory_order_relaxed); }
 
+    // Analyzer DEV mode (P3b): live-adjustable DISPLAY time smoothing (ms) for
+    // the analyzer traces. GUI thread -> audio thread, lock-free (see
+    // displaySmoothMsUi). Clamped to >= 0; applied at the top of processBlock.
+    void setDisplaySmoothMs (float ms) noexcept { displaySmoothMsUi.store (juce::jmax (0.0f, ms), std::memory_order_relaxed); }
+
     // A/B compare (Phase 5b-1): two session-only state slots, same scope as
     // getStateInformation (APVTS + program index) -- NOT listenNode or other
     // transient execution state. Host persistence is unchanged: getStateInformation
@@ -211,6 +216,13 @@ private:
     // Listen target: -1 = disabled (normal processing). GUI thread writes,
     // audio thread reads once per block (see setListenNode/getListenNode).
     std::atomic<int> listenNode { -1 };
+
+    // Analyzer DEV mode (P3b): live-adjustable DISPLAY time smoothing (ms) for
+    // the analyzer traces, pushed to the core each block. GUI writes, audio
+    // reads -- lock-free, like listenNode. Initial 50.0 == prepareToPlay's
+    // fixed setDisplaySmoothingMs(50.0), so nothing changes until the DEV
+    // panel writes a new value. NOT an APVTS param -> never saved in state.
+    std::atomic<float> displaySmoothMsUi { 50.0f };
 
     std::array<std::atomic<float>, kMaxBins> pubMag {};
     std::array<std::atomic<float>, kMaxBins> pubRed {};

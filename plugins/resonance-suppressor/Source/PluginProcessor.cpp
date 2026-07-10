@@ -390,6 +390,11 @@ void ResonanceSuppressorAudioProcessor::processBlock (juce::AudioBuffer<float>& 
     // Listen. < 0 is the normal path, unchanged.
     const int listen = listenNode.load (std::memory_order_relaxed);
 
+    // Analyzer DEV mode (P3b): live display-smoothing override. atomic load only
+    // -- no alloc/lock/syscall. prepareToPlay still seeds the core at 50 ms; this
+    // re-applies every block so the DEV panel can change it live.
+    suppressor.setDisplaySmoothingMs ((double) displaySmoothMsUi.load (std::memory_order_relaxed));
+
     suppressor.setDepth       ((double) depthParam->load() / 100.0 * 1.5);
     suppressor.setSharpness   (0.15 + (double) sharpParam->load() / 100.0 * 0.85); // 0.15..1.0 octave
     suppressor.setSelectivity ((double) selParam->load() / 100.0);  // 0..100 % -> 0..1

@@ -236,4 +236,34 @@ namespace rs
 
         return r;
     }
+
+    // Per-face blend for the DEV panel: each of the four faces (Input / Delta /
+    // Curve / Smooth) interpolates kV201Style<->kDemoStyle at its OWN t, so e.g.
+    // the delta curtain can be pure-demo while the combined curve stays v2.0.1.
+    // POST-line fields ride the Input face (both are spectrum traces); the
+    // combined + per-node fields ride the Curve face. traceRoundJoin rides Smooth.
+    inline AnalyzerStyle composePerFace (float tInput, float tDelta, float tCurve, float tSmooth)
+    {
+        const auto li = lerp (kV201Style, kDemoStyle, tInput);
+        const auto ld = lerp (kV201Style, kDemoStyle, tDelta);
+        const auto lc = lerp (kV201Style, kDemoStyle, tCurve);
+        const auto ls = lerp (kV201Style, kDemoStyle, tSmooth);
+        AnalyzerStyle r = kV201Style;
+        // Input face (+ POST line)
+        r.inputMode = li.inputMode; r.inputFillTopAlpha = li.inputFillTopAlpha; r.inputFillBotAlpha = li.inputFillBotAlpha;
+        r.inputColour = li.inputColour; r.inputLineWidth = li.inputLineWidth; r.inputLineAlpha = li.inputLineAlpha;
+        r.postColour = li.postColour; r.postLineWidth = li.postLineWidth; r.postLineAlpha = li.postLineAlpha;
+        // Delta face
+        r.deltaMode = ld.deltaMode; r.deltaFillAlpha = ld.deltaFillAlpha; r.deltaStrokeAlpha = ld.deltaStrokeAlpha;
+        r.deltaStrokeWidth = ld.deltaStrokeWidth; r.deltaClampFrac = ld.deltaClampFrac;
+        // Curve face (combined + per-node)
+        r.curveMode = lc.curveMode; r.perNodeFillAlpha = lc.perNodeFillAlpha; r.perNodeStrokeAlpha = lc.perNodeStrokeAlpha;
+        r.combinedGlowAlpha = lc.combinedGlowAlpha; r.combinedGlowWidth = lc.combinedGlowWidth;
+        r.combinedStrokeWidth = lc.combinedStrokeWidth; r.combinedStrokeAlpha = lc.combinedStrokeAlpha;
+        r.combinedDashLen = lc.combinedDashLen; r.combinedDashGap = lc.combinedDashGap; r.combinedColour = lc.combinedColour;
+        // Smooth face
+        r.tempoSmoothingMs = ls.tempoSmoothingMs; r.freqSmoothingOct = ls.freqSmoothingOct;
+        r.pathProfileCurved = ls.pathProfileCurved; r.traceRoundJoin = ls.traceRoundJoin;
+        return r;
+    }
 } // namespace rs
