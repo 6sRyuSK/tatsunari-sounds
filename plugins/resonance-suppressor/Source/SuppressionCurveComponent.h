@@ -5,6 +5,7 @@
 #include "PluginProcessor.h"
 #include "NodePanel.h"
 #include "RsTheme.h"
+#include "AnalyzerStyle.h"
 #include "factory_ui/FactoryLookAndFeel.h"
 #include "factory_ui/FactoryChrome.h"
 #include "factory_ui/SpectrumDisplay.h"
@@ -199,6 +200,13 @@ public:
         return false;
     }
 
+    // Phase P3a: the DEV panel (P3b) drives the analyzer's look entirely
+    // through this -- swapping `style` between kV201Style/kDemoStyle/a lerp()
+    // blend is the whole mechanism; drawAnalyzer/drawReduction/drawProfile
+    // read nothing hardcoded that this doesn't cover. No caller exists yet
+    // (that's P3b's DEV panel).
+    void setAnalyzerStyle (const rs::AnalyzerStyle& s) { style = s; repaint(); }
+
 private:
     void timerCallback() override
     {
@@ -232,6 +240,11 @@ private:
     static constexpr float kMinDb = -90.0f, kMaxDb = 6.0f;    // analyser axis
     static constexpr float kSensMin = -30.0f, kSensMax = 30.0f; // profile (sens) axis
     static constexpr int   kNumNodes = 2 + ResonanceSuppressorAudioProcessor::kNumBands; // LC, HC, bands
+    // Phase P3a: point count for the combined/profile curve when
+    // style.pathProfileCurved == false -- a fixed count (not plot-width
+    // dependent), matching the demo's viewBox-space vertex count staying put
+    // regardless of window size (rs-ui-work/demo-analysis.md SS3.2 Layer 4).
+    static constexpr int kSparseProfileSteps = 48;
 
     enum class AnalyzerMode { Both, Pre, Post };
 
@@ -321,6 +334,31 @@ private:
         }
     }
 
+    // Phase P3a: 1/N-octave moving-average smoothing across frequency bins,
+    // applied only to the GUI's PRE/POST/delta display traces (GUI-thread
+    // only, small temporary buffers -- never touches processBlock). `octFrac
+    // <= 0` is a no-op (0 == raw == exact pre-P3a behaviour). Deliberately a
+    // simple per-bin box average in dB space over the bins within +/-
+    // octFrac/2 octaves of each bin's frequency -- a DEV-panel cosmetic knob,
+    // not a measurement filter.
+    static void smoothOctaveBins (std::array<float, ResonanceSuppressorAudioProcessor::kMaxBins>& data,
+                                  int numBins, double sampleRate, int fftN, float octFrac)
+    {
+        if (octFrac <= 0.0f || numBins <= 2 || fftN <= 0) return;
+        const auto src = data; // every output bin must read unsmoothed inputs
+        const double halfOctMul = std::pow (2.0, 0.5 * (double) octFrac);
+        for (int k = 1; k < numBins; ++k)
+        {
+            const double fk = (double) k * sampleRate / fftN;
+            if (fk <= 0.0) continue;
+            const int kLo = juce::jlimit (1, numBins - 1, (int) std::floor (fk / halfOctMul * fftN / sampleRate));
+            const int kHi = juce::jlimit (kLo,  numBins - 1, (int) std::ceil  (fk * halfOctMul * fftN / sampleRate));
+            double sum = 0.0;
+            for (int j = kLo; j <= kHi; ++j) sum += src[(size_t) j];
+            data[(size_t) k] = (float) (sum / (double) (kHi - kLo + 1));
+        }
+    }
+
     // Pre (input) / Post (output) spectra. Pre draws as a pale filled area, Post
     // as a crisp line, so Both mode reads like soothe's dual trace; Freeze holds
     // the last-captured frame (see timerCallback / lastPre / lastPost).
@@ -328,6 +366,14 @@ private:
     {
         const double sr = snapSr; // frozen together with snapBins (see timerCallback)
         const int N = 2 * (snapBins - 1);
+
+        // style.freqSmoothingOct == 0 (kV201Style) takes the early-out inside
+        // smoothOctaveBins() and leaves these byte-identical to lastPre/lastPost.
+        auto smPre  = lastPre;
+        auto smPost = lastPost;
+        smoothOctaveBins (smPre,  snapBins, sr, N, style.freqSmoothingOct);
+        smoothOctaveBins (smPost, snapBins, sr, N, style.freqSmoothingOct);
+
         auto buildTrace = [&] (const std::array<float, ResonanceSuppressorAudioProcessor::kMaxBins>& data)
         {
             factory_ui::SpectrumTrace trace;
@@ -341,45 +387,75 @@ private:
             return trace;
         };
 
+        // style.inputMode has exactly one value today (FilledArea); kept as
+        // an enum in the schema for a future DEV mode, not switched on here.
+        const auto joint = style.traceRoundJoin ? juce::PathStrokeType::curved : juce::PathStrokeType::mitered;
+
         if (analyzerMode != AnalyzerMode::Post)
         {
-            auto trace = buildTrace (lastPre);
+            auto trace = buildTrace (smPre);
             if (! trace.isEmpty())
-                factory_ui::fillSpectrumArea (g, trace.area(), FactoryLookAndFeel::textDim(), plot, 0.22f, 0.02f);
+            {
+                factory_ui::fillSpectrumArea (g, trace.area(), style.inputColour, plot,
+                                              style.inputFillTopAlpha, style.inputFillBotAlpha);
+                if (style.inputLineWidth > 0.0f && style.inputLineAlpha > 0.0f)
+                {
+                    g.setColour (style.inputColour.withAlpha (style.inputLineAlpha));
+                    g.strokePath (trace.line(), juce::PathStrokeType (style.inputLineWidth, joint));
+                }
+            }
         }
         if (analyzerMode != AnalyzerMode::Pre)
         {
-            auto trace = buildTrace (lastPost);
+            auto trace = buildTrace (smPost);
             if (! trace.isEmpty())
             {
-                g.setColour (FactoryLookAndFeel::accent().withAlpha (0.85f));
-                g.strokePath (trace.line(), juce::PathStrokeType (1.4f));
+                g.setColour (style.postColour.withAlpha (style.postLineAlpha));
+                g.strokePath (trace.line(), juce::PathStrokeType (style.postLineWidth, joint));
             }
         }
     }
 
-    // Live gain reduction hanging from the 0 dB line — the suppressor at work.
+    // Live gain reduction hanging from the 0 dB line (style.deltaMode ==
+    // AreaFromZero, v2.0.1) or from the plot's physical top edge, optionally
+    // clamped to style.deltaClampFrac of the plot height (CurtainFromTop, the
+    // demo's Layer 2) -- the suppressor at work.
     void drawReduction (juce::Graphics& g)
     {
         const double sr = snapSr; // frozen together with snapBins (see timerCallback)
         const int N = 2 * (snapBins - 1);
-        const float top = dbToY (0.0f);
+
+        auto smRed = lastRed;
+        smoothOctaveBins (smRed, snapBins, sr, N, style.freqSmoothingOct);
+
+        const bool  fromTop = style.deltaMode == rs::AnalyzerStyle::DeltaMode::CurtainFromTop;
+        const float top     = fromTop ? plot.getY() : dbToY (0.0f);
+        const float maxY    = top + style.deltaClampFrac * plot.getHeight(); // 1.0 == unclamped (see below)
+
         factory_ui::SpectrumTrace trace;
-        trace.begin (top, plot.getRight()); // reduction hangs from the 0 dB line
+        trace.begin (top, plot.getRight());
         for (int k = 1; k < snapBins; ++k)
         {
             const float f = (float) ((double) k * sr / N);
             if (f < 20.0f || f > 20000.0f) continue;
-            const float red = juce::jlimit (-60.0f, 0.0f, lastRed[(size_t) k]);
-            trace.addPoint (freqToX (f), dbToY (red)); // red <= 0 -> below the top line
+            const float red = juce::jlimit (-60.0f, 0.0f, smRed[(size_t) k]);
+            // Same dB->pixel scale as dbToY() in both modes, just re-based so
+            // AreaFromZero anchors at the 0 dB line (top == dbToY(0), so this
+            // reduces exactly to dbToY(red) -- byte-identical to pre-P3a) and
+            // CurtainFromTop anchors at the plot's physical top edge instead.
+            const float y = juce::jmin (top + (dbToY (red) - dbToY (0.0f)), maxY);
+            trace.addPoint (freqToX (f), y); // red <= 0 -> at/below `top`
         }
         if (! trace.isEmpty())
         {
             const auto fill = trace.area();
-            g.setColour (kTeal.withAlpha (0.28f));
+            g.setColour (kTeal.withAlpha (style.deltaFillAlpha));
             g.fillPath (fill);
-            g.setColour (kTeal.withAlpha (0.8f));
-            g.strokePath (fill, juce::PathStrokeType (1.0f));
+            if (style.deltaStrokeAlpha > 0.0f && style.deltaStrokeWidth > 0.0f)
+            {
+                g.setColour (kTeal.withAlpha (style.deltaStrokeAlpha));
+                g.strokePath (fill, juce::PathStrokeType (style.deltaStrokeWidth));
+            }
         }
     }
 
@@ -395,58 +471,106 @@ private:
 
     // The reduction-profile curve — the SAME shape functions the audio rasteriser
     // uses (factory_core::reductionProfileDbAt), so what you see is what runs.
-    // Modern-EQ styling (like the dynamic EQ): each active node draws its own
-    // translucent filled curve, over which the combined response is a bright
-    // stroke with a soft glow.
+    // style.curveMode picks between v2.0.1's modern-EQ look (each active
+    // node's own translucent fill+stroke, under a glowing combined-response
+    // stroke) and the demo's look (a single dashed combined curve, no
+    // per-node curves at all -- demo-analysis SS3.2 Layer 4 / SS5.2).
     void drawProfile (juce::Graphics& g)
     {
+        using CurveMode = rs::AnalyzerStyle::CurveMode;
         const auto nodes = ResonanceSuppressorAudioProcessor::readNodes (apvts);
-        const int steps = juce::jmax (2, (int) plot.getWidth());
+        // pathProfileCurved: dense ~1-point-per-pixel sampling (current --
+        // reads as smooth purely from point density) vs a fixed sparse point
+        // count with straight segments (kSparseProfileSteps; closer to the
+        // demo's hand-authored, visibly-faceted polyline).
+        const int steps = style.pathProfileCurved ? juce::jmax (2, (int) plot.getWidth())
+                                                   : kSparseProfileSteps;
         const float y0 = sensToY (0.0f); // nominal (0 dB) line
+
+        const bool wantPerNode  = style.curveMode != CurveMode::CombinedOnly;
+        const bool wantCombined = style.curveMode != CurveMode::PerNodeFillsOnly;
 
         std::array<factory_core::ReductionNodes, kNumNodes> single;
         std::array<juce::Path, kNumNodes> nodePath;
         std::array<bool, kNumNodes> started {};
-        for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
+        if (wantPerNode)
+            for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
 
         juce::Path combined;
         for (int i = 0; i <= steps; ++i)
         {
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
             const float f = xToFreq (x);
-            const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
-            if (i == 0) combined.startNewSubPath (x, yT);
-            else        combined.lineTo (x, yT);
 
-            for (int id = 0; id < kNumNodes; ++id)
+            if (wantCombined)
             {
-                if (! nodeOn (id)) continue;
-                const float yB = sensToY ((float) factory_core::reductionProfileDbAt (f, single[(size_t) id]));
-                if (! started[(size_t) id]) { nodePath[(size_t) id].startNewSubPath (x, yB); started[(size_t) id] = true; }
-                else nodePath[(size_t) id].lineTo (x, yB);
+                const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
+                if (i == 0) combined.startNewSubPath (x, yT);
+                else        combined.lineTo (x, yT);
+            }
+
+            if (wantPerNode)
+            {
+                for (int id = 0; id < kNumNodes; ++id)
+                {
+                    if (! nodeOn (id)) continue;
+                    const float yB = sensToY ((float) factory_core::reductionProfileDbAt (f, single[(size_t) id]));
+                    if (! started[(size_t) id]) { nodePath[(size_t) id].startNewSubPath (x, yB); started[(size_t) id] = true; }
+                    else nodePath[(size_t) id].lineTo (x, yB);
+                }
             }
         }
 
         // Per-node translucent fill (from the nominal line) + coloured stroke.
-        for (int id = 0; id < kNumNodes; ++id)
+        if (wantPerNode)
         {
-            if (! started[(size_t) id]) continue;
-            const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
-            auto fp = nodePath[(size_t) id];
-            fp.lineTo (plot.getRight(), y0);
-            fp.lineTo (plot.getX(), y0);
-            fp.closeSubPath();
-            g.setColour (col.withAlpha (0.12f));
-            g.fillPath (fp);
-            g.setColour (col.withAlpha (0.7f));
-            g.strokePath (nodePath[(size_t) id], juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
+            for (int id = 0; id < kNumNodes; ++id)
+            {
+                if (! started[(size_t) id]) continue;
+                const auto col = isCut (id) ? FactoryLookAndFeel::textDim() : FactoryLookAndFeel::bandColour (id - 2);
+                if (style.perNodeFillAlpha > 0.0f)
+                {
+                    auto fp = nodePath[(size_t) id];
+                    fp.lineTo (plot.getRight(), y0);
+                    fp.lineTo (plot.getX(), y0);
+                    fp.closeSubPath();
+                    g.setColour (col.withAlpha (style.perNodeFillAlpha));
+                    g.fillPath (fp);
+                }
+                if (style.perNodeStrokeAlpha > 0.0f)
+                {
+                    g.setColour (col.withAlpha (style.perNodeStrokeAlpha));
+                    g.strokePath (nodePath[(size_t) id], juce::PathStrokeType (1.0f, juce::PathStrokeType::curved));
+                }
+            }
         }
 
-        // Combined response: soft coral glow under a crisp coral stroke.
-        g.setColour (FactoryLookAndFeel::accent().withAlpha (0.22f));
-        g.strokePath (combined, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (FactoryLookAndFeel::accent());
-        g.strokePath (combined, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        // Combined response: optional soft glow under a crisp stroke, solid
+        // or dashed (style.combinedDashLen > 0).
+        if (wantCombined)
+        {
+            if (style.combinedGlowAlpha > 0.0f && style.combinedGlowWidth > 0.0f)
+            {
+                g.setColour (style.combinedColour.withAlpha (style.combinedGlowAlpha));
+                g.strokePath (combined, juce::PathStrokeType (style.combinedGlowWidth,
+                              juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+
+            g.setColour (style.combinedColour.withAlpha (style.combinedStrokeAlpha));
+            const juce::PathStrokeType combinedStroke (style.combinedStrokeWidth,
+                                                        juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+            if (style.combinedDashLen > 0.0f)
+            {
+                juce::Path dashed;
+                const float dl[] = { style.combinedDashLen, style.combinedDashGap };
+                combinedStroke.createDashedStroke (dashed, combined, dl, 2);
+                g.fillPath (dashed);
+            }
+            else
+            {
+                g.strokePath (combined, combinedStroke);
+            }
+        }
     }
 
     // demo-analysis SS3.5: band nodes are plain pastel dots (15px dia., 20px selected)
@@ -850,6 +974,11 @@ private:
     int selectedNode = -1;
     int hoverNode = -1;
     juce::Point<float> dragAnchor, dragVirtual;
+
+    // Phase P3a: the analyzer's configurable render style (see
+    // AnalyzerStyle.h) -- defaults to kV201Style so nothing changes until a
+    // caller (P3b's DEV panel) calls setAnalyzerStyle().
+    rs::AnalyzerStyle style { rs::kV201Style };
 
     // Analyser display state (Phase 5a-2): last-captured frame (so Freeze can
     // hold it), the mode chip, and the GR peak-hold badge.
