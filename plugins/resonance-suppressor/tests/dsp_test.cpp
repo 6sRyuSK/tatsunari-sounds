@@ -267,6 +267,15 @@
 //      constants (dt = H/fs, so wall-clock tau holds regardless of hop) past
 //      that same point, B relaxes onto A within a small dB tolerance.
 //
+//  31. F1 soft cap (v2.1, additive): Soft mode bounds its FINAL post-smoothing
+//      per-bin target at kSoftCapDb = 24 dB (an applied-gain promise; Hard and
+//      every sub-cap Soft value stay bit-identical to v2.0.1, so tests 1-30
+//      are untouched). Four invariants (see the "F1 soft-cap family" block):
+//      (a) worst-case binding == -24 exactly while the uncapped oracle sits at
+//      -48; Hard uncontaminated; (b) sub-cap transparency vs the unmodified
+//      oracle; (c) closed-form per-frame slew bound + applied-gain floor;
+//      (d) HF narrow efficacy guard against a pre-smoothing cap regression.
+//
 // Every test runs across the full standard sample-rate matrix
 // (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) and prepares the engine at the same
 // order the plugin would pick (factory_core::fftOrderForSampleRate), so the
@@ -1350,6 +1359,271 @@ namespace
                   + " dB at Fs=" + std::to_string (Fs));
         std::printf ("  allBinErr sm=%.2e raw=%.2e  maxAdj sm=%.2f raw=%.2f  red[kf]=%.2f\n",
                      errS, errR, adjS, adjR, engS[(size_t) kf]);
+    }
+
+    // ---- F1 soft-cap family (v2.1, ADDITIVE -- no existing gate touched) ----
+    //
+    // Soft mode now bounds the FINAL (post-smoothing) per-bin reduction target
+    // at kSoftCapDb = 24 dB (core/include/factory_core/ResonanceSuppressor.h):
+    // a promise about the gain actually applied, NOT a pre-smoothing
+    // intermediate (a pre-smoothing cap would dilute through the two-pass box
+    // to ~3 dB of usable cut at 8 kHz, where the box half-width h ~ 10). Hard
+    // mode and every sub-cap Soft target are bit-identical to v2.0.1 -- which
+    // is why every pre-existing gate in this file is UNCHANGED. Four additive
+    // invariants below, all rates, oracles independent of the engine:
+    //   31a. Cap binding: a broad hot-excess block (width > 4h+1, so the box
+    //        cannot dilute its centre) at ~3 kHz, worst case depth 1.5 x
+    //        profile 4, selectivity in {0, 0.5, 1}: the soft final reduction ==
+    //        -kSoftCapDb exactly (1e-6) at the centre bins, while the UNCAPPED
+    //        v2.0.1 pipeline oracle sits at its -48 clamp there (proving the
+    //        cap, and only the cap, is what bounds the engine); Hard mode on
+    //        the same block still matches the unmodified v2.0.1 pipeline
+    //        oracle (no cap leaked into Hard).
+    //   31b. Sub-cap transparency: on the envelope-notch signal (all oracle
+    //        values well above -24 dB) the soft engine equals the UNMODIFIED
+    //        v2.0.1 oracle on every bin -- the cap changes nothing below
+    //        itself.
+    //   31c. Slew/AM bound + applied-gain floor: from a silence -> worst-case
+    //        onset, every per-frame linear gain step obeys the closed-form
+    //        one-pole bound |dg| <= (1-c_atk)*(1 - 10^(-kSoftCap/20)) and the
+    //        gain never goes below 10^(-kSoftCap/20) -- the cap's worst-case
+    //        per-frame AM guarantee, from the standard EMA relation
+    //        c = exp(-frameTime/tau), never read from the engine.
+    //   31d. HF narrow efficacy guard: a narrow (3-bin) resonance at ~8 kHz
+    //        whose RAW target is far below the cap but whose SMOOTHED target
+    //        is far above it must match the unmodified v2.0.1 oracle exactly
+    //        -- a reintroduced PRE-smoothing cap would shift the smoothed
+    //        value by ~2 dB and fail this gate (placement regression guard).
+
+    // Independent restatement of the spec cap (never read from the engine).
+    constexpr double kSoftCapDbSpec = 24.0;
+
+    // Deterministic broad hot-excess block for 31a/31c: bins [k0-B, k0+B] hot,
+    // a surrounding quiet floor (above the -80 dBFS detection floor) so the
+    // block's centre bins carry ~40 dB of excess over their log-mean envelope
+    // (the block fits inside the envelope's self-excluding notch), and B >= 2h
+    // so the two-pass box cannot dilute the centre. Returns the block centre.
+    struct CapBlock { int k0, B; std::vector<double> x; };
+    CapBlock capBindingSignal (double Fs, int order, int M)
+    {
+        const int N = 1 << order;
+        const int k0 = (int) std::round (3000.0 * (double) N / Fs);
+        const double fac = std::pow (2.0, 0.5 * (1.0 / 12.0)) - 1.0; // default width's box law
+        const int h = std::max (1, (int) std::lround (k0 * fac));
+        const int B = 2 * h + 2; // block width 2B+1 > 4h+1
+        auto x = combSignal (order, M, [&] (int k) {
+            if (k >= k0 - B && k <= k0 + B) return 0.05;             // hot block
+            const double lo = k0 / 1.6, hi = k0 * 1.6;               // quiet floor around it
+            if (k >= lo && k <= hi) return 5.0e-4;                   // -40 dB vs hot, above det. floor
+            return 0.0;
+        });
+        return { k0, B, std::move (x) };
+    }
+
+    // 31a. Cap binding at the worst case + Hard-mode non-contamination.
+    void softCapBindingTest (double Fs)
+    {
+        std::printf ("Soft cap binding (worst case == -%.0f dB; Hard untouched) @ Fs=%.0f\n", kSoftCapDbSpec, Fs);
+        const int order = orderFor (Fs), M = kSnapshotLen;
+        auto blk = capBindingSignal (Fs, order, M);
+
+        for (double sel : { 0.0, 0.5, 1.0 })
+        {
+            // Engine, worst case: soft, depth 1.5, profile 4 everywhere.
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setMode (0); s.setDepth (1.5); s.setSelectivity (sel);
+            s.setTimes (0.01, 0.01); // near-instant: gain == last frame's target
+            std::vector<double> prof ((size_t) s.numBins(), 4.0);
+            s.setProfile (prof.data(), s.numBins());
+            for (int n = 0; n < M; ++n) { double l = blk.x[(size_t) n], r = l; s.process (l, r); }
+            const double* red = s.reductionDb();
+
+            // Uncapped v2.0.1 pipeline oracle: the soft law is linear in
+            // depth*profile, so profile 4 at depth 1.5 == the unmodified oracle
+            // at depth 6.0. It must sit at its own -48 clamp at the centre --
+            // the cap, and only the cap, explains the engine's -24.
+            SpecDetector p; p.mode = 0; p.depth = 6.0; p.selectivity = sel;
+            const auto orc = specReductionOracle (blk.x, M - (1 << order), Fs, order, p);
+            if (orc[(size_t) blk.k0] > -47.9)
+                fail ("soft cap: worst case not driving the uncapped oracle to its -48 clamp (vacuous): "
+                      + std::to_string (orc[(size_t) blk.k0]) + " dB at sel=" + std::to_string (sel)
+                      + " Fs=" + std::to_string (Fs));
+
+            for (int k = blk.k0 - 2; k <= blk.k0 + 2; ++k)
+                if (std::abs (red[(size_t) k] - (-kSoftCapDbSpec)) > 1.0e-6)
+                    fail ("soft cap: final reduction != -kSoftCapDb at bin " + std::to_string (k)
+                          + ": " + std::to_string (red[(size_t) k]) + " dB (sel=" + std::to_string (sel)
+                          + ") at Fs=" + std::to_string (Fs));
+        }
+
+        // Hard mode on the same block: engine == the unmodified v2.0.1 pipeline
+        // oracle (law -> -48 clamp -> box; profile 1) -- no cap leaked into Hard.
+        {
+            SpecDetector p; p.mode = 1; p.depth = 1.5;
+            const auto eng = engineReductionSnapshot (blk.x, Fs, order, p);
+            const auto orc = specReductionOracle (blk.x, M - (1 << order), Fs, order, p);
+            double err = 0.0;
+            for (size_t k = 0; k < orc.size(); ++k) err = std::max (err, std::abs (eng[k] - orc[k]));
+            if (err > 1.0e-6)
+                fail ("soft cap: Hard mode no longer matches the v2.0.1 pipeline oracle (err "
+                      + std::to_string (err) + " dB) at Fs=" + std::to_string (Fs));
+            if (orc[(size_t) blk.k0] > -5.0)
+                fail ("soft cap: Hard-mode control has no real cut at the block (vacuous): "
+                      + std::to_string (orc[(size_t) blk.k0]) + " dB at Fs=" + std::to_string (Fs));
+        }
+        std::printf ("  ok (k0=%d B=%d)\n", blk.k0, blk.B);
+    }
+
+    // 31b. Sub-cap transparency: cap changes nothing below itself.
+    void softCapTransparencyTest (double Fs)
+    {
+        std::printf ("Soft cap transparency (sub-cap == v2.0.1 oracle) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        // The envelope-notch recipe: two equal tones 1/3 oct apart over noise
+        // (deepest oracle cut ~ -14.6 dB across rates -- well above the cap).
+        const double f1 = alignedFreq (Fs, 2000.0);
+        const double f2 = alignedFreq (Fs, 2000.0 * std::pow (2.0, 1.0 / 3.0));
+        const double sigma = 0.05 * std::sqrt ((double) N / 2048.0);
+        std::mt19937 rng (19);
+        std::normal_distribution<double> g (0.0, sigma);
+        std::vector<double> x ((size_t) M);
+        for (int n = 0; n < M; ++n)
+            x[(size_t) n] = g (rng) + 0.4 * std::sin (2.0 * kPi * f1 * n / Fs)
+                                    + 0.4 * std::sin (2.0 * kPi * f2 * n / Fs);
+
+        SpecDetector p; p.depth = 0.8;
+        const auto eng = engineReductionSnapshot (x, Fs, order, p);
+        const auto orc = specReductionOracle (x, M - N, Fs, order, p);
+
+        double minOrc = 0.0, err = 0.0;
+        for (size_t k = 0; k < orc.size(); ++k)
+        {
+            minOrc = std::min (minOrc, orc[k]);
+            err = std::max (err, std::abs (eng[k] - orc[k]));
+        }
+        if (minOrc > -8.0 || minOrc < -(kSoftCapDbSpec - 1.0))
+            fail ("soft cap transparency: signal not in the sub-cap regime (minOrc "
+                  + std::to_string (minOrc) + " dB, want in [-23, -8]) at Fs=" + std::to_string (Fs));
+        if (err > 0.5)
+            fail ("soft cap transparency: engine != unmodified v2.0.1 oracle below the cap by "
+                  + std::to_string (err) + " dB at Fs=" + std::to_string (Fs));
+        std::printf ("  allBinErr=%.2e minOracle=%.2f dB (sub-cap)\n", err, minOrc);
+    }
+
+    // 31c. Slew/AM bound + applied-gain floor from the cap.
+    void softCapSlewBoundTest (double Fs)
+    {
+        std::printf ("Soft cap slew bound (per-frame |dg| one-pole bound + gain floor) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, H = N / 8; // Normal = 8x overlap
+        const int M = kSnapshotLen;
+        auto blk = capBindingSignal (Fs, order, M);
+        const double gFloor = std::pow (10.0, -kSoftCapDbSpec / 20.0);
+
+        for (double atkMs : { 1.0, 8.0 })
+        {
+            factory_core::ResonanceSuppressor s;
+            s.prepare (Fs, order);
+            s.setMode (0); s.setDepth (1.5); s.setTimes (atkMs, 80.0);
+            std::vector<double> prof ((size_t) s.numBins(), 4.0);
+            s.setProfile (prof.data(), s.numBins());
+
+            // Closed-form one-pole bound (standard EMA relation, frameTime = H/Fs;
+            // never read from the engine). Targets live in [gFloor, 1] under the
+            // cap, and both ballistics branches are slower than or equal to the
+            // attack pole here (release 80 ms >> attack), so per frame:
+            //   |dg| = (1-c)*|target - g| <= (1-cAtk)*(1 - gFloor).
+            const double cAtk  = std::exp (-((double) H / Fs) / (atkMs * 1.0e-3));
+            const double bound = (1.0 - cAtk) * (1.0 - gFloor) + 1.0e-9;
+
+            // 4N of true silence (gain pinned at 1), then the hot block signal.
+            const int silence = 4 * N;
+            double gPrev = 1.0, maxStep = 0.0, minG = 1.0;
+            int hop = 0;
+            for (int n = 0; n < silence + M; ++n)
+            {
+                double l = (n < silence) ? 0.0 : blk.x[(size_t) (n - silence)];
+                double r = l;
+                s.process (l, r);
+                if (++hop == H)
+                {
+                    hop = 0;
+                    const double gNow = std::pow (10.0, s.reductionDb()[(size_t) blk.k0] / 20.0);
+                    maxStep = std::max (maxStep, std::abs (gNow - gPrev));
+                    minG = std::min (minG, gNow);
+                    gPrev = gNow;
+                }
+            }
+            if (maxStep > bound)
+                fail ("soft cap slew: per-frame gain step " + std::to_string (maxStep)
+                      + " exceeds the one-pole bound " + std::to_string (bound)
+                      + " (atk " + std::to_string (atkMs) + " ms) at Fs=" + std::to_string (Fs));
+            if (minG < gFloor - 1.0e-9)
+                fail ("soft cap slew: applied gain went below the cap floor: " + std::to_string (minG)
+                      + " < " + std::to_string (gFloor) + " at Fs=" + std::to_string (Fs));
+            // Non-vacuous: the onset genuinely drove the gain down to the cap.
+            if (minG > gFloor + 1.0e-3)
+                fail ("soft cap slew: onset never reached the cap floor (vacuous): minG "
+                      + std::to_string (minG) + " at Fs=" + std::to_string (Fs));
+            std::printf ("  atk=%.0fms maxStep=%.4f (bound %.4f) minG=%.6f (floor %.6f)\n",
+                         atkMs, maxStep, bound, minG, gFloor);
+        }
+    }
+
+    // 31d. HF narrow efficacy: the cap must NOT act before the smoothing.
+    void softCapHfEfficacyTest (double Fs)
+    {
+        std::printf ("Soft cap HF efficacy (8 kHz narrow == v2.0.1 oracle) @ Fs=%.0f\n", Fs);
+        const int order = orderFor (Fs), N = 1 << order, M = kSnapshotLen;
+        const int kf = (int) std::round (8000.0 * (double) N / Fs);
+        const int jlo = (int) std::ceil (kf / 1.6), jhi = (int) std::floor (kf * 1.6);
+        const double b = 0.003;
+        // Narrow resonance: one bin 101x a deterministic comb floor -> raw
+        // target far below the cap, smoothed target far above it (h ~ 10 at
+        // 8 kHz dilutes the 3-bin block ~7:1 per pass).
+        const auto x = combSignal (order, M, [&] (int k) {
+            if (k < jlo || k > jhi) return 0.0;
+            return (k == kf) ? 101.0 * b : b;
+        });
+
+        SpecDetector p; p.depth = 1.2; // default sel/sharp/smoothing
+        const auto eng = engineReductionSnapshot (x, Fs, order, p);
+        const auto orc = specReductionOracle (x, M - N, Fs, order, p);
+        SpecDetector pRaw = p; pRaw.smoothOct = 0.0;
+        const auto orcRaw = specReductionOracle (x, M - N, Fs, order, pRaw);
+
+        // Discrimination preconditions: raw deep below the cap, smoothed well
+        // above it -- so a pre-smoothing cap would move the smoothed value.
+        if (orcRaw[(size_t) kf] > -(kSoftCapDbSpec + 5.0))
+            fail ("soft cap HF: raw target not deep enough to discriminate (vacuous): "
+                  + std::to_string (orcRaw[(size_t) kf]) + " dB at Fs=" + std::to_string (Fs));
+        if (orc[(size_t) kf] < -(kSoftCapDbSpec - 5.0) || orc[(size_t) kf] > -3.0)
+            fail ("soft cap HF: smoothed oracle outside the discriminating window [-19, -3]: "
+                  + std::to_string (orc[(size_t) kf]) + " dB at Fs=" + std::to_string (Fs));
+
+        // Compare over the tone's neighbourhood [kf-3h, kf+3h] only. The
+        // band-limited comb floor's EDGES legitimately carry deep -48 dB
+        // cliffs (their envelope windows stick out into empty spectrum), which
+        // the cap bounds at -24 by design -- 31a covers that binding; here the
+        // window is preconditioned fully sub-cap so engine == uncapped oracle
+        // must hold EXACTLY, and a pre-smoothing cap would still shift red[kf]
+        // by ~2 dB and fail.
+        const double fac = std::pow (2.0, 0.5 * (1.0 / 12.0)) - 1.0;
+        const int h = std::max (1, (int) std::lround (kf * fac));
+        const int wLo = kf - 3 * h, wHi = kf + 3 * h;
+        double err = 0.0;
+        for (int k = wLo; k <= wHi; ++k)
+        {
+            if (orc[(size_t) k] < -(kSoftCapDbSpec - 1.0))
+                fail ("soft cap HF: compare window not sub-cap at bin " + std::to_string (k)
+                      + " (" + std::to_string (orc[(size_t) k]) + " dB) at Fs=" + std::to_string (Fs));
+            err = std::max (err, std::abs (eng[(size_t) k] - orc[(size_t) k]));
+        }
+        if (err > 0.5)
+            fail ("soft cap HF: engine != unmodified v2.0.1 oracle by " + std::to_string (err)
+                  + " dB (a pre-smoothing cap shifts this by ~2 dB) at Fs=" + std::to_string (Fs));
+        std::printf ("  red[kf]: eng=%.2f orc=%.2f raw=%.2f dB (winErr=%.2e, h=%d)\n",
+                     eng[(size_t) kf], orc[(size_t) kf], orcRaw[(size_t) kf], err, h);
     }
 
     // Soft mode uses an adaptive threshold, so its reduction is invariant to input
@@ -3649,6 +3923,10 @@ int main (int argc, char** argv)
         envelopeNotchTest (Fs);
         selectivityContrastTest (Fs);
         gainSmoothingTest (Fs);
+        softCapBindingTest (Fs);
+        softCapTransparencyTest (Fs);
+        softCapSlewBoundTest (Fs);
+        softCapHfEfficacyTest (Fs);
         profileTest (Fs);
         preSpectrumTest (Fs);
         listenProfileTest (Fs);

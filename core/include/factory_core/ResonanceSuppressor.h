@@ -409,6 +409,19 @@ namespace factory_core
         static constexpr double kHardSlopeFrac = 0.85;
         static constexpr double kHardKneeDb    = 6.0;
 
+        // F1 (v2 crackle/musical-noise fix): Soft mode's adaptive-threshold law
+        // was otherwise unbounded short of the shared -48 dB clamp and, at high
+        // Depth/Profile, could cut STEEPER than Hard's finite slope (peak ->
+        // notch inversion). Bound the FINAL per-bin target Soft mode may apply:
+        // the clamp sits AFTER the frequency smoothing (see computeGains), so it
+        // is a promise about the applied gain ("Soft never cuts more than
+        // this"), not a pre-smoothing intermediate -- capping before the box
+        // smoothing would dilute to ~3 dB of usable cut at 8 kHz, where the box
+        // half-width is wide. Sub-cap behaviour is bit-identical to v2.0.1;
+        // Hard mode is untouched. (LISTENING CHECKPOINT -- tune by ear, not by
+        // test.)
+        static constexpr double kSoftCapDb = 24.0;
+
         // Point the active (ord, N, H, olaScale) at the current Quality config.
         void applyActiveConfig() noexcept
         {
@@ -599,6 +612,20 @@ namespace factory_core
                         redDbBuf[(size_t) k] = (prefix[(size_t) (hiE + 1)] - prefix[(size_t) loE]) / (double) (hiE - loE + 1);
                     }
                 }
+
+                // F1: Soft mode bounds the FINAL (post-smoothing) per-bin target
+                // at -kSoftCapDb -- a promise about the gain actually applied,
+                // placed after the two box passes so the cap itself is never
+                // diluted (see kSoftCapDb's comment). Sub-cap targets are
+                // untouched (bit-identical to v2.0.1); Hard mode is untouched
+                // entirely, as is the smoothing-bypassed (width 0) diagnostic
+                // path -- every production path runs with a nonzero width (the
+                // engine default is 1/12 oct and the plugin clamps to
+                // [1/24, 1/6]), so the applied-gain bound holds wherever the
+                // smoothing stage it qualifies actually runs.
+                if (mode == 0)
+                    for (int k = 0; k <= half; ++k)
+                        redDbBuf[(size_t) k] = std::max (redDbBuf[(size_t) k], -kSoftCapDb);
             }
 
             // Linearise the (smoothed) target and advance the per-bin ballistics.
