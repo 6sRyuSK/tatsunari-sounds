@@ -20,7 +20,7 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     abSeg.onSelect = [this] (int i) { processor.setABSlot (i); updateABUI(); };
     addAndMakeVisible (abSeg);
 
-    copyBtn.setGlyph (rs::icons::copy());
+    copyBtn.setDirection (false); // directional A->B glyph; kept in sync with the active slot in updateABUI()
     copyBtn.setColours (rs::colour::accent(), rs::colour::textFaint());
     copyBtn.onClick = [this] { processor.copyActiveToOther(); updateABUI(); };
     addAndMakeVisible (copyBtn);
@@ -71,6 +71,7 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     {
         q.t->setOnColour (q.on);
         q.t->setPillSize (34, 19);
+        q.t->setPillRightInset (9); // keep the pill inside the card (fixes overflow past the rounded edge)
         q.t->setTooltip (q.tip);
         addAndMakeVisible (*q.t);
     }
@@ -141,6 +142,7 @@ void ResonanceSuppressorAudioProcessorEditor::updateABUI()
     const bool isA = processor.getABSlot() == 0;
     abSeg.setSelectedIndex (isA ? 0 : 1, juce::dontSendNotification);
     copyBtn.setTooltip (juce::String ("Copy slot ") + (isA ? "A" : "B") + " onto slot " + (isA ? "B" : "A") + ".");
+    copyBtn.setDirection (! isA); // A active => "A>B"; B active => "B>A"
 }
 
 void ResonanceSuppressorAudioProcessorEditor::layoutPillRow (juce::Rectangle<int> row,
@@ -259,7 +261,7 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     header.removeFromRight (S (4));
     undoBtn.setBounds (centreV (header.removeFromRight (S (30)), S (30), S (30)));
     header.removeFromRight (S (14));
-    copyBtn.setBounds (centreV (header.removeFromRight (S (30)), S (30), S (30)));
+    copyBtn.setBounds (centreV (header.removeFromRight (S (44)), S (44), S (30)));
     header.removeFromRight (S (10));
     abSeg.setBounds (centreV (header.removeFromRight (S (74)), S (74), S (26)));
     header.removeFromRight (S (14));

@@ -57,7 +57,11 @@ public:
         const float endRad   = juce::degreesToRadians (startDeg + sweepDeg);
         const float valRad   = juce::degreesToRadians (startDeg + juce::jlimit (0.0f, 1.0f, sliderPos) * sweepDeg);
 
-        const juce::PathStrokeType arcStroke (band, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+        // Butt end-caps (not rounded): the demo draws the ring as a conic-gradient
+        // whose accent/track boundary and 90 deg bottom gap are flat radial edges,
+        // so rounded caps' semicircular bulges read as unwanted "corners". The
+        // pointer bar (below) stays rounded -- the demo's pointer IS rounded.
+        const juce::PathStrokeType arcStroke (band, juce::PathStrokeType::curved, juce::PathStrokeType::butt);
 
         // Track arc (unfilled portion): #ffd6cd across the full sweep. The 90 deg
         // bottom gap is left unpainted -- it shows the footer's #fff4ee, which IS

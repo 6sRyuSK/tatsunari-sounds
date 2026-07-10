@@ -532,6 +532,14 @@ private:
             for (int id = 0; id < kNumNodes; ++id) single[(size_t) id] = singleNode (nodes, id);
 
         juce::Path combined;
+        // Trim "floored" runs from the combined curve: where a low-/high-cut has
+        // rolled all the way down to the plot floor, don't draw the flat line out
+        // to the analyzer edge -- cut it at the roll-off point. The descent to /
+        // ascent from the floor is preserved (a single anchor point) so the curve
+        // still visibly meets the floor before it stops.
+        const float floorY = plot.getBottom();
+        bool combPenDown = false, combHaveAnchor = false;
+        juce::Point<float> combAnchor;
         for (int i = 0; i <= steps; ++i)
         {
             const float x = plot.getX() + (float) i * plot.getWidth() / steps;
@@ -540,8 +548,18 @@ private:
             if (wantCombined)
             {
                 const float yT = sensToY ((float) factory_core::reductionProfileDbAt (f, nodes));
-                if (i == 0) combined.startNewSubPath (x, yT);
-                else        combined.lineTo (x, yT);
+                if (yT >= floorY - 0.5f) // at the floor: hold the pen, don't stroke a horizontal run
+                {
+                    if (combPenDown) { combined.lineTo (x, yT); combPenDown = false; } // land on the floor, then lift
+                    combAnchor = { x, yT }; combHaveAnchor = true;
+                }
+                else if (! combPenDown) // lifting off the floor: rise out of the last floor point
+                {
+                    if (combHaveAnchor) { combined.startNewSubPath (combAnchor.x, combAnchor.y); combined.lineTo (x, yT); }
+                    else                combined.startNewSubPath (x, yT);
+                    combPenDown = true; combHaveAnchor = false;
+                }
+                else combined.lineTo (x, yT);
             }
 
             if (wantPerNode)

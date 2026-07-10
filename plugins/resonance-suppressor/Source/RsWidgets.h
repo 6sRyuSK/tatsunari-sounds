@@ -229,13 +229,14 @@ namespace rs
 
         void setOnColour (juce::Colour c) { onColour = c; }
         void setPillSize (int w, int h) { pillW = w; pillH = h; }
+        void setPillRightInset (int px) { rightInset = px; } // inset the pill from the cell's right edge so it sits inside the card
 
         void paintButton (juce::Graphics& g, bool highlighted, bool /*down*/) override
         {
             auto r = getLocalBounds().toFloat();
             auto pill = juce::Rectangle<float> ((float) pillW, (float) pillH)
                             .withY (r.getCentreY() - pillH * 0.5f)
-                            .withRightX (r.getRight());
+                            .withRightX (r.getRight() - (float) rightInset);
             const bool on = getToggleState();
             g.setColour (on ? onColour : colour::toggleOffBg());
             g.fillRoundedRectangle (pill, pillH * 0.5f);
@@ -253,6 +254,7 @@ namespace rs
     private:
         juce::Colour onColour { colour::teal() };
         int pillW = 42, pillH = 22;
+        int rightInset = 0;
     };
 
     // ------------------------------------------------------------ RsSegmented
@@ -338,15 +340,22 @@ namespace rs
     };
 
     // ---------------------------------------------------------- RsIconButton
-    // A stroked/filled glyph button (header Undo/Redo/Copy). enabled state dims
-    // the glyph. onClick drives the action; ButtonAttachment is not used here.
+    // A stroked/filled glyph button (header Undo/Redo). Also supports a
+    // "directional" mode (header Copy) that draws the two A/B slot letters with
+    // an arrow between them ("A>B" / "B>A") so the copy direction is explicit.
+    // enabled state dims the content. onClick drives the action.
     class RsIconButton : public juce::Button
     {
     public:
         RsIconButton() : juce::Button ({}) {}
 
-        void setGlyph (icons::Glyph g) { glyph = std::move (g); }
+        void setGlyph (icons::Glyph g) { glyph = std::move (g); directional = false; repaint(); }
         void setColours (juce::Colour on, juce::Colour off) { colOn = on; colOff = off; }
+
+        // Directional copy affordance: fixed "A" (left) / "B" (right); only the
+        // arrow between them flips to show the copy direction.
+        // reversed=false => arrow points A->B; reversed=true => arrow points B->A.
+        void setDirection (bool reversed) { directional = true; reversedDir = reversed; repaint(); }
 
         void paintButton (juce::Graphics& g, bool highlighted, bool down) override
         {
@@ -358,13 +367,48 @@ namespace rs
                 g.setColour (colour::border());
                 g.drawRoundedRectangle (r.reduced (0.5f), radius::badge, 1.0f);
             }
-            icons::paintGlyph (g, glyph, r.reduced (r.getHeight() * 0.28f),
-                               isEnabled() ? colOn : colOff);
+
+            const auto col = isEnabled() ? colOn : colOff;
+            if (directional)
+            {
+                auto inner = r.reduced (r.getWidth() * 0.08f, r.getHeight() * 0.18f);
+                const float w = inner.getWidth();
+                auto left  = inner.removeFromLeft (w * 0.34f);
+                auto right = inner.removeFromRight (w * 0.34f);
+                auto mid   = inner; // arrow sits between the letters
+                g.setColour (col);
+                // Size the letters to the (narrow) sub-box WIDTH too, and disable
+                // drawText's ellipsis fallback -- otherwise an "A" wider than its
+                // box silently renders as "..." (three dots) instead of the glyph.
+                const float fsize = juce::jmin (inner.getHeight() * 0.92f, left.getWidth() * 1.15f);
+                g.setFont (font (FontKind::Ui, fsize, 800));
+                // Fixed slot letters: A on the left, B on the right (they do NOT
+                // swap). Only the arrow flips to show the copy direction, and it
+                // is drawn a touch smaller than the letters.
+                g.drawText ("A", left,  juce::Justification::centred, false);
+                g.drawText ("B", right, juce::Justification::centred, false);
+                const float ay   = mid.getCentreY();
+                const float head = fsize * 0.28f;                              // arrowhead smaller than the A/B letters
+                const float alen = juce::jmin (mid.getWidth() * 0.82f, fsize * 1.15f);
+                const float acx  = mid.getCentreX();
+                const float x0   = acx - alen * 0.5f;
+                const float x1   = acx + alen * 0.5f;
+                juce::Path a;
+                a.startNewSubPath (x0, ay);
+                a.lineTo (x1, ay);
+                if (reversedDir) { a.startNewSubPath (x0 + head, ay - head); a.lineTo (x0, ay); a.lineTo (x0 + head, ay + head); } // B->A: points left
+                else             { a.startNewSubPath (x1 - head, ay - head); a.lineTo (x1, ay); a.lineTo (x1 - head, ay + head); } // A->B: points right
+                g.strokePath (a, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                return;
+            }
+
+            icons::paintGlyph (g, glyph, r.reduced (r.getHeight() * 0.28f), col);
         }
 
     private:
         icons::Glyph glyph { icons::copy() };
         juce::Colour colOn { colour::text() }, colOff { colour::textFaint() };
+        bool directional = false, reversedDir = false;
     };
 
     // --------------------------------------------------------- RsValueSetting
@@ -434,9 +478,10 @@ namespace rs
 
     // ----------------------------------------------------------- RsLinkSlider
     // Horizontal amount slider (STEREO LINK): link icon (left) + track + coral
-    // fill + % value (right). SliderAttachment-wireable (it IS a Slider); the
-    // base handles the drag, we paint the demo skin. The whole width is the
-    // draggable track (minor end-inset vs. the drawn fill is acceptable chrome).
+    // fill + % value (right). SliderAttachment-wireable (it IS a Slider). We map
+    // the drag ourselves so motion is 1:1 with the DRAWN track (not the full
+    // component width, which the base LinearHorizontal would use) and so vertical
+    // drag changes the value too.
     class RsLinkSlider : public juce::Slider
     {
     public:
@@ -444,6 +489,35 @@ namespace rs
         {
             setSliderStyle (juce::Slider::LinearHorizontal);
             setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+            setSliderSnapsToMousePosition (false); // no click-jump; value follows the drag delta
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            // Record the anchor BEFORE calling the base: base mouseDown begins the
+            // APVTS change gesture and internally re-invokes mouseDrag(e), which
+            // must see a 0-delta (no-op) rather than a stale anchor.
+            dragStartValue = getValue();
+            dragStartPos   = e.position;
+            juce::Slider::mouseDown (e);
+        }
+
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            // Convert drag distance to a PROPORTION delta over the drawn track
+            // width (horizontal 1:1 with the visible fill); add the vertical delta
+            // (up = increase) so up/down drag also moves the value.
+            const float span = juce::jmax (1.0f, computeTrack().getWidth());
+            const float dx = e.position.x - dragStartPos.x;
+            const float dy = dragStartPos.y - e.position.y;
+            const double start = valueToProportionOfLength (dragStartValue);
+            const double prop  = juce::jlimit (0.0, 1.0, start + (double) (dx + dy) / span);
+            setValue (proportionOfLengthToValue (prop), juce::sendNotificationSync);
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            juce::Slider::mouseUp (e); // ends the APVTS change gesture
         }
 
         void paint (juce::Graphics& g) override
@@ -470,8 +544,7 @@ namespace rs
             g.setFont (font (FontKind::Ui, 12.0f, 800));
             g.drawText (juce::String (juce::roundToInt (getValue())) + "%", valArea, juce::Justification::centredRight);
 
-            inner.removeFromRight (6.0f);
-            auto track = inner.withSizeKeepingCentre (inner.getWidth(), 7.0f);
+            auto track = computeTrack();
             g.setColour (colour::linkTrack());
             g.fillRoundedRectangle (track, 3.5f);
             const float prop = (float) valueToProportionOfLength (getValue());
@@ -484,5 +557,22 @@ namespace rs
                 g.fillRoundedRectangle (fill, 3.5f);
             }
         }
+
+    private:
+        // The drawn track rect: mirrors paint()'s left (icon+gap+caption) and
+        // right (value+gap) insets so drag distance and the visible fill agree.
+        juce::Rectangle<float> computeTrack() const
+        {
+            auto inner = getLocalBounds().toFloat().reduced (9.0f, 0.0f);
+            inner.removeFromLeft (16.0f); // link icon
+            inner.removeFromLeft (6.0f);
+            inner.removeFromLeft (86.0f); // "STEREO LINK" caption
+            inner.removeFromRight (42.0f); // % value
+            inner.removeFromRight (6.0f);
+            return inner.withSizeKeepingCentre (inner.getWidth(), 7.0f);
+        }
+
+        double dragStartValue = 0.0;
+        juce::Point<float> dragStartPos;
     };
 }
