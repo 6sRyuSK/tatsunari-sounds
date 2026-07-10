@@ -47,13 +47,14 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (curve); // placed only; SuppressionCurveComponent internals untouched (P2)
 
     // ------------------------------------------------------ Footer: knobs
-    addKnob (depthK, "DEPTH",  rs::colour::accent(), true,  " %",  "depth",       0);
-    addKnob (sharpK, "SHARP",  rs::colour::accent(), true,  " %",  "sharpness",   0);
-    addKnob (selK,   "SELECT", rs::colour::accent(), true,  " %",  "selectivity", 0);
-    addKnob (mixK,   "MIX",    rs::colour::accent(), true,  " %",  "mix",         0);
-    addKnob (atkK,   "ATK",    rs::colour::amber(),  false, " ms", "attack",      2);
-    addKnob (relK,   "REL",    rs::colour::amber(),  false, " ms", "release",     2);
-    addKnob (tiltK,  "TILT",   rs::colour::mint(),   false, " %",  "tilt",        0);
+    // v2.1: "detail" replaces the legacy sharpness/selectivity pair as the
+    // second big knob (they stay registered for automation compat but are no
+    // longer surfaced in the UI -- see DetailParam.h / PluginProcessor.cpp).
+    addKnob (depthK,  "DEPTH",  rs::colour::accent(), true,  " %",  "depth",  0);
+    addKnob (detailK, "DETAIL", rs::colour::accent(), true,  " %",  "detail", 0);
+    addKnob (atkK,    "ATK",    rs::colour::amber(),  false, " ms", "attack",  2);
+    addKnob (relK,    "REL",    rs::colour::amber(),  false, " ms", "release", 2);
+    addKnob (tiltK,   "TILT",   rs::colour::mint(),   false, " %",  "tilt",    0);
 
     // ------------------------------------------ Footer: MODE + settings
     modeSeg.setSegments ({ "Soft", "Hard" }, { rs::icons::modeSoft(), rs::icons::modeHard() });
@@ -90,9 +91,35 @@ ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor
     addAndMakeVisible (chSet);
     channelAtt = std::make_unique<CA> (processor.apvts, "channelMode", chSet.comboBox());
 
+    // setup() reproduces the pre-parameterization hardcoded look exactly (icon
+    // + "STEREO LINK" + 86px caption column); the "% " format below is also
+    // unchanged ("roundToInt(value)+'%'", no space) but now rides the normal
+    // suffix/decimals path instead of a bespoke format string (#23: decimals
+    // after the attachment).
+    linkAmtSlider.setup ("STEREO LINK", rs::icons::link(), 86);
     linkAmtSlider.setTooltip ("Stereo Link amount: per-channel <-> stereo-linked detection blend.");
     addAndMakeVisible (linkAmtSlider);
     linkAmtAtt = std::make_unique<SA> (processor.apvts, "linkAmt", linkAmtSlider);
+    linkAmtSlider.setTextValueSuffix ("%");
+    factory_ui::setSliderDecimals (linkAmtSlider, 0);
+
+    // ------------------------------------------ Footer: Mix + Out (v2.1)
+    // New 5th col3 row, below STEREO LINK: no glyph (neither has a natural
+    // fitting icon), narrower caption column than STEREO LINK since "MIX"/
+    // "OUT" are short.
+    mixSlider.setup ("MIX", 34);
+    mixSlider.setTooltip ("Dry/Wet blend of the suppressed signal.");
+    addAndMakeVisible (mixSlider);
+    mixAtt = std::make_unique<SA> (processor.apvts, "mix", mixSlider);
+    mixSlider.setTextValueSuffix ("%");
+    factory_ui::setSliderDecimals (mixSlider, 0);
+
+    outSlider.setup ("OUT", 34);
+    outSlider.setTooltip ("Output trim, applied after the suppressor (post Mix, also in Delta).");
+    addAndMakeVisible (outSlider);
+    outAtt = std::make_unique<SA> (processor.apvts, "out", outSlider);
+    outSlider.setTextValueSuffix ("dB");
+    factory_ui::setSliderDecimals (outSlider, 1);
 
     updateABUI();
     refreshUndoRedoButtons();
@@ -273,10 +300,12 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     }
 
     // ---- Footer card: three columns (big knobs / small knobs / settings). ----
-    // Tall enough that col3's five stacked rows (MODE / DELTA|S-CHAIN /
-    // QUALITY|CH / SC LISTEN|LINK / STEREO LINK) all fit with margin; the
+    // Tall enough that col3's six stacked rows (MODE / DELTA|S-CHAIN /
+    // QUALITY|CH / SC LISTEN|LINK / STEREO LINK / MIX|OUT) all fit with
+    // margin; grown from the pre-v2.1 S(198) to fit the new MIX|OUT row
+    // (below STEREO LINK) at roughly the same per-row height as before -- the
     // analyser gives up the extra height (acceptable per review).
-    auto footer = r.removeFromBottom (S (198));
+    auto footer = r.removeFromBottom (S (226));
     footerCardBounds = footer;
 
     auto inner = footer.reduced (S (14));
@@ -290,10 +319,10 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     // Analyser fills whatever remains in the middle (after header + footer).
     curve.setBounds (r);
 
-    // Column 1: four big knobs.
+    // Column 1: big knobs (Depth / Detail).
     {
         auto c = col1.reduced (S (8), S (6));
-        rs::RsKnob* big[] = { &depthK, &sharpK, &selK, &mixK };
+        rs::RsKnob* big[] = { &depthK, &detailK };
         const int n = (int) std::size (big);
         const int cw = c.getWidth() / n;
         for (int i = 0; i < n; ++i)
@@ -317,7 +346,7 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
     }
 
     // Column 3: MODE (full) / DELTA|S-CHAIN / QUALITY|CH / SC LISTEN|LINK /
-    //           STEREO LINK (full).
+    //           STEREO LINK (full) / MIX|OUT.
     {
         auto c = col3.reduced (S (10), S (6));
         const int rowGap = S (6);
@@ -332,11 +361,12 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
         }
         c.removeFromTop (rowGap);
 
-        // The four remaining rows (DELTA|S-CHAIN, QUALITY|CH, SC LISTEN|LINK, and
-        // the full-width STEREO LINK slider) SHARE whatever height is left, so
-        // the bottom slider can never be clipped regardless of window size or
-        // rounding (4*rowH + 3*rowGap <= remaining by construction).
-        const int rowH = juce::jmax (S (20), (c.getHeight() - 3 * rowGap) / 4);
+        // The five remaining rows (DELTA|S-CHAIN, QUALITY|CH, SC LISTEN|LINK,
+        // the full-width STEREO LINK slider, and MIX|OUT) SHARE whatever
+        // height is left, so the bottom row can never be clipped regardless of
+        // window size or rounding (5*rowH + 4*rowGap <= remaining by
+        // construction).
+        const int rowH = juce::jmax (S (20), (c.getHeight() - 4 * rowGap) / 5);
 
         layoutPillRow (c.removeFromTop (rowH),
                        deltaToggle,    rs::icons::delta(),     "DELTA",
@@ -358,5 +388,14 @@ void ResonanceSuppressorAudioProcessorEditor::resized()
         c.removeFromTop (rowGap);
 
         linkAmtSlider.setBounds (c.removeFromTop (rowH));
+        c.removeFromTop (rowGap);
+
+        {
+            auto row = c.removeFromTop (rowH);
+            auto l = row.removeFromLeft ((row.getWidth() - cellGap) / 2);
+            mixSlider.setBounds (l);
+            row.removeFromLeft (cellGap);
+            outSlider.setBounds (row);
+        }
     }
 }

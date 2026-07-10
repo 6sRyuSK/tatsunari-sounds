@@ -59,23 +59,36 @@ public:
         {
             setAnalyzerStyle (st);                               // P3a: repaint with the new look
             processor.setDisplaySmoothMs (st.tempoSmoothingMs);  // P3b-A: RT-safe live display smoothing
-            saveDevSettings();                                   // persist (below)
+            // Skip the save-back while the just-loaded saved style is being
+            // applied below (loadingDevSettings guard) -- otherwise every
+            // editor open writes the settings file right back to itself.
+            if (! loadingDevSettings)
+                saveDevSettings();                               // persist (below)
         };
         devPanel.onClose = [this] { devPanel.setVisible (false); repaint(); };
 
         // Persist DEV style in a user-global PropertiesFile -- deliberately NOT the
         // plugin's APVTS state/preset, so state/preset compatibility is untouched.
+        // millisecondsBeforeSaving coalesces rapid changes (a dragged blend/
+        // Advanced slider fires onStyleChanged continuously) into one delayed
+        // background write instead of a synchronous disk write per drag tick
+        // (see saveDevSettings()).
         juce::PropertiesFile::Options o;
-        o.applicationName     = "ResonanceTatSuppressor";
-        o.filenameSuffix      = "settings";
-        o.folderName          = "TatsunariSounds";
-        o.osxLibrarySubFolder = "Application Support";
+        o.applicationName          = "ResonanceTatSuppressor";
+        o.filenameSuffix           = "settings";
+        o.folderName               = "TatsunariSounds";
+        o.osxLibrarySubFolder      = "Application Support";
+        o.millisecondsBeforeSaving = 800;
         devProps.setStorageParameters (o);
         if (auto* us = devProps.getUserSettings())
         {
             const auto saved = us->getValue ("analyzerDevStyle", juce::String());
             if (saved.isNotEmpty())
-                devPanel.setStateString (saved); // fires onStyleChanged -> applies style+tempo (redundant save is harmless)
+            {
+                loadingDevSettings = true;
+                devPanel.setStateString (saved); // fires onStyleChanged -> applies style+tempo (save-back suppressed above)
+                loadingDevSettings = false;
+            }
         }
     }
 
@@ -867,11 +880,16 @@ private:
 
     void saveDevSettings()
     {
+        // setValue() alone marks the file dirty and (re)starts PropertiesFile's
+        // own millisecondsBeforeSaving timer (see the ctor) -- it must NOT be
+        // followed by an explicit saveIfNeeded() here, which would force an
+        // immediate synchronous disk write on every call regardless of that
+        // timer (this fired on every drag tick of a DEV-panel blend/Advanced
+        // slider before this fix). The coalesced write still lands within
+        // ~800 ms of the last change, and PropertiesFile itself flushes
+        // on destruction if one is still pending.
         if (auto* us = devProps.getUserSettings())
-        {
             us->setValue ("analyzerDevStyle", devPanel.getStateString());
-            us->saveIfNeeded();
-        }
     }
 
     void positionDevPanel()
@@ -1052,6 +1070,7 @@ private:
     NodePanel panel;
     rs::AnalyzerDevPanel  devPanel;                 // アナライザーDEVモードのオーバーレイ(既定非表示)
     juce::ApplicationProperties devProps;           // DEV設定の永続化(plugin state/presetとは別・非汚染)
+    bool loadingDevSettings = false;                // ctor内でsetStateString適用中、onStyleChangedの保存書き戻しを抑止するガード
     juce::Rectangle<float> devGateBounds;           // 右上隅の控えめなAlt+クリック開閉ホットゾーン(非表示)
     juce::Rectangle<float> plot;
     int dragging = -1;

@@ -66,7 +66,7 @@ private:
     SuppressionCurveComponent curve;
 
     // --- Footer: knobs (left->right, existing ids) ---
-    rs::RsKnob depthK, sharpK, selK, mixK;   // big, coral arc
+    rs::RsKnob depthK, detailK;              // big, coral arc ("detail" replaces sharpness/selectivity, v2.1)
     rs::RsKnob atkK, relK, tiltK;            // small (amber / amber / mint)
 
     // --- Footer: MODE + settings ---
@@ -74,12 +74,13 @@ private:
     rs::RsPillToggle   deltaToggle, scEnableToggle, scListenToggle, linkToggle;
     rs::RsValueSetting qualitySet, chSet;                        // quality / channelMode
     rs::RsLinkSlider   linkAmtSlider;                            // linkAmt
+    rs::RsLinkSlider   mixSlider, outSlider;                     // mix / out (5th footer row, v2.1)
 
     // Attachments (all existing param IDs).
     std::vector<std::unique_ptr<SA>> knobAtts;
     std::unique_ptr<CA> modeAtt, qualityAtt, channelAtt;
     std::unique_ptr<BA> deltaAtt, scEnableAtt, scListenAtt, linkAtt, bypassAtt;
-    std::unique_ptr<SA> linkAmtAtt;
+    std::unique_ptr<SA> linkAmtAtt, mixAtt, outAtt;
 
     // Chrome rects computed in resized(), painted in paint().
     juce::Rectangle<int> footerCardBounds, modeCellBounds, bypassLabelBounds;

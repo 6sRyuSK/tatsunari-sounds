@@ -118,6 +118,15 @@ public:
     // attachments first so syncing the new ones can't write back to the old node.
     void setNode (int id)
     {
+        // Force-CANCEL any in-progress text edit on the mini-knobs BEFORE
+        // rebinding their attachments below -- this panel stays open (and
+        // these RsKnobs stay visible throughout) across a node switch, so an
+        // in-flight edit would otherwise silently commit onto the NEW node's
+        // parameter instead of the one the user was actually looking at.
+        freqKnob.closeValueEditor();
+        sensKnob.closeValueEditor();
+        widthKnob.closeValueEditor();
+
         nodeId = id;
         isCut  = (id < 2);
 
@@ -160,6 +169,37 @@ public:
             return juce::String (juce::roundToInt (v)) + nbsp() + "Hz";
         };
         freqKnob.slider().setTextValueSuffix ({}); // the lambda already prints Hz/kHz — avoid a doubled suffix
+
+        // Matching parser for direct text entry: the display above is Hz/kHz,
+        // but the attachment's own valueFromTextFunction (which this
+        // overwrites, same ordering rule as above) always reads a typed
+        // number as raw Hz -- so typing "2.6" against a "2.6 kHz" display
+        // would silently set 2.6 Hz. Also installed after the attachment.
+        freqKnob.slider().valueFromTextFunction = [this] (const juce::String& text) -> double
+        {
+            auto t = text.trim();
+            const auto lower = t.toLowerCase();
+            bool asK = false;
+            if (lower.endsWith ("khz"))      { t = t.dropLastCharacters (3).trim(); asK = true; }
+            else if (lower.endsWith ("k"))   { t = t.dropLastCharacters (1).trim(); asK = true; }
+
+            const double v = t.getDoubleValue();
+            if (asK)
+                return v * 1000.0; // explicit "k"/"kHz" (case/space tolerant)
+
+            // No k/kHz marker: a bare number below the parameter's minimum
+            // whose *1000 lands back in range is almost certainly meant as
+            // kHz (the display is already reading e.g. "3.1 kHz" and the user
+            // typed "3.1") -- scale it up to match. Slider::setValue() clamps
+            // the result to the parameter's range regardless, so this is a
+            // best-effort disambiguation, not a correctness requirement.
+            const double lo = freqKnob.slider().getMinimum();
+            const double hi = freqKnob.slider().getMaximum();
+            if (v < lo && v * 1000.0 >= lo && v * 1000.0 <= hi)
+                return v * 1000.0;
+
+            return v; // raw Hz
+        };
         freqKnob.slider().updateText();
         if (! isCut)
         {

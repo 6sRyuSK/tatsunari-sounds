@@ -157,11 +157,48 @@ namespace rs
         }
     };
 
+    // Leading numeric run of `s` (optional sign, digits, one decimal point,
+    // digits) -- the inverse of juce::String::getFloatValue()'s own parse.
+    // Used to pre-fill a text-entry overlay with a bare number, stripping
+    // whatever unit/suffix the display formatting appended ("62%" -> "62",
+    // "2.6 kHz" -> "2.6" -- an nbsp-joined unit is dropped the same way, since
+    // anything from the first non-numeric character on is simply discarded).
+    inline juce::String stripToLeadingNumber (const juce::String& s)
+    {
+        const auto t = s.trimStart();
+        int i = 0;
+        const int n = t.length();
+        if (i < n && (t[i] == '-' || t[i] == '+')) ++i;
+        while (i < n && t[i] >= '0' && t[i] <= '9') ++i;
+        if (i < n && t[i] == '.')
+        {
+            ++i;
+            while (i < n && t[i] >= '0' && t[i] <= '9') ++i;
+        }
+        return t.substring (0, i);
+    }
+
     // ---------------------------------------------------------------- RsKnob
     // Vertical stack: name (top) / rotary (middle) / value (bottom). The arc &
     // pointer take a per-knob accent (Slider::rotarySliderFillColourId, drawn by
     // RsLookAndFeel); the value read-out is always coral (demo SS2.3/2.4). The
     // editor attaches a SliderAttachment to slider() and sets decimals after.
+    //
+    // Direct text entry (P3c): double-clicking the value read-out opens a
+    // juce::Label overlay over valueArea, pre-filled with the current value
+    // (stripToLeadingNumber()'d so the user edits a bare number). It rides the
+    // Label's own built-in editor lifecycle -- Enter and focus-loss both COMMIT
+    // (Label's default: lossOfFocusDiscardsChanges=false), Esc CANCELS -- so
+    // this class adds no bespoke keyboard handling. A committed edit calls
+    // slider().setValue (slider().getValueFromText (text), sendNotificationSync),
+    // i.e. the same SliderAttachment parser + NormalisableRange clamp that
+    // already backs the (invisible) NoTextBox text box, so validation/range
+    // clamping is free. An owner that rebinds this knob's attachment to a
+    // different parameter without hiding it (NodePanel::setNode(), which keeps
+    // the popover open across a node switch) must call closeValueEditor()
+    // first so a stray in-flight edit can never land on the wrong parameter;
+    // visibilityChanged()/parentHierarchyChanged() do the same automatically
+    // for a knob that is hidden/reparented while its editor is open.
     class RsKnob : public juce::Component
     {
     public:
@@ -172,6 +209,26 @@ namespace rs
             s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             s.onValueChange = [this] { repaint(); };
             addAndMakeVisible (s);
+
+            valueEditor.setEditable (false, true, false); // double-click only; focus loss COMMITS (Label default)
+            valueEditor.setJustificationType (juce::Justification::centred);
+            valueEditor.setColour (juce::Label::textColourId, colour::accent());
+            valueEditor.setColour (juce::Label::backgroundColourId, colour::white());
+            valueEditor.setColour (juce::Label::outlineColourId, colour::accent());
+            valueEditor.setColour (juce::TextEditor::textColourId, colour::text());
+            valueEditor.setColour (juce::TextEditor::backgroundColourId, colour::white());
+            valueEditor.setColour (juce::TextEditor::highlightColourId, colour::accent().withAlpha (0.35f));
+            valueEditor.setColour (juce::TextEditor::focusedOutlineColourId, colour::accent());
+            valueEditor.onEditorHide = [this] { valueEditor.setVisible (false); };
+            valueEditor.onTextChange = [this]
+            {
+                // Only fires on an actually-committed edit (Label dedups a
+                // no-op Enter against the pre-fill text, so re-submitting the
+                // unedited value never round-trips through setValue at all);
+                // the attachment's own parser + range clamp validate the rest.
+                s.setValue (s.getValueFromText (valueEditor.getText()), juce::sendNotificationSync);
+            };
+            addChildComponent (valueEditor);
         }
 
         juce::Slider& slider() noexcept { return s; }
@@ -181,6 +238,7 @@ namespace rs
             nm = name; bigKnob = big;
             s.setColour (juce::Slider::rotarySliderFillColourId, accent);
             s.setTextValueSuffix (suffix);
+            valueEditor.setFont (font (FontKind::Ui, big ? 13.0f : 11.0f, 800));
         }
 
         void paint (juce::Graphics& g) override
@@ -205,10 +263,38 @@ namespace rs
             valueArea = r.removeFromBottom (bigKnob ? 17 : 14);
             const int d = juce::jmin (r.getWidth(), r.getHeight());
             s.setBounds (juce::Rectangle<int> (d, d).withCentre (r.getCentre()));
+            valueEditor.setBounds (valueArea);
         }
 
+        // Double-click the value read-out (only) opens the text editor; the
+        // rotary itself covers none of valueArea (see resized() above) so this
+        // never competes with dragging the knob.
+        void mouseDoubleClick (const juce::MouseEvent& e) override
+        {
+            if (valueArea.contains (e.getPosition()))
+                openValueEditor();
+        }
+
+        // Force-CANCEL (never commit) any in-progress edit. Public so an owner
+        // that is about to rebind this knob's attachment to a different
+        // parameter can close it first (see class doc).
+        void closeValueEditor() { valueEditor.hideEditor (true); }
+
+        void visibilityChanged() override      { closeValueEditor(); }
+        void parentHierarchyChanged() override { closeValueEditor(); }
+
     private:
+        void openValueEditor()
+        {
+            valueEditor.setBounds (valueArea);
+            valueEditor.setText (stripToLeadingNumber (s.getTextFromValue (s.getValue())), juce::dontSendNotification);
+            valueEditor.setVisible (true);
+            valueEditor.toFront (true);
+            valueEditor.showEditor();
+        }
+
         juce::Slider s;
+        juce::Label  valueEditor;
         juce::String nm;
         bool bigKnob = true;
         juce::Rectangle<int> nameArea, valueArea;
@@ -477,11 +563,25 @@ namespace rs
     };
 
     // ----------------------------------------------------------- RsLinkSlider
-    // Horizontal amount slider (STEREO LINK): link icon (left) + track + coral
-    // fill + % value (right). SliderAttachment-wireable (it IS a Slider). We map
-    // the drag ourselves so motion is 1:1 with the DRAWN track (not the full
-    // component width, which the base LinearHorizontal would use) and so vertical
-    // drag changes the value too.
+    // Horizontal amount slider: optional leading glyph + caption + track +
+    // coral fill + value (right). SliderAttachment-wireable (it IS a Slider).
+    // We map the drag ourselves so motion is 1:1 with the DRAWN track (not the
+    // full component width, which the base LinearHorizontal would use) and so
+    // vertical drag changes the value too. setup() parameterizes the caption /
+    // glyph / caption-column-width -- STEREO LINK, MIX and OUT all share this
+    // one class. The value read-out rides the slider's own getTextFromValue()
+    // (suffix + decimals via the normal setTextValueSuffix()/
+    // factory_ui::setSliderDecimals() path, same #23 after-the-attachment rule
+    // as RsKnob) instead of the old hand-rolled "roundToInt(...) + '%'" format.
+    //
+    // Direct text entry (P3c): same idiom as RsKnob (see its class doc) --
+    // double-clicking the value read-out (computeValueArea()) opens a
+    // juce::Label overlay pre-filled with the current value; Enter/focus-loss
+    // commit via setValue(getValueFromText(text), sendNotificationSync), Esc
+    // cancels. A double-click anywhere ELSE on the control falls back to the
+    // base Slider's own double-click-to-default (SliderParameterAttachment
+    // enables this for every attached slider), unchanged from before this
+    // class grew an overlay.
     class RsLinkSlider : public juce::Slider
     {
     public:
@@ -490,6 +590,42 @@ namespace rs
             setSliderStyle (juce::Slider::LinearHorizontal);
             setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             setSliderSnapsToMousePosition (false); // no click-jump; value follows the drag delta
+
+            valueEditor.setEditable (false, true, false); // double-click only; focus loss COMMITS (Label default)
+            valueEditor.setJustificationType (juce::Justification::centred);
+            valueEditor.setFont (font (FontKind::Ui, 12.0f, 800));
+            valueEditor.setColour (juce::Label::textColourId, colour::accent());
+            valueEditor.setColour (juce::Label::backgroundColourId, colour::white());
+            valueEditor.setColour (juce::Label::outlineColourId, colour::accent());
+            valueEditor.setColour (juce::TextEditor::textColourId, colour::text());
+            valueEditor.setColour (juce::TextEditor::backgroundColourId, colour::white());
+            valueEditor.setColour (juce::TextEditor::highlightColourId, colour::accent().withAlpha (0.35f));
+            valueEditor.setColour (juce::TextEditor::focusedOutlineColourId, colour::accent());
+            valueEditor.onEditorHide = [this] { valueEditor.setVisible (false); };
+            valueEditor.onTextChange = [this]
+            {
+                setValue (getValueFromText (valueEditor.getText()), juce::sendNotificationSync);
+            };
+            addChildComponent (valueEditor);
+        }
+
+        // Per-instance chrome. No-glyph overload for a plain slider (MIX/OUT);
+        // the glyph overload reproduces the original STEREO LINK look exactly
+        // (icon + "STEREO LINK" + 86px caption column -- see PluginEditor.cpp,
+        // which is the only caller and keeps that instance visually identical
+        // to before). Neither overload touches suffix/decimals -- callers use
+        // the normal setTextValueSuffix()/factory_ui::setSliderDecimals() path
+        // on this Slider directly, same #23 after-the-attachment rule as
+        // everywhere else (see class doc).
+        void setup (const juce::String& caption, int captionColumnW = 86)
+        {
+            capText = caption; hasGlyph = false; capColW = captionColumnW;
+            repaint();
+        }
+        void setup (const juce::String& caption, icons::Glyph glyph, int captionColumnW = 86)
+        {
+            capText = caption; hasGlyph = true; glyphIcon = std::move (glyph); capColW = captionColumnW;
+            repaint();
         }
 
         void mouseDown (const juce::MouseEvent& e) override
@@ -520,6 +656,16 @@ namespace rs
             juce::Slider::mouseUp (e); // ends the APVTS change gesture
         }
 
+        // Double-click the value read-out opens the text editor; a double-
+        // click anywhere else on the control falls back to the base class.
+        void mouseDoubleClick (const juce::MouseEvent& e) override
+        {
+            if (computeValueArea().contains (e.position))
+                openValueEditor();
+            else
+                juce::Slider::mouseDoubleClick (e);
+        }
+
         void paint (juce::Graphics& g) override
         {
             auto r = getLocalBounds().toFloat();
@@ -528,23 +674,22 @@ namespace rs
             g.setColour (colour::border());
             g.drawRoundedRectangle (r.reduced (0.5f), radius::badge, 1.0f);
 
-            auto inner = r.reduced (9.0f, 0.0f);
-            auto gi = inner.removeFromLeft (16.0f);
-            icons::paintGlyph (g, icons::link(), gi, colour::textSecondary());
-            inner.removeFromLeft (6.0f);
+            juce::Rectangle<float> iconArea, capArea, trackArea, valArea;
+            computeLayout (iconArea, capArea, trackArea, valArea);
 
-            // Caption on the left, % on the right, track+fill between them.
+            if (hasGlyph)
+                icons::paintGlyph (g, glyphIcon, iconArea, colour::textSecondary());
+
+            // Caption on the left, value on the right, track+fill between them.
             g.setColour (colour::textSecondary());
             g.setFont (font (FontKind::Ui, 11.0f, 800, 0.04f));
-            auto capArea = inner.removeFromLeft (86.0f);
-            g.drawText ("STEREO LINK", capArea, juce::Justification::centredLeft);
+            g.drawText (capText, capArea, juce::Justification::centredLeft);
 
-            auto valArea = inner.removeFromRight (42.0f);
             g.setColour (colour::accent());
             g.setFont (font (FontKind::Ui, 12.0f, 800));
-            g.drawText (juce::String (juce::roundToInt (getValue())) + "%", valArea, juce::Justification::centredRight);
+            g.drawText (getTextFromValue (getValue()), valArea, juce::Justification::centredRight);
 
-            auto track = computeTrack();
+            auto track = trackArea.withSizeKeepingCentre (trackArea.getWidth(), 7.0f);
             g.setColour (colour::linkTrack());
             g.fillRoundedRectangle (track, 3.5f);
             const float prop = (float) valueToProportionOfLength (getValue());
@@ -558,19 +703,81 @@ namespace rs
             }
         }
 
+        void resized() override
+        {
+            juce::Slider::resized();
+            valueEditor.setBounds (computeValueArea().getSmallestIntegerContainer());
+        }
+
+        // Force-CANCEL (never commit) any in-progress edit; see RsKnob's class
+        // doc for the rationale. Kept for API symmetry even though nothing in
+        // this plugin currently rebinds an RsLinkSlider's attachment live.
+        void closeValueEditor() { valueEditor.hideEditor (true); }
+
+        void visibilityChanged() override      { closeValueEditor(); }
+        void parentHierarchyChanged() override { closeValueEditor(); }
+
     private:
-        // The drawn track rect: mirrors paint()'s left (icon+gap+caption) and
-        // right (value+gap) insets so drag distance and the visible fill agree.
-        juce::Rectangle<float> computeTrack() const
+        void openValueEditor()
+        {
+            valueEditor.setBounds (computeValueArea().getSmallestIntegerContainer());
+            valueEditor.setText (stripToLeadingNumber (getTextFromValue (getValue())), juce::dontSendNotification);
+            valueEditor.setVisible (true);
+            valueEditor.toFront (true);
+            valueEditor.showEditor();
+        }
+
+        // Single source of truth for the icon/caption/track/value rectangles:
+        // paint(), computeTrack() (the drag mapping) and computeValueArea()
+        // (the text-entry overlay + its hit-test) all go through this so they
+        // can never drift out of sync (the old code separately hand-duplicated
+        // the same insets in both paint() and computeTrack()).
+        void computeLayout (juce::Rectangle<float>& iconArea, juce::Rectangle<float>& capArea,
+                            juce::Rectangle<float>& trackArea, juce::Rectangle<float>& valArea) const
         {
             auto inner = getLocalBounds().toFloat().reduced (9.0f, 0.0f);
-            inner.removeFromLeft (16.0f); // link icon
-            inner.removeFromLeft (6.0f);
-            inner.removeFromLeft (86.0f); // "STEREO LINK" caption
-            inner.removeFromRight (42.0f); // % value
+            if (hasGlyph)
+            {
+                iconArea = inner.removeFromLeft (16.0f);
+                inner.removeFromLeft (6.0f);
+            }
+            else
+            {
+                iconArea = {};
+            }
+            capArea = inner.removeFromLeft ((float) capColW);
+            valArea = inner.removeFromRight (kValColW);
             inner.removeFromRight (6.0f);
-            return inner.withSizeKeepingCentre (inner.getWidth(), 7.0f);
+            trackArea = inner;
         }
+
+        // The drawn track rect, sized down to the fill's stroke height.
+        juce::Rectangle<float> computeTrack() const
+        {
+            juce::Rectangle<float> ic, cap, track, val;
+            computeLayout (ic, cap, track, val);
+            return track.withSizeKeepingCentre (track.getWidth(), 7.0f);
+        }
+
+        juce::Rectangle<float> computeValueArea() const
+        {
+            juce::Rectangle<float> ic, cap, track, val;
+            computeLayout (ic, cap, track, val);
+            return val;
+        }
+
+        // Widened from the original 42px: right-justified, so STEREO LINK's
+        // "75%" renders at the exact same pixels as before (only the empty
+        // space to its LEFT inside the column grows) -- but OUT's widest text
+        // ("-24.0dB", 7 glyphs incl. sign) needs the extra room at 12pt bold.
+        static constexpr float kValColW = 52.0f;
+
+        juce::String capText;
+        bool hasGlyph = false;
+        icons::Glyph glyphIcon {};
+        int capColW = 86;
+
+        juce::Label valueEditor;
 
         double dragStartValue = 0.0;
         juce::Point<float> dragStartPos;
