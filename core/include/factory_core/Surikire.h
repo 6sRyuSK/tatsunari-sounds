@@ -87,7 +87,8 @@
 //   - prepare() performs all allocation (inside WowFlutter::prepare); the
 //     process path allocates nothing.
 //   - Continuous-parameter rule: every setter clamps its argument and the
-//     value is smoothed by a 20 ms one-pole (kParamSmoothMs).
+//     value is smoothed by a 20 ms one-pole (kParamSmoothMs). Non-finite
+//     values are ignored (the previous target is kept).
 //   - Peak bound (long-hold invariant): the saturator output magnitude is
 //     bounded by 1/d <= 1 for ANY input, hiss adds at most kNoiseMaxAmp, and
 //     the dropout gain lies in (0, 1]; hence |wet| <= 1 + kNoiseMaxAmp = 1.02,
@@ -186,15 +187,60 @@ namespace factory_core
         }
 
         // -- parameters (call on the audio thread between process calls) --------
-        void setWow01        (double v) noexcept { wowFlutter.setWowDepth01 (v); }
-        void setFlutter01    (double v) noexcept { wowFlutter.setFlutterDepth01 (v); }
-        void setGeneration01 (double v) noexcept { gen      = std::clamp (v, 0.0, 1.0); }
-        void setUserHpHz     (double hz) noexcept { userHpHz = std::clamp (hz, kMinUserHpHz, kMaxUserHpHz); }
-        void setUserLpHz     (double hz) noexcept { userLpHz = std::clamp (hz, kMinUserLpHz, kMaxUserLpHz); }
-        void setSaturate01   (double v) noexcept { saturate = std::clamp (v, 0.0, 1.0); }
-        void setNoise01      (double v) noexcept { noise    = std::clamp (v, 0.0, 1.0); }
-        void setFailure01    (double v) noexcept { failure  = std::clamp (v, 0.0, 1.0); }
-        void setMix01        (double v) noexcept { mix      = std::clamp (v, 0.0, 1.0); }
+        // Non-finite values are ignored (the previous target is kept).
+        void setWow01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            wowFlutter.setWowDepth01 (v);
+        }
+
+        void setFlutter01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            wowFlutter.setFlutterDepth01 (v);
+        }
+
+        void setGeneration01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            gen = std::clamp (v, 0.0, 1.0);
+        }
+
+        void setUserHpHz (double hz) noexcept
+        {
+            if (! std::isfinite (hz)) return;
+            userHpHz = std::clamp (hz, kMinUserHpHz, kMaxUserHpHz);
+        }
+
+        void setUserLpHz (double hz) noexcept
+        {
+            if (! std::isfinite (hz)) return;
+            userLpHz = std::clamp (hz, kMinUserLpHz, kMaxUserLpHz);
+        }
+
+        void setSaturate01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            saturate = std::clamp (v, 0.0, 1.0);
+        }
+
+        void setNoise01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            noise = std::clamp (v, 0.0, 1.0);
+        }
+
+        void setFailure01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            failure = std::clamp (v, 0.0, 1.0);
+        }
+
+        void setMix01 (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            mix = std::clamp (v, 0.0, 1.0);
+        }
 
         void process (float* const* audio, int numChannels, int numSamples) noexcept
         {

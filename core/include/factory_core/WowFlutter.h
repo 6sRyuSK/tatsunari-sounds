@@ -31,7 +31,8 @@
 //     of each tick(), before D is evaluated; reset() snaps them to their
 //     targets. Rates: setWowRateHz / setFlutterRateHz clamp to
 //     [kMinRateHz, kMaxRateHz] and apply unsmoothed -- the phase is continuous
-//     across a rate change, so D stays continuous and cannot click.
+//     across a rate change, so D stays continuous and cannot click. Non-finite
+//     values are ignored (the previous target is kept).
 //   - Input finite guard: a non-finite input sample is written as 0.
 //   - reset(): clears the delay lines, phases -> 0, depth smoothers snap to
 //     their targets.
@@ -99,24 +100,29 @@ namespace factory_core
         }
 
         // -- parameters (call on the audio thread between process calls) --------
+        // Non-finite values are ignored (the previous target is kept).
         void setWowDepth01 (double v) noexcept
         {
+            if (! std::isfinite (v)) return;
             wowDepth01 = std::clamp (v, 0.0, 1.0);
         }
 
         void setFlutterDepth01 (double v) noexcept
         {
+            if (! std::isfinite (v)) return;
             flutterDepth01 = std::clamp (v, 0.0, 1.0);
         }
 
         void setWowRateHz (double hz) noexcept
         {
+            if (! std::isfinite (hz)) return;
             wowRateHz = std::clamp (hz, kMinRateHz, kMaxRateHz);
             updatePhaseIncrements();
         }
 
         void setFlutterRateHz (double hz) noexcept
         {
+            if (! std::isfinite (hz)) return;
             flutterRateHz = std::clamp (hz, kMinRateHz, kMaxRateHz);
             updatePhaseIncrements();
         }

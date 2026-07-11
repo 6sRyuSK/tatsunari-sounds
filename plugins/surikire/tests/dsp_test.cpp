@@ -838,6 +838,157 @@ static void nanRecoveryTest (double Fs)
 }
 
 // =============================================================================
+// #12 setter-side non-finite guard contract (review finding): every public
+// setter ignores a non-finite argument (the previous target is kept), so a run
+// with NaN/Inf setter calls injected mid-stream must be BIT-IDENTICAL to the
+// clean run. Struck on all 9 Surikire setters and all 4 WowFlutter setters.
+// =============================================================================
+static void paramNanGuardTest (double Fs)
+{
+    const double dNan = std::numeric_limits<double>::quiet_NaN();
+    const double dInf = std::numeric_limits<double>::infinity();
+
+    auto bitIdentical = [] (const std::vector<double>& x, const std::vector<double>& y)
+    {
+        if (x.size() != y.size())
+            return false;
+        for (std::size_t n = 0; n < x.size(); ++n)
+            if (x[n] != y[n])
+                return false;
+        return true;
+    };
+
+    // --- Surikire: NaN on every setter at 0.25 s, +-Inf on every setter at 0.5 s.
+    {
+        const std::size_t N  = (std::size_t) std::llround (1.0 * Fs);
+        const std::size_t q1 = (std::size_t) std::llround (0.25 * Fs);
+        const std::size_t q2 = (std::size_t) std::llround (0.5 * Fs);
+
+        std::uint64_t s = 0xFEEDFACE00000001ULL; // test-local seed
+        std::vector<float> in (N);
+        for (auto& v : in)
+            v = (float) (0.5 * (2.0 * draw (s) - 1.0));
+
+        Surikire e;
+        e.prepare (Fs, 1);
+        auto configure = [&e]
+        {
+            e.setWow01 (0.3);
+            e.setFlutter01 (0.3);
+            e.setGeneration01 (0.5);
+            e.setSaturate01 (0.5);
+            e.setNoise01 (0.5);
+            e.setFailure01 (0.5);
+            e.setUserHpHz (100.0);
+            e.setUserLpHz (8000.0);
+            e.setMix01 (0.7);
+            e.reset();
+        };
+        // Process in the SAME three segments in both runs; only run B calls
+        // the poisoned setters at the segment boundaries.
+        auto runSegments = [&] (auto&& atQ1, auto&& atQ2)
+        {
+            std::vector<float> buf (in);
+            float* c0[1] = { buf.data() };
+            e.process (c0, 1, (int) q1);
+            atQ1();
+            float* c1[1] = { buf.data() + q1 };
+            e.process (c1, 1, (int) (q2 - q1));
+            atQ2();
+            float* c2[1] = { buf.data() + q2 };
+            e.process (c2, 1, (int) (N - q2));
+            return toDouble (buf);
+        };
+
+        configure();
+        auto noop = [] {};
+        const std::vector<double> outA = runSegments (noop, noop);
+
+        configure();
+        const std::vector<double> outB = runSegments (
+            [&e, dNan]
+            {
+                e.setWow01 (dNan);
+                e.setFlutter01 (dNan);
+                e.setGeneration01 (dNan);
+                e.setSaturate01 (dNan);
+                e.setNoise01 (dNan);
+                e.setFailure01 (dNan);
+                e.setUserHpHz (dNan);
+                e.setUserLpHz (dNan);
+                e.setMix01 (dNan);
+            },
+            [&e, dInf]
+            {
+                e.setWow01 (dInf);
+                e.setFlutter01 (-dInf);
+                e.setGeneration01 (dInf);
+                e.setSaturate01 (-dInf);
+                e.setNoise01 (dInf);
+                e.setFailure01 (-dInf);
+                e.setUserHpHz (dInf);
+                e.setUserLpHz (-dInf);
+                e.setMix01 (dInf);
+            });
+
+        check (fct::allFinite (outB),
+               at ("engine output finite despite NaN/Inf setter calls", Fs));
+        check (bitIdentical (outA, outB),
+               at ("NaN/Inf setter calls must be ignored bit-exactly (Surikire)", Fs));
+    }
+
+    // --- WowFlutter primitive: all four setters struck at 0.25 s of a 0.5 s run.
+    {
+        const std::size_t N = (std::size_t) std::llround (0.5 * Fs);
+        const std::size_t q = (std::size_t) std::llround (0.25 * Fs);
+
+        std::uint64_t s = 0xFEEDFACE00000002ULL;
+        std::vector<float> in (N);
+        for (auto& v : in)
+            v = (float) (0.5 * (2.0 * draw (s) - 1.0));
+
+        WowFlutter w;
+        w.prepare (Fs, 1);
+        auto configure = [&w]
+        {
+            w.setWowDepth01 (0.4);
+            w.setFlutterDepth01 (0.6);
+            w.setWowRateHz (1.3);
+            w.setFlutterRateHz (11.0);
+            w.reset();
+        };
+        auto runSegments = [&] (auto&& atQ)
+        {
+            std::vector<float> buf (in);
+            float* c0[1] = { buf.data() };
+            w.process (c0, 1, (int) q);
+            atQ();
+            float* c1[1] = { buf.data() + q };
+            w.process (c1, 1, (int) (N - q));
+            return toDouble (buf);
+        };
+
+        configure();
+        const std::vector<double> outA = runSegments ([] {});
+
+        configure();
+        const std::vector<double> outB = runSegments (
+            [&w, dNan, dInf]
+            {
+                w.setWowDepth01 (dNan);
+                w.setFlutterDepth01 (-dInf);
+                w.setWowRateHz (dNan);
+                w.setFlutterRateHz (dInf);
+            });
+
+        check (fct::allFinite (outB),
+               at ("wowflutter output finite despite NaN/Inf setter calls", Fs));
+        check (bitIdentical (outA, outB),
+               at ("NaN/Inf setter calls must be ignored bit-exactly (WowFlutter)", Fs));
+    }
+}
+
+// =============================================================================
 // #11 reset residue: charge every state with a big signal, reset(), then feed
 // silence -- with noise = 0 the output must be exactly zero (<= 1e-12).
 // =============================================================================
@@ -913,6 +1064,7 @@ int main (int argc, char** argv)
         dropoutScheduleTest (Fs);
         longHoldWorstCaseTest (Fs);
         nanRecoveryTest (Fs);
+        paramNanGuardTest (Fs);
         resetResidueTest (Fs);
         filterStabilityTest (Fs);
     }
