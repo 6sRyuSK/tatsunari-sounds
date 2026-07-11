@@ -113,7 +113,7 @@ OnsenDelayAudioProcessor::OnsenDelayAudioProcessor()
 void OnsenDelayAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
     engine.prepare (sampleRate, 2);
-    prevAdvance  = false;
+    prevAdvance.store (advanceParam->load() > 0.5f, std::memory_order_relaxed);
     prevBypassed = bypassParam->load() > 0.5f;
 
     outputGain.reset (sampleRate, 0.02);
@@ -167,9 +167,9 @@ void OnsenDelayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     engine.setManualStep (stepModeParam->load() > 0.5f);
 
     const bool advance = advanceParam->load() > 0.5f;
-    if (advance && ! prevAdvance)
+    if (advance && ! prevAdvance.load (std::memory_order_relaxed))
         engine.triggerStep();
-    prevAdvance = advance;
+    prevAdvance.store (advance, std::memory_order_relaxed);
 
     // State reset on bypass transitions (regression policy): entering bypass
     // drops the tail, leaving it starts clean. Both paths have zero latency.
@@ -219,6 +219,11 @@ void OnsenDelayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 void OnsenDelayAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     factory_presets::applyStateXml (apvts, programs, getXmlFromBinary (data, sizeInBytes).get());
+
+    // Re-seed after a host restores state (setStateInformation can arrive after
+    // prepareToPlay): an incoming advance=1 must not read as a fresh 0->1 edge
+    // on the next processBlock.
+    prevAdvance.store (advanceParam->load() > 0.5f, std::memory_order_relaxed);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

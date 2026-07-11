@@ -74,7 +74,11 @@ private:
     std::atomic<float>* outputParam   = nullptr; // dB
     std::atomic<float>* bypassParam   = nullptr; // bool
 
-    bool prevAdvance  = false;
+    // Atomic: seeded from the message thread (prepareToPlay / setStateInformation)
+    // so a restored "advance=1" state can't look like a fresh edge and fire a
+    // spurious triggerStep() on the first processBlock; audio thread uses
+    // relaxed load/store (prepare/setState are never concurrent with process).
+    std::atomic<bool> prevAdvance { false };
     bool prevBypassed = false;
 
     // Continuous parameters must be smoothed (regression policy): the engine

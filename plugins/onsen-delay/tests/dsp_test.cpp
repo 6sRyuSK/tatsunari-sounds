@@ -14,7 +14,8 @@
 //      must equal f0*(W + D(t0) - D(t1))/fs. Measured on real signal.
 //   4. impulseResponseNonIncreasing at the worst case (max regen, tone wide
 //      open, wet-only), both static and while the sequencer+glide modulate.
-//   5. Long-hold realistic peak bound + allFinite at worst-case settings.
+//   5. Long-hold realistic peak bound + allFinite at worst-case settings, at
+//      max glide and again in the fastest time-varying region (glide=0).
 //   6. Finite guard: a NaN input sample must not propagate.
 //   7. State reset on prepare; silence in -> silence out.
 //   8. Feedback tone damping — echo(k+1)/echo(k) spectral ratio must match
@@ -367,6 +368,50 @@ namespace
         if (peak > 1.5) fail ("long-hold peak " + std::to_string (peak) + " exceeds realistic bound 1.5");
     }
 
+    // Fastest time-varying region: glide at its tau floor (5 ms) with octave
+    // jumps every 250 ms, so the read pointer sweeps hard and re-reads written
+    // history. The impulse-based non-increasing oracle is unsuitable here (a
+    // step transition defers echoes across measurement windows), so the "no
+    // energy pump" invariant is gated long-hold style with the same bound.
+    void testFastSweepLongHoldBounded (double fs)
+    {
+        OnsenDelay e;
+        e.prepare (fs, 2);
+        e.setBaseTimeMs (250.0);
+        e.setIntervals (Interval::OctaveDown, Interval::OctaveUp);
+        e.setGlide (0.0);
+        e.setRegen (1.0);
+        e.setToneHz (OnsenDelay::kMaxToneHz);
+        e.setMix (1.0);
+        e.setManualStep (false);
+        e.reset();
+
+        Lcg lcgL (0x5EED5EEDULL), lcgR (67890ULL);
+        const int chunk = 173; // deliberately not a power of two
+        std::vector<float> l (chunk), r (chunk);
+        double peak = 0.0;
+        bool finite = true;
+        const long long total = (long long) (8.0 * fs);
+        for (long long done = 0; done < total; done += chunk)
+        {
+            const int n = (int) std::min<long long> (chunk, total - done);
+            for (int i = 0; i < n; ++i)
+            {
+                l[(size_t) i] = (float) (0.5 * lcgL.next());
+                r[(size_t) i] = (float) (0.5 * lcgR.next());
+            }
+            float* chans[2] = { l.data(), r.data() };
+            e.process (chans, 2, n);
+            for (int i = 0; i < n; ++i)
+            {
+                if (! std::isfinite (l[(size_t) i]) || ! std::isfinite (r[(size_t) i])) finite = false;
+                peak = std::max ({ peak, (double) std::abs (l[(size_t) i]), (double) std::abs (r[(size_t) i]) });
+            }
+        }
+        if (! finite) fail ("fast-sweep long hold produced non-finite output");
+        if (peak > 1.5) fail ("fast-sweep long-hold peak " + std::to_string (peak) + " exceeds realistic bound 1.5");
+    }
+
     // -- 6. NaN input recovery ---------------------------------------------------
 
     void testNanRecovery (double fs)
@@ -438,8 +483,9 @@ namespace
         // Echo k sits at k*D; window it and probe two frequencies. The ratio
         // echo2/echo1 must equal regen_eff * |H(e^jw)| of the one-pole lowpass
         // y[n] = (1-a) x[n] + a y[n-1], a = exp(-2*pi*fc/fs)  (z-domain, not the
-        // analog prototype). The shaper's small-signal slope is exactly 1 and
-        // echo levels here are far below saturation.
+        // analog prototype). At 44.1 kHz (the worst case here) the tone LP
+        // leaves an echo1 peak around 1-a ~= 0.25, so the shaper (drive 1.5)
+        // applies ~5% tanh compression -- inside the 15% tolerance below.
         const double regenEff = regenParam * OnsenDelay::kMaxRegen;
         const double a = std::exp (-2.0 * kPi * toneHz / fs);
         auto zMag = [&] (double f)
@@ -476,6 +522,7 @@ namespace
         testDopplerGlide (Fs);
         testFeedbackStability (Fs);
         testLongHoldBounded (Fs);
+        testFastSweepLongHoldBounded (Fs);
         testNanRecovery (Fs);
         testResetAndSilence (Fs);
         testToneDampingZDomain (Fs);
