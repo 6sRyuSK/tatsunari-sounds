@@ -15,7 +15,7 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Resonance TatSuppressor | EQ | 2.1.0 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (9)
+### In progress (10)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Tatsunular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
 | Tatsumin Enhancer | Enhancer | Waves Vitamin (multiband parallel harmonic enhancer) |
 | Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
+| Onsen Delay | Delay | Chase Bliss Thermae (harmonic glide delay) |
 | Taturator | Saturation | Analog tape / tube soft-clip |
 | Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
 | Tumble Delay | Delay | OP-1 Tombola sequencer × granular echo |
