@@ -15,7 +15,7 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Resonance TatSuppressor | EQ | 2.1.0 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (9)
+### In progress (10)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ JUCE 8 + CMake で構築した自律型オーディオプラグイン・ファ�
 | Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
 | Taturator | Saturation | Analog tape / tube soft-clip |
 | Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
+| Tatsunari Surikire | Lo-Fi | Chase Bliss / Cooper FX Generation Loss MKII |
 | Tumble Delay | Delay | OP-1 Tombola sequencer × granular echo |
 | Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
 
