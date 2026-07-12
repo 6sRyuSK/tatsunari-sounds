@@ -56,6 +56,12 @@ public:
     int    drainHits     (factory_core::TumbleDelay::HitEvent* dst, int maxCount) noexcept       { return engine.drainHits (dst, maxCount); }
     double boxAngle()    const noexcept { return engine.boxAngle(); }
 
+    // Effective Box Size in seconds AFTER resolving the tempo-sync override —
+    // the visualizer scales the drawn box from this, so it must match what the
+    // engine was actually given (reading the "boxSize" atomic alone would be
+    // wrong whenever boxSizeSync != Off).
+    double boxSizeSeconds() const noexcept { return effBoxSizeSec.load (std::memory_order_relaxed); }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -125,6 +131,10 @@ private:
     // Continuous output gain (regression policy: smoothed). Reset in
     // prepareToPlay, target set per block, ramped per sample.
     juce::SmoothedValue<float> outputGain;
+
+    // Sync-resolved Box Size mirrored for the UI (written per block, read by the
+    // visualizer's timer; atomic<double> is lock-free here, same as boxAngle).
+    std::atomic<double> effBoxSizeSec { 0.40 };
 
     // Bypass edge tracking -> engine.reset() on either transition (class E).
     bool wasBypassed = false;
