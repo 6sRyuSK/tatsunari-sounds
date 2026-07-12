@@ -9,30 +9,55 @@
 // history footprint (~23 MB; see HistoryBuffer.h). Header-only,
 // JUCE-independent, headless-testable.
 //
-// API verification (see the ticket): factory_core::RateBracket<> already
-// implements exactly the "run a FIXED-rate section inside a host running at
-// a different, fixed rate" bracket this engine needs -- a constant modelRate
-// (24000 Hz here, vs ~48000 Hz for the NAM Player it was extracted from) with
-// a published, deterministic reported latency. No variable-ratio machinery
-// (VariPolyphaseResampler, which Madoromi needs for its sweepable CLOCK) is
-// required, so RateBracket<PolyphaseResampler> is reused AS-IS, unmodified,
-// with the section callback (sectionFn) implementing the history/echo/scan
-// logic below at the fixed 24 kHz model rate.
+// Resampler choice (SUPERSEDES an earlier ticket note that reused
+// RateBracket<PolyphaseResampler> as-is): independent review found that
+// PolyphaseResampler's down-conversion kernel is NOT index-stretched -- its
+// half-width is a FIXED kHalfTaps = 31 input samples regardless of the
+// decimation ratio, so at high host rates (176.4/192 kHz, an ~8:1
+// decimation down to the 24 kHz internal rate) the same 63-tap kernel is
+// asked to carve a much narrower absolute cutoff, widening the transition
+// band well past the intended stopband edge -- the measured alias floor was
+// only -18..-20 dB at 176.4/192 kHz (spec requires <= -40 dB; 44.1-96 kHz
+// were fine at -46..-85 dB, since their decimation ratio is smaller). This
+// is a genuine in-band alias defect, not HF rolloff, and is fixed here by
+// replacing BOTH the down- and up-conversion stages with
+// factory_core::VariPolyphaseResampler run at a FIXED ratio -- its
+// index-stretch mechanism scales the effective kernel width with the ratio,
+// exactly the technique already proven in factory_core::Madoromi's engine
+// (see that header and VariPolyphaseResampler.h's own design contract).
+// Each instance's setTargetRatio() is called exactly ONCE, in prepare(), to
+// the engine's fixed host<->24 kHz ratio and never again -- there is no
+// runtime ratio sweep here (unlike Madoromi's sweepable CLOCK), so the
+// per-output step ramp inside VariPolyphaseResampler sits permanently at its
+// target (zero drift) for the whole life of a prepare() call.
+// RateBracket<> itself is NOT reused: its process()/prepare() call sites are
+// hard-wired to PolyphaseResampler's 2-argument prepare() and no-argument
+// groupDelayInputSamples(), neither of which match VariPolyphaseResampler's
+// signatures (3-argument prepare(), ratio-parameterised
+// groupDelayInputSamples(double)), and RateBracket.h may not be modified (it
+// is a shared primitive other plugins depend on) -- so this header hosts a
+// small, private down/section/up/FIFO bracket directly, mirroring
+// RateBracket's own internal shape INCLUDING its latency-correctness
+// pattern (see the Latency contract below, which also documents a
+// class-of-bug this bracket deliberately avoids).
 //
 // Signal chain (per host sample; stereo lanes, mono input duplicated to both
 // lanes on the way in and averaged back down on the way out -- the same
 // mono-handling convention as Madoromi.h):
-//   inHost -> [finite guard] -> RateBracket down-resample (host -> 24 kHz)
-//     -- inside the bracket's sectionFn, per INTERNAL (24 kHz) sample, per
-//        channel (echoTap/scanTap read BEFORE this sample's own write --
-//        see HistoryBuffer.h's read-before-write causality contract):
+//   inHost -> [finite guard] -> down-resample (host -> 24 kHz, FIXED ratio,
+//     VariPolyphaseResampler)
+//     -- per INTERNAL (24 kHz) sample, per channel (echoTap/scanTap read
+//        BEFORE this sample's own write -- see HistoryBuffer.h's
+//        read-before-write causality contract):
 //          echoTap = history.readAtAge(delaySamplesSm)   (feedback tap)
 //          scanTap = history.readAtAge(scanAgeSm)         (memory tap)
 //          fb      = shaper(toneLp.lp(echoTap))
 //          history.write(inInt + regenSm * fb)
 //          history.advance()                              (once per sample)
 //          wetInt  = echoTap + scanLevelSm * scanTap
-//   -> RateBracket up-resample (24 kHz -> host) -> wetHost
+//   -> up-resample (24 kHz -> host, FIXED ratio, VariPolyphaseResampler) ->
+//     output FIFO (delivers exactly h host samples every process() slice) ->
+//     wetHost
 //   out = (1 - mixSm) * dryDelayed + mixSm * wetHost
 // dryDelayed is the input delayed by exactly latencySamples() INTEGER host
 // samples, so mix = 0 reproduces the input bit-exactly delayed by L (the
@@ -59,33 +84,123 @@
 //     two -- gain <= 1.
 // Small-signal loop gain = 0.95 * 1 * (<=1) * (<=1) < 1 at every in-range
 // regen/tone/delay setting -- the impulseResponseNonIncreasing gate (worst
-// case: regen01 = 1 -> effective 0.95, tone fully open) holds.
+// case: regen01 = 1 -> effective 0.95, tone fully open) holds. This loop
+// lives entirely INSIDE the 24 kHz model domain (runModelDomain below) and
+// is unaffected by the down/up resampler choice above -- the resamplers
+// bracket the loop from the outside, they are not part of it.
 // scanTap is EXCLUDED from the feedback/write path entirely (it only feeds
 // wetInt, i.e. the OUTPUT) and scanLevel only ever scales that listening-only
 // contribution, never write() -- so SCAN cannot destabilise the loop at any
 // setting, including scanLevel == 1.
 //
-// Latency contract (published formula; tests depend on this EXACT value):
-// D = PolyphaseResampler::kHalfTaps = 31 (the down/up stage group delay, a
-// compile-time constant independent of rate -- see PolyphaseResampler.h),
-// M = RateBracket<>::kFifoMargin = 16. For fsHost != kInternalRateHz:
-//   L(fsHost) = round(D + D * fsHost / kInternalRateHz) + M
-//             = resamplerRoundTripLatency(fsHost, kInternalRateHz, D) + M
-// which is EXACTLY what RateBracket::prepare(fsHost, kInternalRateHz, ...)
-// computes internally (reportedLatency), so latencyForRate() below and the
-// live bracket.latencySamples() are always equal by construction. When
-// fsHost == kInternalRateHz (bit-exact match, |diff| <= 1e-6) the bracket is
-// a transparent passthrough and L = 0, matching RateBracket's own bypass
-// rule. There is NO additional wet-side constant offset beyond L: history
-// read-before-write (see HistoryBuffer.h) gives readAtAge(age) EXACTLY
-// age internal samples of delay with no off-by-one, and the sectionFn
-// callback introduces no other buffering stage, so an impulse's first echo
-// arrives at exactly
-//   L(fsHost) + round(delaySamplesTarget * fsHost / kInternalRateHz)
-// host samples later (+/- the bracket's own fractional-resampling phase
-// rounding), and a SCAN marker set to age v arrives at exactly
-//   L(fsHost) + round(v * fsHost / kInternalRateHz)
-// host samples after it was recorded. Both are zero-extra-offset.
+// Latency contract (published formula; tests depend on this EXACT value --
+// REVISED by the index-stretch fix above: the down-stage delay now SCALES
+// with the decimation ratio instead of being fixed, so the reported latency
+// at high host rates is larger than the pre-fix design would have reported):
+//   D = VariPolyphaseResampler::kHalfTaps = 31 (ratio-1 half-width, in the
+//     INPUT samples of whichever stage -- same numeric value as
+//     PolyphaseResampler::kHalfTaps, unchanged by this fix; what changes is
+//     how the down stage's EFFECTIVE half-width scales with ratio).
+//   M = kFifoMargin = 16 (this header's own safety-cushion constant -- same
+//     role and same value as RateBracket<>::kFifoMargin, now owned locally
+//     since RateBracket<> is no longer used here -- see above).
+//   For fsHost != kInternalRateHz, with r_down = fsHost / kInternalRateHz
+//   (> 1 for every one of the 6 standard rates, since 24 kHz is below every
+//   supported host rate) and r_up = kInternalRateHz / fsHost (< 1):
+//     downDelayHost = VariPolyphaseResampler::groupDelayInputSamples(r_down)
+//       -- already in HOST samples (down's own "input" domain IS the
+//       host-rate stream) = D * max(1, r_down) = D * r_down -- STRETCHED:
+//       this is the fix. VariPolyphaseResampler's index-stretch makes the
+//       down stage's effective half-width scale with the decimation ratio
+//       (see VariPolyphaseResampler.h's "Kernel index-stretch" design
+//       contract), so at 192 kHz the down-stage delay is D * 8 = 248 host
+//       samples, not the fixed D = 31 the old (defective) PolyphaseResampler
+//       produced -- a longer effective FIR at high ratio is exactly what
+//       buys the extra ~50 dB of stopband attenuation the alias-floor fix
+//       requires.
+//     upDelayHost = VariPolyphaseResampler::groupDelayInputSamples(r_up)
+//       * (fsHost / kInternalRateHz) -- the raw call returns INTERNAL (24
+//       kHz) samples (up's own "input" domain IS the 24 kHz stream)
+//       = D * max(1, r_up) = D * 1 = D -- NOT stretched: interpolation
+//       (up-conversion) never needs index-stretch (its own stretch factor
+//       clamps to 1 by construction, max(1, r_up) with r_up < 1), so the up
+//       stage is numerically IDENTICAL to what the old PolyphaseResampler
+//       already did here -- nothing regresses on the up side. The `*
+//       fsHost/kInternalRateHz` converts that internal-sample delay to its
+//       host-sample equivalent (1 internal sample spans that many host
+//       samples) -- algebraically the SAME expression as the down stage's
+//       stretched delay.
+//   Round-trip group delay in host samples:
+//     G(fsHost) = downDelayHost + upDelayHost
+//               = D*(fsHost/kInternalRateHz) + D*(fsHost/kInternalRateHz)
+//               = 2 * D * (fsHost / kInternalRateHz)
+//   L(fsHost) = round(G(fsHost)) + M
+//   which is EXACTLY what latencyForRate() below computes (via the actual
+//   VariPolyphaseResampler::groupDelayInputSamples() calls, not a hand
+//   re-derivation of its max(1,r) clamp) and EXACTLY the round-trip delay
+//   realised by the two cascaded VariPolyphaseResampler instances' own
+//   causal timing (each's reset() starts its output phase at
+//   -D * max(1, its own fixed ratio) -- see VariPolyphaseResampler.h -- so
+//   nothing here manually "adds" G; it emerges from actually running the
+//   signal through the cascade). When fsHost == kInternalRateHz (bit-exact
+//   match, |diff| <= 1e-6) both stages are bypassed entirely and L = 0.
+//
+//   Per-rate table (the 6 standard rates; supersedes the pre-fix table,
+//   whose down stage was NOT ratio-stretched: 44100->104, 48000->109,
+//   88200->161, 96000->171, 176400->275, 192000->295):
+//     44100 Hz  -> L = round(2*31*44100 /24000) + 16 = 114 + 16 = 130
+//     48000 Hz  -> L = round(2*31*48000 /24000) + 16 = 124 + 16 = 140
+//     88200 Hz  -> L = round(2*31*88200 /24000) + 16 = 228 + 16 = 244
+//     96000 Hz  -> L = round(2*31*96000 /24000) + 16 = 248 + 16 = 264
+//     176400 Hz -> L = round(2*31*176400/24000) + 16 = 456 + 16 = 472
+//     192000 Hz -> L = round(2*31*192000/24000) + 16 = 496 + 16 = 512
+//
+//   PROOF that wet transit == L exactly (dry aligned): the output FIFO is
+//   pre-filled with EXACTLY kFifoMargin silent zeros at reset()/recovery --
+//   NEVER latency + anything -- and every process() call pushes the
+//   up-stage's fresh output into the FIFO and immediately pulls exactly h
+//   samples back out, so the FIFO's OCCUPANCY (write position minus read
+//   position) is a CONSTANT kFifoMargin for the entire run (push count and
+//   pull count track each other 1:1 in the long run because
+//   r_down * r_up == 1 by construction -- the two ratios are exact
+//   reciprocals of one another). A host sample that enters the
+//   down-resampler at time t=0 does not reach the up-resampler's OUTPUT
+//   stream (i.e. does not become available to push into the FIFO) until
+//   G(fsHost) samples later -- that is the cascade's own inherent,
+//   unavoidable causal delay, identical in nature to how a single
+//   PolyphaseResampler instance delays its own output by its group delay.
+//   Once it IS pushed, the constant kFifoMargin-sample FIFO occupancy
+//   delivers it exactly kFifoMargin samples after that. Total:
+//   G(fsHost) + kFifoMargin = L(fsHost) exactly -- no more, no less. Dry is
+//   delayed by the SAME integer L via dryBuf (see process() below), so wet
+//   and dry emerge in lockstep at every mix setting.
+//
+//   Contrast with the bug this deliberately avoids: Madoromi's own
+//   VariPolyphaseResampler-based bracket (factory_core/Madoromi.h) pre-fills
+//   its FIFO with `fifoFill = latency + kFifoSafetyPad` zeros -- MORE than
+//   its own reported `latency` -- while publishing only `latency` (omitting
+//   the `kFifoSafetyPad` term) to the host. Because that FIFO's occupancy is
+//   therefore pinned at `latency + kFifoSafetyPad`, not `latency`,
+//   Madoromi's wet signal actually emerges kFifoSafetyPad samples LATER than
+//   its reported latency (a PDC/class-N misalignment bug). This header's
+//   bracket instead prefills by kFifoMargin ONLY (never latency-dependent)
+//   and folds the ENTIRE remaining delay into L itself via the G(fsHost)
+//   term above -- the same "prefill by margin only" pattern RateBracket<>
+//   already uses correctly (see RateBracket.h's own header note on the
+//   0.1.0 wet/dry mismatch it once had and fixed the same way) -- so there
+//   is no unaccounted-for term left outside the reported latency here.
+//
+//   There is NO additional wet-side constant offset beyond L: history
+//   read-before-write (see HistoryBuffer.h) gives readAtAge(age) EXACTLY
+//   age internal samples of delay with no off-by-one, and the model-domain
+//   callback introduces no other buffering stage, so an impulse's first
+//   echo arrives at exactly
+//     L(fsHost) + round(delaySamplesTarget * fsHost / kInternalRateHz)
+//   host samples later (+/- the bracket's own fractional-resampling phase
+//   rounding), and a SCAN marker set to age v arrives at exactly
+//     L(fsHost) + round(v * fsHost / kInternalRateHz)
+//   host samples after it was recorded. Both are zero-extra-offset (echo/
+//   scan onset = L, unchanged from before the fix).
 //
 // Parameter contracts (every non-bool setter: if (!isfinite(v)) return; --
 // the previous target is kept; all internal sample/tau maths below run at
@@ -149,36 +264,39 @@
 //
 // Real-time / safety rules (house standard):
 //   - prepare() performs ALL allocation: HistoryBuffer's ~23 MB (2 channels x
-//     ceil(120 * 24000) + 8 floats), RateBracket's down/up/FIFO scratch
-//     (sized for a FIXED internal chunk of kHostChunk = 512 host samples,
-//     NOT for the caller's block size -- process() always slices any n into
-//     <= kHostChunk pieces, so no buffer here is ever n-dependent), and an
-//     L+8-sample dry ring per channel. process() allocates nothing, takes no
-//     locks, makes no syscalls, and is noexcept for any n.
+//     ceil(120 * 24000) + 8 floats), the down/up VariPolyphaseResampler
+//     pair's prototype tables + input histories (sized for the ONE fixed
+//     ratio each will ever run at -- see the resampler-choice note above),
+//     their namBuf/upScratch scratch and output FIFOs (sized for a FIXED
+//     internal chunk of kHostChunk = 512 host samples, NOT for the caller's
+//     block size -- process() always slices any n into <= kHostChunk
+//     pieces, so no buffer here is ever n-dependent), and an L+8-sample dry
+//     ring per channel. process() allocates nothing, takes no locks, makes
+//     no syscalls, and is noexcept for any n.
 //   - Input finite guard: every host sample is sanitised (non-finite -> 0.0)
-//     BEFORE it reaches the bracket/history.
+//     BEFORE it reaches the down-resampler/history.
 //   - Wet-node finite guard: a non-finite wetInt (defence-in-depth backstop;
 //     HistoryBuffer::write() already guards every stored value, so this
 //     should not be reachable via the guarded parameter/input paths, but the
 //     regression-policy hard rule requires it regardless) resets history,
-//     both channels' tone OnePoles and the bracket (down/up resamplers +
-//     FIFO), then emits wet = 0 for that sample; at most ONE such recovery
-//     per process() slice (mirrors Madoromi's `recovered` guard). No
-//     smoother/target member is touched by recovery -- HistoryBuffer, OnePole
-//     and RateBracket carry no independent "mode" state that needs
-//     re-asserting after their reset() (unlike e.g. MicroLooper's frozen
-//     flag in Madoromi), so recovery is a plain reset-and-continue.
+//     both channels' tone OnePoles and the down/up resamplers + FIFOs, then
+//     emits wet = 0 for that sample; at most ONE such recovery per
+//     process() slice (mirrors Madoromi's `recovered` guard). No
+//     smoother/target member is touched by recovery -- HistoryBuffer,
+//     OnePole and VariPolyphaseResampler/the FIFO carry no independent
+//     "mode" state that needs re-asserting after their reset() (unlike e.g.
+//     MicroLooper's frozen flag in Madoromi), so recovery is a plain
+//     reset-and-continue.
 //   - reset() is fully deterministic: two runs from reset() with identical
 //     inputs/parameter calls are bit-identical.
 //
 #include "factory_core/HistoryBuffer.h"
 #include "factory_core/OnePole.h"
-#include "factory_core/PolyphaseResampler.h"
-#include "factory_core/RateBracket.h"
-#include "factory_core/ResamplerLatency.h"
 #include "factory_core/SmoothingCoeff.h"
+#include "factory_core/VariPolyphaseResampler.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -204,19 +322,34 @@ namespace factory_core
         static constexpr double kParamSmoothMs   = 20.0;
         static constexpr double kPeakBound       = 2.0;    // see header argument
         static constexpr int    kHostChunk       = 512;    // fixed internal slice
+        static constexpr int    kFifoMargin      = 16;     // output-FIFO safety cushion;
+                                                            // same role/value as
+                                                            // RateBracket<>::kFifoMargin,
+                                                            // now owned locally (see the
+                                                            // resampler-choice note above)
 
         // -- published pure mappings / latency (tests re-derive these) ------
 
         // Reported round-trip latency in HOST samples (see the header's
-        // "Latency contract" section for the derivation).
+        // "Latency contract" section for the full derivation and proof).
         static int latencyForRate (double fsHost) noexcept
         {
             if (fsHost <= 0.0) return 0;
             if (std::abs (fsHost - kInternalRateHz) <= 1.0e-6) return 0; // bypass
 
-            return resamplerRoundTripLatency (fsHost, kInternalRateHz,
-                                               PolyphaseResampler::kHalfTaps)
-                 + RateBracket<PolyphaseResampler>::kFifoMargin;
+            const double rDown = fsHost / kInternalRateHz;   // > 1: decimation
+            const double rUp   = kInternalRateHz / fsHost;   // < 1: interpolation
+
+            // Down-stage delay is already in HOST samples (down's own
+            // "input" domain IS the host-rate stream) -- STRETCHED by rDown,
+            // which is the alias-floor fix. Up-stage delay is returned in
+            // INTERNAL (24 kHz) samples (up's own "input" domain), converted
+            // to host samples by * fsHost/kInternalRateHz.
+            const double downDelayHost = VariPolyphaseResampler::groupDelayInputSamples (rDown);
+            const double upDelayHost   = VariPolyphaseResampler::groupDelayInputSamples (rUp)
+                                        * (fsHost / kInternalRateHz);
+
+            return (int) std::lround (downDelayHost + upDelayHost) + kFifoMargin;
         }
 
         // The fixed-shape saturator used on the feedback path: small-signal
@@ -240,9 +373,10 @@ namespace factory_core
             return v01 * (kMaxHistorySec - kScanMarginSec);
         }
 
-        // Allocates: HistoryBuffer's ~23 MB store, the RateBracket's
-        // fixed-kHostChunk scratch, and the L+8 dry ring. Not real-time
-        // safe -- call from prepareToPlay only.
+        // Allocates: HistoryBuffer's ~23 MB store, the down/up
+        // VariPolyphaseResampler pair's fixed-ratio tables/histories, their
+        // fixed-kHostChunk scratch + FIFOs, and the L+8 dry ring. Not
+        // real-time safe -- call from prepareToPlay only.
         void prepare (double sampleRate, int numChannels)
         {
             fs       = (sampleRate > 0.0) ? sampleRate : 44100.0;
@@ -251,7 +385,42 @@ namespace factory_core
             latency = latencyForRate (fs);
             dryCap  = latency + 8;
 
-            bracket.prepare (fs, kInternalRateHz, kHostChunk);
+            resampling = std::abs (fs - kInternalRateHz) > 1.0e-6;
+            if (resampling)
+            {
+                const double downRatio = fs / kInternalRateHz;   // > 1 for every supported
+                                                                  // host rate (24 kHz is
+                                                                  // below every one of them)
+                const double upRatio   = kInternalRateHz / fs;    // < 1 (its own stretch
+                                                                   // clamps to 1 -- unchanged
+                                                                   // from before the fix)
+
+                // Model-rate scratch sized for the worst-case (largest) host slice,
+                // with headroom for the resampler's fractional-phase carry-over --
+                // same formula RateBracket<> used for the equivalent PolyphaseResampler
+                // pairing.
+                namMaxBlk = (int) std::ceil ((double) kHostChunk * kInternalRateHz / fs) + 32;
+                const int upCap = (int) std::ceil ((double) namMaxBlk * fs / kInternalRateHz)
+                                 + VariPolyphaseResampler::kHalfTaps + 64;
+
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                {
+                    // maxRatio == the fixed ratio itself: this instance is NEVER
+                    // swept after this point (setTargetRatio is called exactly
+                    // once, right below, and never again) -- see the header's
+                    // fixed-ratio-use contract.
+                    down[(size_t) ch].prepare (fs, kInternalRateHz, downRatio);
+                    up[(size_t) ch].prepare   (kInternalRateHz, fs, upRatio);
+                    down[(size_t) ch].setTargetRatio (downRatio);   // explicit + redundant
+                    up[(size_t) ch].setTargetRatio   (upRatio);     // with prepare()'s own
+                                                                     // initial-ratio calc
+
+                    namBuf[ch].assign    ((size_t) namMaxBlk, 0.0f);
+                    upScratch[ch].assign ((size_t) upCap, 0.0f);
+                    fifo[(size_t) ch].prepare (kHostChunk * 4 + 64);
+                }
+            }
+
             history.prepare (kInternalRateHz, kMaxChannels, kMaxHistorySec);
 
             // Fixed kInternalRateHz-derived coefficients: computed ONCE here
@@ -284,7 +453,20 @@ namespace factory_core
             history.reset();
             toneFilterL.reset();
             toneFilterR.reset();
-            bracket.reset();
+
+            if (resampling)
+            {
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                {
+                    down[(size_t) ch].reset();
+                    up[(size_t) ch].reset();
+                    fifo[(size_t) ch].reset();
+                    fifo[(size_t) ch].pushZeros (kFifoMargin);   // margin ONLY -- see
+                                                                  // the header's latency
+                                                                  // proof (never
+                                                                  // latency-dependent)
+                }
+            }
 
             delaySamplesSm = delayTargetSamples;
             scanAgeSm      = scanAgeTargetSamples;
@@ -380,12 +562,37 @@ namespace factory_core
                     hostInR[(size_t) i] = (float) (std::isfinite (rawR) ? rawR : 0.0);
                 }
 
-                // 2) Bracket: down-resample -> sectionFn (history/echo/scan
-                //    at the fixed 24 kHz model rate) -> up-resample.
-                bracket.process (hostInL.data(), hostInR.data(),
-                                  wetHostL.data(), wetHostR.data(), h,
-                                  [this] (float* l, float* r, int m) noexcept
-                                  { runModelDomain (l, r, m); });
+                // 2) Down-resample (host -> 24 kHz, fixed ratio) -> model-
+                //    domain section (history/echo/scan) -> up-resample
+                //    (24 kHz -> host, fixed ratio) -> FIFO (exact h-sample
+                //    delivery every call -- see the header's latency proof).
+                if (! resampling)
+                {
+                    for (int i = 0; i < h; ++i)
+                    {
+                        wetHostL[(size_t) i] = hostInL[(size_t) i];
+                        wetHostR[(size_t) i] = hostInR[(size_t) i];
+                    }
+                    runModelDomain (wetHostL.data(), wetHostR.data(), h);
+                }
+                else
+                {
+                    const int namN0 = down[0].process (hostInL.data(), h, namBuf[0].data(), namMaxBlk);
+                    const int namN1 = down[1].process (hostInR.data(), h, namBuf[1].data(), namMaxBlk);
+                    const int namN  = std::min (namN0, namN1);
+
+                    runModelDomain (namBuf[0].data(), namBuf[1].data(), namN);
+
+                    for (int ch = 0; ch < kMaxChannels; ++ch)
+                    {
+                        const int hostM = up[(size_t) ch].process (namBuf[ch].data(), namN,
+                                                                    upScratch[ch].data(),
+                                                                    (int) upScratch[ch].size());
+                        fifo[(size_t) ch].push (upScratch[ch].data(), hostM);
+                    }
+                    fifo[0].pull (wetHostL.data(), h);
+                    fifo[1].pull (wetHostR.data(), h);
+                }
 
                 // 3) Dry compensation (exact L-sample integer delay) + mix
                 //    (glided IN HOST samples -- see the header contract).
@@ -419,9 +626,40 @@ namespace factory_core
         }
 
     private:
-        // The bracket's model-domain section: history record + echo/scan
-        // read heads, run once per internal (24 kHz) sample. Called by
-        // RateBracket::process() as its sectionFn, in place on its namBuf.
+        // Fixed-capacity power-of-two ring delivering exactly h host samples
+        // per slice (single audio thread; no locks). Mirrors RateBracket's
+        // (and Madoromi's) own private HostFifo -- kept as a local copy here
+        // because RateBracket.h may not be modified (see the header's
+        // resampler-choice note).
+        struct HostFifo
+        {
+            std::vector<float> buf;
+            int mask = 0, rd = 0, wr = 0, count = 0;
+            void prepare (int minSize)
+            {
+                int p = 1; while (p < minSize) p <<= 1;
+                buf.assign ((size_t) p, 0.0f); mask = p - 1; rd = wr = count = 0;
+            }
+            void reset() noexcept { std::fill (buf.begin(), buf.end(), 0.0f); rd = wr = count = 0; }
+            void pushZeros (int m) noexcept
+            {
+                for (int i = 0; i < m; ++i) { buf[(size_t) wr] = 0.0f; wr = (wr + 1) & mask; if (count <= mask) ++count; else rd = (rd + 1) & mask; }
+            }
+            void push (const float* x, int m) noexcept
+            {
+                for (int i = 0; i < m; ++i) { buf[(size_t) wr] = x[i]; wr = (wr + 1) & mask; if (count <= mask) ++count; else rd = (rd + 1) & mask; }
+            }
+            void pull (float* out, int n) noexcept
+            {
+                for (int i = 0; i < n; ++i) { if (count > 0) { out[i] = buf[(size_t) rd]; rd = (rd + 1) & mask; --count; } else out[i] = 0.0f; }
+            }
+        };
+
+        // The model-domain section: history record + echo/scan read heads,
+        // run once per internal (24 kHz) sample. Called directly from
+        // process() above, in place on the down-stage's namBuf output (or
+        // directly on the host buffers when the bracket is bypassed at
+        // fsHost == kInternalRateHz).
         void runModelDomain (float* l, float* r, int m) noexcept
         {
             bool recovered = false;   // at most one full recovery per slice
@@ -482,7 +720,17 @@ namespace factory_core
             history.reset();
             toneFilterL.reset();
             toneFilterR.reset();
-            bracket.reset();
+
+            if (resampling)
+            {
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                {
+                    down[(size_t) ch].reset();
+                    up[(size_t) ch].reset();
+                    fifo[(size_t) ch].reset();
+                    fifo[(size_t) ch].pushZeros (kFifoMargin);   // margin ONLY (see reset())
+                }
+            }
         }
 
         double fs       = 44100.0;
@@ -491,7 +739,13 @@ namespace factory_core
         int    dryCap   = 8;
         int    dryPos   = 0;
 
-        RateBracket<PolyphaseResampler> bracket;
+        bool resampling = false;
+        int  namMaxBlk  = 0;   // model-rate scratch capacity (down-stage outCap)
+
+        std::array<VariPolyphaseResampler, kMaxChannels> down, up;
+        std::array<HostFifo, kMaxChannels> fifo;
+        std::vector<float> namBuf[kMaxChannels], upScratch[kMaxChannels];
+
         HistoryBuffer history;
         OnePole toneFilterL, toneFilterR;
 
