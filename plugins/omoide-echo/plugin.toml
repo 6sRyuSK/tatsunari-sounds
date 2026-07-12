@@ -1,0 +1,8 @@
+[plugin]
+name      = "Tatsunari Omoide Echo"
+slug      = "omoide-echo"
+category  = "Delay"
+status    = "in-progress"
+version   = "0.1.0"
+formats   = ["VST3", "AU"]
+reference = "Chase Bliss Habit"
