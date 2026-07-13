@@ -317,6 +317,27 @@ namespace factory_core
             mixTarget = std::clamp (v, 0.0, 1.0);
         }
 
+        // D6 (bypass hook): set the mix TARGET and SNAP the smoothed runtime
+        // value (mixSm) to it immediately, bypassing the normal 20 ms
+        // kParamSmoothMs glide. Unlike reset() -- which snaps runtime state
+        // to whatever target already happened to be set, and by house rule
+        // never touches targets itself -- this explicitly sets a NEW target
+        // supplied by the caller, so it is a distinct, narrower operation
+        // meant to be paired with reset() on a bypass transition (see the
+        // wrapper): reset() clears the wet path (history + both
+        // PitchShifters) to silence in the same instant, so without this,
+        // a stale (pre-transition) mixSm would keep blending its old,
+        // nonzero fraction against that freshly-silenced wet signal until
+        // the ordinary glide caught up (~20 ms) -- an audible partial-wet
+        // artifact on top of the engine's inherent, accepted zero-latency
+        // bypass step (see the header's "Latency / passthrough contract").
+        void setMix01Snapped (double v) noexcept
+        {
+            if (! std::isfinite (v)) return;
+            mixTarget = std::clamp (v, 0.0, 1.0);
+            mixSm     = mixTarget;
+        }
+
         // Always 0 -- see the header's "Latency / passthrough contract".
         int latencySamples() const noexcept { return 0; }
 

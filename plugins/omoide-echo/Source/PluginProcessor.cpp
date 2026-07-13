@@ -121,11 +121,22 @@ void OmoideEchoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     const bool bypassed = bypassParam->load() > 0.5f;
     if (bypassed != wasBypassed)
     {
-        // Bypass transition: reset the engine (regression policy: state
-        // reset on bypass transitions), not a hard bypass around it -- see
-        // pushParamsToEngine's mix=0 push below, which keeps the engine's
-        // latency-aligned dry path exactly correct while bypassed.
-        engine.reset();
+        // Bypass transition (D6): reset the engine's DSP state (regression
+        // policy: state reset on bypass transitions) via resetForBypass(),
+        // NOT the full reset() -- reset() would also zero the dry
+        // compensation ring (dryBuf), silencing the latency-compensated dry
+        // path for latencySamples() samples on EVERY engage/disengage (an
+        // audible dropout); resetForBypass() clears history/feedback/
+        // resamplers/FIFO/glides but leaves dryBuf continuous.
+        // Force the mix target to 0 first, per resetForBypass()'s own
+        // contract, so mixSm's target-snap reads exactly 0 across the
+        // transition (pure dry), hiding the discontinuity the reset
+        // introduces into the wet signal regardless of transition direction
+        // -- pushParamsToEngine below then restores the real post-transition
+        // targets (mix = 0 while bypassed, else the user's mix) and mixSm
+        // glides to that target normally.
+        engine.setMix01 (0.0);
+        engine.resetForBypass();
         wasBypassed = bypassed;
     }
 

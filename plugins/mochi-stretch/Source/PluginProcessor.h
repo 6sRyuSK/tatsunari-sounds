@@ -69,11 +69,23 @@ private:
     // transport keep rolling — HOLD stays independently latched) and force
     // the engine's OWN 20 ms-smoothed mix target to 0 while bypassed, instead
     // of skipping process() entirely. latencySamples() is always 0, so either
-    // choice is spec-authorized; this one is click-free on the A/B toggle
-    // (the mix ramps down/up through the engine's existing smoother rather
-    // than a hard edit-splice) and needs no extra dry-buffer bookkeeping here.
+    // choice is spec-authorized; this needs no extra dry-buffer bookkeeping
+    // here — mochi is zero-latency with NO dry compensation ring (unlike
+    // omoide/madoromi), so there is nothing to preserve across the
+    // transition beyond the mix smoother itself.
     // engine.reset() still runs on every bypass transition (regression policy:
     // state reset on bypass transitions) — see prepareToPlay/processBlock.
+    // D6: reset() alone is not enough — it snaps the mix smoother to
+    // whatever target was active BEFORE the transition (a stale value),
+    // while simultaneously silencing the wet path (history + shifters). Left
+    // as-is, that stale mix would blend a nonzero fraction against the
+    // freshly-silenced wet signal for ~20 ms until the ordinary glide caught
+    // up (a partial-wet artifact). processBlock() pairs reset() with
+    // engine.setMix01Snapped(...) (see MochiStretch.h) so the mix smoother
+    // jumps straight to its POST-transition target in the same instant —
+    // a single clean step, not a stale glide. The step itself (mixed<->dry)
+    // is the engine's inherent, accepted zero-latency bypass behaviour and
+    // is normal/host-smoothed; no dry ring or added latency is introduced.
     bool lastBypassed = false;
 
     // Continuous parameters that live entirely inside the engine (speed,

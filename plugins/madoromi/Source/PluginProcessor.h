@@ -75,8 +75,10 @@ private:
     // compensation) -- "output" is not one of the engine's parameters.
     juce::SmoothedValue<float> outputGain;
 
-    // Bypass edge tracking -> engine.reset() on either transition (state reset
-    // on bypass entry AND exit, regression policy).
+    // Bypass edge tracking -> engine.resetForBypass() on either transition
+    // (state reset on bypass entry AND exit, regression policy; the dry
+    // compensation delay line is deliberately preserved -- see Madoromi.h's
+    // resetForBypass() contract -- to avoid an audible dropout, D6 fix).
     bool wasBypassed = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MadoromiAudioProcessor)

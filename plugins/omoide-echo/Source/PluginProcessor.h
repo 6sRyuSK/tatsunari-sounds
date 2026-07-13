@@ -61,7 +61,11 @@ private:
     factory_presets::ProgramAdapter programs;
 
     factory_core::OmoideEcho engine;
-    bool wasBypassed = false; // edge-detects the bypass transition -> engine.reset()
+    bool wasBypassed = false; // edge-detects the bypass transition -> engine.resetForBypass()
+                              // (D6: NOT engine.reset() -- that would zero the dry
+                              // compensation ring and drop the dry path for L samples
+                              // on every bypass engage/disengage; see OmoideEcho.h's
+                              // resetForBypass() contract)
 
     std::atomic<float>* delayParam      = nullptr; // ms
     std::atomic<float>* regenParam      = nullptr; // %

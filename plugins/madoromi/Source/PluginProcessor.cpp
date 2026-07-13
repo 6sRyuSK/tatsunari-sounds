@@ -82,10 +82,17 @@ MadoromiAudioProcessor::MadoromiAudioProcessor()
 
 void MadoromiAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
-    engine.prepare (sampleRate, 2);
-
     const bool bypassed = bypassParam->load() > 0.5f;
 
+    // Push every APVTS-loaded parameter BEFORE prepare() -- this matters more
+    // than it used to (D2 fix): prepare() now captures the CLOCK value in
+    // effect at that exact moment and fixes the reported latency to it (see
+    // Madoromi.h's Latency contract), so if clock were pushed only AFTER
+    // prepare(), a host that restores a saved project (non-default clock)
+    // before the first prepareToPlay would get a latency computed from the
+    // engine's stale/default clock instead of the real one. Pushing first
+    // means prepare()'s own reset() already snaps every smoother straight
+    // onto the loaded targets, so no separate "two-stage reset" is needed.
     engine.setClockHz       ((double) clockParam->load());
     engine.setWash01        ((double) washParam->load()   / 100.0);
     engine.setToneHz        ((double) toneParam->load());
@@ -94,11 +101,7 @@ void MadoromiAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerB
     engine.setBalance01     ((double) balanceParam->load() / 100.0);
     engine.setMix01         (bypassed ? 0.0 : (double) mixParam->load() / 100.0);
 
-    // Two-stage reset (house pattern): prepare() already reset the engine once
-    // with its own default-constructed targets; now that the real APVTS-loaded
-    // values have been pushed, reset() again so every smoother snaps straight
-    // onto them instead of audibly gliding in over the first block.
-    engine.reset();
+    engine.prepare (sampleRate, 2);
 
     setLatencySamples (engine.latencySamples());
 
@@ -130,19 +133,14 @@ void MadoromiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
 
     const bool bypassed = bypassParam->load() > 0.5f;
 
-    // Reset the engine on either bypass transition (regression policy: state
-    // reset on bypass transitions, both directions).
-    if (bypassed != wasBypassed)
-    {
-        engine.reset();
-        wasBypassed = bypassed;
-    }
-
     // Push every parameter every block; the engine keeps running even while
     // bypassed. Bypass pushes mix=0 instead of skipping process() entirely, so
     // the output stays the engine's own delay-compensated dry copy -- exactly
     // latency-aligned with the reported latency at every bypass state
-    // ("saturator" style true bypass, see plugins/saturator).
+    // ("saturator" style true bypass, see plugins/saturator). Pushed BEFORE
+    // the bypass-transition reset below so resetForBypass()'s smoother snap
+    // (mixSm in particular) lands on the bypass-appropriate target, not the
+    // previous block's stale one.
     engine.setClockHz       ((double) clockParam->load());
     engine.setWash01        ((double) washParam->load()   / 100.0);
     engine.setToneHz        ((double) toneParam->load());
@@ -150,6 +148,18 @@ void MadoromiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     engine.setFrozen        (loopParam->load() > 0.5f);
     engine.setBalance01     ((double) balanceParam->load() / 100.0);
     engine.setMix01 (bypassed ? 0.0 : (double) mixParam->load() / 100.0);
+
+    // D6 fix (bypass de-click, approved): resetForBypass() clears every
+    // actual DSP/feedback node (wash, looper, resamplers, FIFOs) but PRESERVES
+    // the dry compensation delay line, so the dry path stays sample-
+    // continuous across the transition instead of dropping out (a plain
+    // reset() zeroed the dry ring line too -- audible dropout). See its
+    // contract comment in Madoromi.h.
+    if (bypassed != wasBypassed)
+    {
+        engine.resetForBypass();
+        wasBypassed = bypassed;
+    }
 
     const int numCh = juce::jmin (totalIn, totalOut);
     engine.process (buffer.getArrayOfWritePointers(), numCh, n);

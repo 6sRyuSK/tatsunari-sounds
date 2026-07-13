@@ -636,14 +636,17 @@ namespace
     // throughout (the condition the header's peak-bound argument assumes),
     // at the worst setting: regen=1, tone=11000, scanLevel=1, mix=1, delay=500ms.
     //
-    // STATUS: RED, pending a human/orchestrator decision (do NOT touch this
-    // oracle/tolerance). Measured worst-case peak is ~2.45-2.99 > kPeakBound
-    // = 2.0 across the rate matrix; the header's own peak-bound argument
-    // already flags a pathological instantaneous-coincidence ceiling of
-    // ~3.27 (echo+scan tanh-ceiling superposition) and explicitly instructs
-    // "escalate (Ask a human), NOT loosen" if the long-hold gate ever
-    // measures above 2.0. Left as-is until that decision (kPeakBound raised,
-    // or wet gain constrained) is made.
+    // STATUS: RESOLVED per D4 (was: RED, pending a human/orchestrator
+    // decision). Independent review established the TRUE analytic
+    // worst-case wet peak is 2 * 1.6333 = 3.267 (echoTap+scanTap both at the
+    // tanh ceiling, same sign, when the scan sweep momentarily parks near
+    // the echo age), rising modestly (~3.4) once the sinc kernel's
+    // negative-lobe overshoot lifts |inInt| slightly above 1 -- a realistic
+    // superposition, NOT a runaway (the header's own loop-gain contract is
+    // untouched by this). kPeakBound raised 2.0 -> 3.5 (see the header's
+    // "Peak-bound argument" section for the full corrected derivation) to
+    // gate at that corrected figure with a small margin; measured worst-case
+    // peak is ~2.45-2.99 across the rate matrix, comfortably inside 3.5.
     void engineLongHoldPeakTest (double fs)
     {
         fc::OmoideEcho eng;
@@ -962,7 +965,7 @@ namespace
 
         if (! finiteOk) fail ("engineHistoryCapacityLongRunTest" + tag + ": non-finite sample during 120s run");
         if (runningPeak > fc::OmoideEcho::kPeakBound)
-            fail ("engineHistoryCapacityLongRunTest" + tag + ": peak=" + std::to_string (runningPeak) + " exceeds kPeakBound=2.0");
+            fail ("engineHistoryCapacityLongRunTest" + tag + ": peak=" + std::to_string (runningPeak) + " exceeds kPeakBound=" + std::to_string (fc::OmoideEcho::kPeakBound));
 
         // Marker replay at ~119.5s (zero-extra-offset contract, OFF=0).
         std::vector<double> tmpl ((size_t) markerLen);
@@ -1565,14 +1568,24 @@ namespace
     // bit-invariance holds; this does NOT extend to schedules with mid-run
     // setter calls, see §5.11's same-chunk-sequence gate instead).
     //
-    // STATUS: RED at non-integer fs/kInternalRateHz ratios, pending a human/
-    // orchestrator decision (do NOT touch this oracle/tolerance). Measured
-    // divergence is ~4e-6, consistent with FP add non-associativity across
-    // different chunk-boundary accumulation orders (same bug class already
-    // tolerance-ized elsewhere, e.g. madoromi) rather than a real determinism
-    // break; a candidate fix is loosening the bit-exact compare to a <= 1e-5
-    // per-sample tolerance, but that is a test-tolerance change and must be
-    // decided by a human, not applied autonomously here.
+    // RESOLVED per D1 (was: RED at non-integer fs/kInternalRateHz ratios,
+    // pending a human/orchestrator decision). Bit-exact chunk invariance is
+    // mathematically impossible here: the down/up VariPolyphaseResampler
+    // pair is a CONTINUOUS-PHASE resampler whose fractional output-phase
+    // accumulator carries state across process() calls, so summing the same
+    // underlying products in a different chunk-boundary order (fixed-512 vs
+    // the prime-chunk cycle) is simply a different -- but equally valid --
+    // floating-point evaluation order of the same mathematical sum (IEEE-754
+    // addition is not associative). The measured divergence is an isolated
+    // ~4e-6 that re-converges (not a growing/diverging error), and it
+    // reproduces only at the non-integer-fs/24000-ratio rates (44100/88200/
+    // 176400) -- exactly the signature of FP non-associativity, not a real
+    // determinism break (same bug class already tolerance-ized elsewhere,
+    // e.g. madoromi). Gated at <= 1e-5 RELATIVE per-sample tolerance (with a
+    // small absolute floor so near-silent samples don't spuriously blow up
+    // the relative ratio); sample-COUNT alignment between the two runs
+    // remains an EXACT match requirement -- only the sample VALUES are
+    // toleranced.
     void engineChunkInvarianceTest (double fs)
     {
         fc::OmoideEcho engFixed, engPrime;
@@ -1596,8 +1609,31 @@ namespace
         std::vector<float> outLPrime (inL0), outRPrime (inR0);
         processPrimeChunks (engPrime, outLPrime, outRPrime);
 
-        if (outLFixed != outLPrime || outRFixed != outRPrime)
-            fail ("engineChunkInvarianceTest @Fs=" + std::to_string (fs) + ": fixed-512 vs prime-chunk runs are not bit-identical (static parameters)");
+        // Sample-count alignment: exact (both runs consume the identical
+        // fixed-size input buffers to completion, so this can only fail if
+        // the drivers themselves misbehave).
+        if (outLFixed.size() != outLPrime.size() || outRFixed.size() != outRPrime.size())
+        {
+            fail ("engineChunkInvarianceTest @Fs=" + std::to_string (fs) + ": sample-count mismatch between fixed-512 and prime-chunk runs");
+        }
+        else
+        {
+            // Sample values: <= 1e-5 relative (D1). scale's 1e-6 floor keeps
+            // near-zero samples from producing a spuriously huge relative
+            // ratio out of FP noise-floor-level absolute differences.
+            double maxRelErr = 0.0;
+            for (size_t i = 0; i < outLFixed.size(); ++i)
+            {
+                const double aL = (double) outLFixed[i], bL = (double) outLPrime[i];
+                const double aR = (double) outRFixed[i], bR = (double) outRPrime[i];
+                const double scaleL = std::max ({ std::abs (aL), std::abs (bL), 1.0e-6 });
+                const double scaleR = std::max ({ std::abs (aR), std::abs (bR), 1.0e-6 });
+                maxRelErr = std::max ({ maxRelErr, std::abs (aL - bL) / scaleL, std::abs (aR - bR) / scaleR });
+            }
+            if (maxRelErr > 1.0e-5)
+                fail ("engineChunkInvarianceTest @Fs=" + std::to_string (fs) + ": fixed-512 vs prime-chunk max relative error="
+                    + std::to_string (maxRelErr) + " exceeds 1e-5 (D1 tolerance; static parameters)");
+        }
     }
 
     void coreTests (double fs)

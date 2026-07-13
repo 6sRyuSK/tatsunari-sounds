@@ -236,7 +236,9 @@
 //     is the one smoother that runs in the outer, host-rate loop, since it
 //     blends dryDelayed with wetHost AFTER the bracket, not inside it).
 //
-// Peak-bound argument (long-hold realistic gate: peak <= kPeakBound = 2.0):
+// Peak-bound argument (long-hold realistic gate: peak <= kPeakBound = 3.5 --
+//   RESOLVED per D4; SUPERSEDES an earlier draft of this argument that
+//   claimed a <= 2.0 bound, which independent review found false):
 //   The per-write ceiling is unconditional and exact: |write| <=
 //   1 + kMaxRegen * (1/1.5) = 1 + 0.95 * 0.6667 ~= 1.6333 for any |inInt| <=
 //   1, because shape()'s output magnitude is bounded by 2/3 for EVERY real
@@ -244,23 +246,30 @@
 //   become -- so history can never contain a value whose magnitude exceeds
 //   ~1.6333, and both echoTap and scanTap (being interpolated reads of
 //   stored history) inherit that same ceiling individually.
-//   A naive worst-case SUM bound would be ~1.6333 * (1 + scanLevel) <= 3.27,
-//   but that requires echoTap AND scanTap to BOTH sit at their peak at the
-//   EXACT SAME output instant -- i.e. the delay-age slot and the (generally
-//   different) scan-age slot both holding the near-ceiling value
-//   simultaneously. Under the specified long-hold gate (8 s, scan SWEEPING
-//   throughout -- see the test guidance), the scan glide (250 ms tau)
-//   continuously moves the read pointer across history rather than parking
-//   on one historical instant, so it cannot dwell in exact phase/age
-//   alignment with the live feedback tap for a sustained span; the realistic
-//   combined envelope stays under kPeakBound = 2.0 (comfortably above the
-//   single-tap ceiling of 1.6333, well under the pathological instantaneous
-//   coincidence bound of 3.27). This is an engineering argument, not a closed
-//   -form proof, consistent with the spec's own framing ("realistic
-//   envelope", not a worst-instant guarantee) -- if the planned 8 s
-//   long-hold/moving-scan test ever measures a peak exceeding 2.0 in
-//   practice, that is a finding for the test designer to escalate (Ask a
-//   human), not a tolerance to silently loosen.
+//   TRUE analytic worst case: wetInt = echoTap + scanLevelSm * scanTap, so at
+//   scanLevelSm == 1 the two taps CAN simultaneously read history slots each
+//   holding the near-ceiling ~1.6333 value with the SAME sign -- this is not
+//   merely hypothetical: under the long-hold gate's continuously-sweeping
+//   scan (250 ms tau glide, moving across the full history range), the scan
+//   age passes through every value, INCLUDING a momentary coincidence with
+//   the live echo's own delay age, so the two taps genuinely superpose for
+//   an instant. That gives an analytic worst-case peak of 2 * 1.6333 ~=
+//   3.267 -- a realistic superposition of two independently-bounded taps,
+//   NOT a runaway or a loop-gain violation (the feedback Loop-gain contract
+//   above is untouched by this; scanTap is excluded from feedback entirely).
+//   On top of that, the down/up VariPolyphaseResampler pair's sinc kernel
+//   has the standard negative-lobe overshoot of an ideal-lowpass (Gibbs-
+//   style) FIR, which can lift the bracket's output magnitude slightly above
+//   the |inInt| <= 1 assumption the per-write ceiling above is stated in
+//   terms of -- raising the realistic worst case modestly further, to
+//   ~3.4. kPeakBound = 3.5 gates this with a small margin above that ~3.4
+//   figure: comfortably wide enough to absorb the analytic worst case, while
+//   still catching genuine instability (an unbounded feedback loop would
+//   blow far past 3.5, not sit just above it -- kMaxRegen = 0.95 keeps
+//   small-signal loop gain < 1 at every in-range setting regardless of this
+//   bound, see the Loop-gain contract above). Measured worst-case peak in
+//   engineLongHoldPeakTest (8 s, scan sweeping throughout, all 6 rates) is
+//   ~2.99, comfortably inside this bound.
 //
 // Real-time / safety rules (house standard):
 //   - prepare() performs ALL allocation: HistoryBuffer's ~23 MB (2 channels x
@@ -320,7 +329,10 @@ namespace factory_core
         static constexpr double kDelayGlideTauMs = 60.0;
         static constexpr double kScanGlideTauMs  = 250.0;
         static constexpr double kParamSmoothMs   = 20.0;
-        static constexpr double kPeakBound       = 2.0;    // see header argument
+        static constexpr double kPeakBound       = 3.5;    // see header argument (D4:
+                                                            // 2*1.6333~=3.27 analytic
+                                                            // worst case + sinc
+                                                            // overshoot ~= 3.4, + margin)
         static constexpr int    kHostChunk       = 512;    // fixed internal slice
         static constexpr int    kFifoMargin      = 16;     // output-FIFO safety cushion;
                                                             // same role/value as
@@ -483,6 +495,67 @@ namespace factory_core
             std::fill (hostInR.begin(),  hostInR.end(),  0.0f);
             std::fill (wetHostL.begin(), wetHostL.end(), 0.0f);
             std::fill (wetHostR.begin(), wetHostR.end(), 0.0f);
+        }
+
+        // D6 (bypass de-click): identical to reset() for every DSP node --
+        // history, both tone OnePoles, both VariPolyphaseResampler stages +
+        // their output FIFOs, and all six glide/smoothers (which snap to
+        // their CURRENT targets exactly like reset() -- see that method's
+        // own contract) -- EXCEPT it leaves dryBuf/dryPos completely
+        // untouched. dryBuf is a pure passthrough delay line (no feedback,
+        // no filter state -- see the "Latency contract" section above), so
+        // it carries no "mode" that bypass state-hygiene requires clearing;
+        // zeroing it (as a full reset() would) instead silences the
+        // latency-compensated dry path for latencySamples() samples
+        // (~2.7-3.0 ms) at the exact moment bypass engages/disengages -- an
+        // audible dropout on a path that should stay perfectly continuous
+        // across the transition.
+        // Call this from the wrapper on EVERY bypass edge (both engage and
+        // disengage); reserve reset() itself for prepare()/channel-count
+        // changes, where the dry ring legitimately needs to start clean.
+        // Contract: the caller should push the mix target to 0 (setMix01)
+        // immediately BEFORE calling this, so mixSm's target-snap below
+        // reads exactly 0 on either transition direction -- pure dry, ==
+        // 0 * anything -- which hides the (unavoidable) discontinuity the
+        // history/tone/resampler reset introduces into the wet signal,
+        // regardless of which way bypass just flipped. The caller then
+        // pushes the real post-transition targets right after (mix = 0
+        // while bypassed, else the user's mix), and mixSm glides to that
+        // target at its normal tau = kParamSmoothMs -- no separate
+        // special-case needed here beyond the pre-call setMix01(0).
+        void resetForBypass() noexcept
+        {
+            history.reset();
+            toneFilterL.reset();
+            toneFilterR.reset();
+
+            if (resampling)
+            {
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                {
+                    down[(size_t) ch].reset();
+                    up[(size_t) ch].reset();
+                    fifo[(size_t) ch].reset();
+                    fifo[(size_t) ch].pushZeros (kFifoMargin);   // margin ONLY -- see
+                                                                  // the header's latency
+                                                                  // proof (never
+                                                                  // latency-dependent)
+                }
+            }
+
+            delaySamplesSm = delayTargetSamples;
+            scanAgeSm      = scanAgeTargetSamples;
+            regenSm        = regenTarget;
+            toneHzSm       = toneHzTarget;
+            scanLevelSm    = scanLevelTarget;
+            mixSm          = mixTarget;   // see the pre-call setMix01(0) contract above
+
+            std::fill (hostInL.begin(),  hostInL.end(),  0.0f);
+            std::fill (hostInR.begin(),  hostInR.end(),  0.0f);
+            std::fill (wetHostL.begin(), wetHostL.end(), 0.0f);
+            std::fill (wetHostR.begin(), wetHostR.end(), 0.0f);
+
+            // dryBuf / dryPos deliberately NOT touched -- see contract above.
         }
 
         // -- parameters (audio thread, between process() calls) -------------

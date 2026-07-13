@@ -108,6 +108,19 @@ void MochiStretchAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         lastBypassed = bypassed;
         engine.reset(); // regression policy: state reset on bypass transitions
+        // D6: reset() just silenced the wet path (history + both
+        // PitchShifters) to zero, but it snaps mixSm to whatever mixTarget
+        // still was at that instant (the PRE-transition value, since
+        // setMix01() below hasn't run yet this block) -- without this, the
+        // stale nonzero mix would blend against the now-silent wet signal
+        // for ~20 ms (kParamSmoothMs) until the ordinary glide caught up: a
+        // partial-wet artifact. Snapping the mix smoother directly to the
+        // POST-transition target here (paired with reset(), same instant)
+        // makes it a single clean step instead. The remaining step itself
+        // (mixed -> dry or dry -> mixed) is the engine's inherent,
+        // accepted zero-latency bypass behaviour (mochi has no dry ring --
+        // see PluginProcessor.h) and is normal/host-smoothed.
+        engine.setMix01Snapped (bypassed ? 0.0 : ((double) mixParam->load() * 0.01));
     }
 
     // Engine setters every block, current values, non-finite-guarded inside

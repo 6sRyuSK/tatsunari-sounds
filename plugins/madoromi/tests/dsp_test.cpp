@@ -882,15 +882,31 @@ namespace
     // §5.1 support: design-time latency table + transcribed formula (independent
     // hand-copy of the header's published formula, literal 62/16 -- NOT read
     // from VariPolyphaseResampler::kHalfTaps / Madoromi::kFifoMargin).
-    struct RateLatency { double fs; long long L; };
+    //
+    // D2 fix (approved): the reported latency now depends on the PREPARED
+    // clock C (previously it silently assumed C == kInternalRateHz == 48000
+    // regardless of the actual clock, which was the bug), so this table/
+    // formula is now parameterised on C. Values are hand-computed for the two
+    // clocks the suite exercises (48000 == kInternalRateHz, and 8000 ==
+    // kClockMinHz, the opposite end of the range), giving a genuine per-
+    // rate/2-clock cross-check rather than a single clock-invariant number.
+    struct RateLatency { double fs; long long L48; long long L8; };
     const RateLatency kLatencyTable[] = {
-        { 44100.0, 358 }, { 48000.0, 388 }, { 88200.0, 700 },
-        { 96000.0, 760 }, { 176400.0, 1384 }, { 192000.0, 1504 }
+        { 44100.0,   484,  764 }, { 48000.0,   514,  824 }, { 88200.0,   878, 1448 },
+        { 96000.0,   948, 1568 }, { 176400.0, 1676, 2815 }, { 192000.0, 1816, 3056 }
     };
-    long long transcribedLatency (double fsHost)
+    // fifoFill(fsHost): the FIFO's own clock-sweep-safety budget, UNCHANGED by
+    // the D2 fix (identical formula/value to the pre-fix `latency + 64`).
+    long long transcribedFifoFill (double fsHost)
     {
         const double P0 = 16.0 + std::ceil (62.0 * (fsHost / 8000.0 - std::max (1.0, fsHost / 48000.0)));
-        return (long long) std::llround (62.0 * std::max (1.0, fsHost / 48000.0)) + (long long) P0;
+        return (long long) std::llround (62.0 * std::max (1.0, fsHost / 48000.0)) + (long long) P0 + 64;
+    }
+    // L(fsHost, C) = fifoFill(fsHost) + G(fsHost, C), G = round(2*31*max(1,fsHost/C)).
+    long long transcribedLatency (double fsHost, double clockHzPrepared)
+    {
+        const long long G = (long long) std::llround (62.0 * std::max (1.0, fsHost / clockHzPrepared));
+        return transcribedFifoFill (fsHost) + G;
     }
     long long absDiff (long long a, long long b) { return a >= b ? a - b : b - a; }
 
@@ -898,23 +914,23 @@ namespace
     {
         const std::string tag = " @fs=" + std::to_string (fs);
 
-        // (0) contract pin.
-        long long expectedL = -1;
-        for (const auto& e : kLatencyTable) if (std::fabs (e.fs - fs) < 0.5) { expectedL = e.L; break; }
-        if (expectedL < 0) { fail ("engineTransparencyLatencyTest: fs not in design-time table" + tag); return; }
+        // (0) contract pin, clock=48000 (== kInternalRateHz).
+        long long expectedL48 = -1, expectedL8 = -1;
+        for (const auto& e : kLatencyTable) if (std::fabs (e.fs - fs) < 0.5) { expectedL48 = e.L48; expectedL8 = e.L8; break; }
+        if (expectedL48 < 0) { fail ("engineTransparencyLatencyTest: fs not in design-time table" + tag); return; }
 
-        const long long Lx    = transcribedLatency (fs);
-        const long long Lpure = fc::Madoromi::latencyForRate (fs);
+        const long long Lx48    = transcribedLatency (fs, 48000.0);
+        const long long Lpure48 = fc::Madoromi::latencyForRate (fs, 48000.0);
         {
             fc::Madoromi pin;
             pin.setWash01 (0.0); pin.setToneHz (6000.0); pin.setFrozen (false);
             pin.setBalance01 (0.0); pin.setClockHz (48000.0); pin.setMix01 (0.0);
             pin.prepare (fs, 2);
             const long long engineL = pin.latencySamples();
-            if (engineL != Lx || engineL != Lpure || engineL != expectedL)
-                fail ("engineTransparencyLatencyTest: latency contract pin mismatch engine=" + std::to_string (engineL)
-                      + " transcribed=" + std::to_string (Lx) + " pure=" + std::to_string (Lpure)
-                      + " table=" + std::to_string (expectedL) + tag);
+            if (engineL != Lx48 || engineL != Lpure48 || engineL != expectedL48)
+                fail ("engineTransparencyLatencyTest: latency contract pin (clock=48000) mismatch engine=" + std::to_string (engineL)
+                      + " transcribed=" + std::to_string (Lx48) + " pure=" + std::to_string (Lpure48)
+                      + " table=" + std::to_string (expectedL48) + tag);
         }
         if (fc::Madoromi::kFifoSafetyPad != 64)
             fail ("engineTransparencyLatencyTest: kFifoSafetyPad != 64" + tag);
@@ -927,25 +943,43 @@ namespace
         if (fc::Madoromi::toneToDamping (18000.0) != 0.0 || fc::Madoromi::toneToDamping (1500.0) != 1.0)
             fail ("engineTransparencyLatencyTest: toneToDamping endpoint mismatch" + tag);
 
-        // L is clock-independent: re-prepare at clock=8000, same latency.
+        // D2 fix (approved): under the corrected contract, L is NO LONGER
+        // clock-independent -- it must equal the TRUE wet transit at
+        // WHATEVER clock is prepared. Second contract pin at clock=8000
+        // (kClockMinHz), the opposite end of the range, replaces the removed
+        // "L is clock-independent" assertion with the opposite (and now
+        // correct) one: a DIFFERENT clock produces a DIFFERENT (larger) L,
+        // cross-checked the same triple way (engine / transcribed / pure).
+        const long long Lx8    = transcribedLatency (fs, 8000.0);
+        const long long Lpure8 = fc::Madoromi::latencyForRate (fs, 8000.0);
         {
-            fc::Madoromi clk8;
-            clk8.setClockHz (8000.0);
-            clk8.prepare (fs, 2);
-            if (clk8.latencySamples() != expectedL)
-                fail ("engineTransparencyLatencyTest: latency changed at clock=8000 (" + std::to_string (clk8.latencySamples())
-                      + " != " + std::to_string (expectedL) + ")" + tag);
+            fc::Madoromi pin8;
+            pin8.setWash01 (0.0); pin8.setToneHz (6000.0); pin8.setFrozen (false);
+            pin8.setBalance01 (0.0); pin8.setClockHz (8000.0); pin8.setMix01 (0.0);
+            pin8.prepare (fs, 2);
+            const long long engineL8 = pin8.latencySamples();
+            if (engineL8 != Lx8 || engineL8 != Lpure8 || engineL8 != expectedL8)
+                fail ("engineTransparencyLatencyTest: latency contract pin (clock=8000) mismatch engine=" + std::to_string (engineL8)
+                      + " transcribed=" + std::to_string (Lx8) + " pure=" + std::to_string (Lpure8)
+                      + " table=" + std::to_string (expectedL8) + tag);
+            if (engineL8 == expectedL48)
+                fail ("engineTransparencyLatencyTest: clock=8000 latency equals clock=48000 latency (clock-independence bug not fixed)" + tag);
         }
 
-        const long long L   = expectedL;
+        const long long L   = expectedL48;   // reference latency at clock=48000, used below
         const int       PAD = fc::Madoromi::kFifoSafetyPad;
 
+        // Dry-path delay identity: the dry ring is delayed by exactly
+        // engine.latencySamples() for WHATEVER clock that specific engine was
+        // prepared with (D2 fix: this is now clock-dependent, so it must be
+        // fetched per-instance rather than reusing the outer clock=48000 `L`).
         auto dryIdentityCase = [&] (double clockHz, double durSec, uint64_t seedL, uint64_t seedR, const char* label)
         {
             fc::Madoromi engine;
             engine.setWash01 (0.0); engine.setToneHz (6000.0); engine.setFrozen (false);
             engine.setBalance01 (0.0); engine.setClockHz (clockHz); engine.setMix01 (0.0);
             engine.prepare (fs, 2);
+            const long long Lthis = engine.latencySamples();
 
             const long long total = (long long) std::llround (durSec * fs);
             std::vector<float> inL ((size_t) total), inR ((size_t) total);
@@ -962,8 +996,8 @@ namespace
             double worst = 0.0;
             for (long long n = 0; n < total; ++n)
             {
-                const double expL = (n >= L) ? (double) inL[(size_t) (n - L)] : 0.0;
-                const double expR = (n >= L) ? (double) inR[(size_t) (n - L)] : 0.0;
+                const double expL = (n >= Lthis) ? (double) inL[(size_t) (n - Lthis)] : 0.0;
+                const double expR = (n >= Lthis) ? (double) inR[(size_t) (n - Lthis)] : 0.0;
                 worst = std::max (worst, std::fabs ((double) outL[(size_t) n] - expL));
                 worst = std::max (worst, std::fabs ((double) outR[(size_t) n] - expR));
             }
@@ -981,6 +1015,7 @@ namespace
             engine.setWash01 (0.0); engine.setToneHz (6000.0); engine.setFrozen (false);
             engine.setBalance01 (0.0); engine.setClockHz (48000.0); engine.setMix01 (0.0);
             engine.prepare (fs, 2);
+            const long long Lthis = engine.latencySamples();
 
             const long long total = (long long) std::llround (0.5 * fs);
             std::vector<float> in ((size_t) total);
@@ -993,7 +1028,7 @@ namespace
             double worst = 0.0;
             for (long long n = 0; n < total; ++n)
             {
-                const double exp = (n >= L) ? (double) in[(size_t) (n - L)] : 0.0;
+                const double exp = (n >= Lthis) ? (double) in[(size_t) (n - Lthis)] : 0.0;
                 worst = std::max (worst, std::fabs ((double) out[(size_t) n] - exp));
             }
             if (worst > 1e-6)
@@ -1061,20 +1096,37 @@ namespace
             return peakIdx;
         };
 
+        // D2 fix (approved): wet transit now equals engine.latencySamples()
+        // EXACTLY (kFifoSafetyPad is folded into the reported latency itself,
+        // so no separate "+PAD" is added here anymore), and it is measured at
+        // TWO different prepared clocks -- 48000 (== L) and 8000 (a genuinely
+        // DIFFERENT, larger expected value, Lx8/Lpure8 from the contract pin
+        // above) -- replacing the removed "transit is clock-invariant"
+        // assumption with a per-clock "transit == reported latency" check,
+        // which is the actual corrected contract.
         const long long lag48 = measureTransitLag (48000.0);
-        if (absDiff (lag48, L + PAD) > 1)
+        if (absDiff (lag48, L) > 1)
             fail ("engineTransparencyLatencyTest(b3): wet transit lag=" + std::to_string (lag48)
-                  + " expected=" + std::to_string (L + PAD) + " (clock=48000)" + tag);
+                  + " expected=" + std::to_string (L) + " (clock=48000)" + tag);
 
         const long long lag8 = measureTransitLag (8000.0);
-        if (absDiff (lag8, L + PAD) > 1)
+        if (absDiff (lag8, Lx8) > 1)
             fail ("engineTransparencyLatencyTest(b3): wet transit lag=" + std::to_string (lag8)
-                  + " expected=" + std::to_string (L + PAD) + " (clock=8000, transit clock-invariance)" + tag);
+                  + " expected=" + std::to_string (Lx8) + " (clock=8000)" + tag);
 
         // (b)4: clock=8000 worst-case-buffer configuration, dry identity (abbreviated 1s).
         dryIdentityCase (8000.0, 1.0, 0x555ULL, 0x666ULL, "b4");
 
-        // (c) mix=0.5: published wet/dry skew (PAD samples) tracked exactly at 100 Hz.
+        // (c) mix=0.5: dry+wet alignment at the prepared clock. D2 fix
+        // (approved): the previous revision misaligned dry (delayed by the
+        // reported L) and wet (which actually emerged L + PAD later) by
+        // exactly kFifoSafetyPad samples, so a mix=0.5 blend combed at
+        // gain = |cos(pi*f0*PAD/fs)| < 1. With the fix, wet emerges at
+        // EXACTLY the reported latency (== the dry delay), so the two copies
+        // are sample-aligned and the blend is unity (0 dB, no comb) -- the
+        // predicted gain is now 1.0. (No "+PAD" in `skip` either: wet is no
+        // longer PAD samples late; a small extra 0.05 s skip past steady
+        // state is retained.)
         {
             fc::Madoromi engine;
             engine.setWash01 (0.0); engine.setToneHz (6000.0); engine.setFrozen (false);
@@ -1082,7 +1134,7 @@ namespace
             engine.prepare (fs, 2);
 
             const double f0 = 100.0, A = 0.5;
-            const long long skip = engine.latencySamples() + PAD + (long long) std::llround (0.05 * fs);
+            const long long skip = engine.latencySamples() + (long long) std::llround (0.05 * fs);
             const long long total = skip + N;
             std::vector<float> Lb ((size_t) total), Rb ((size_t) total);
             for (long long i = 0; i < total; ++i)
@@ -1094,11 +1146,10 @@ namespace
             engine.process (p, 2, (int) total);
             const double mag = goertzelMag (Lb, (size_t) skip, (size_t) N, f0, fs);
             const double gMeasDb = 20.0 * std::log10 (mag / A);
-            const double predGain = std::fabs (std::cos (kPi * f0 * (double) PAD / fs));
-            const double predDb = 20.0 * std::log10 (predGain);
+            const double predDb = 0.0;   // aligned dry+wet -> unity (no comb)
             if (std::fabs (gMeasDb - predDb) > 0.2)
-                fail ("engineTransparencyLatencyTest(c): mix=0.5 skew meas=" + std::to_string (gMeasDb)
-                      + "dB pred=" + std::to_string (predDb) + "dB" + tag);
+                fail ("engineTransparencyLatencyTest(c): mix=0.5 aligned-blend meas=" + std::to_string (gMeasDb)
+                      + "dB pred=" + std::to_string (predDb) + "dB (dry/wet should align at prepared clock)" + tag);
         }
     }
     // §5.2: band-limiting (anti-alias) at the worst-case clock=8000 bracket.
@@ -1345,6 +1396,65 @@ namespace
             fail ("engineWashDecayTest: tail residual peak=" + std::to_string (tailPeak) + " > 1e-3" + tag);
     }
 
+    // D3 (approved local fix): the shared fct::impulseResponseNonIncreasing()
+    // (DspInvariants.h) compares every window against window0 and NEVER
+    // updates its running reference (the `prev = std::max(prev, 1e-300)` line
+    // there only guards against a zero, it does not advance to `cur`) -- it
+    // implicitly assumes window0 IS the global peak. That is false for
+    // Madoromi at clock=8000: the large transit + anti-alias kernel spread
+    // delays the FDN excitation enough that the impulse-response energy PEAK
+    // lands in window1 (measured ratio ~1.24, failing the shared helper's
+    // tolerance=1.05 gate) even though the engine is genuinely stable (loop
+    // gain < 1) and decays monotonically from that peak onward. Fix: locate
+    // the PEAK window first (a build-up/warm-up envelope is allowed), then
+    // require non-increasing energy (same 1.05 tolerance -- NOT relaxed)
+    // only from that peak onward. A genuine runaway cannot exploit this: a
+    // divergence that never turns over has its "peak" sit at (or approach)
+    // the LAST observed window, so the anti-runaway guard below (peak must
+    // fall within the first third of the observed tail) fails it; a
+    // divergence that DOES turn over late is still caught by the same 1.05
+    // per-window tolerance across the (generous, ~4s) remaining tail. Kept
+    // LOCAL to this test file (not added to DspInvariants.h) per the D3
+    // constraint: a shared-helper change must not alter behaviour for any
+    // other plugin's tests, and this local copy carries zero risk to them.
+    template <typename Process>
+    bool washNonIncreasingAfterPeak (Process&& process, double sampleRate,
+                                      double tailSeconds, double windowSeconds, double tolerance)
+    {
+        const std::size_t total  = (std::size_t) (tailSeconds * sampleRate);
+        const std::size_t window = (std::size_t) (windowSeconds * sampleRate);
+        if (window == 0 || total <= window) return true;
+
+        std::vector<double> y (total);
+        for (std::size_t n = 0; n < total; ++n) y[n] = process (n == 0 ? 1.0 : 0.0);
+        if (! fct::allFinite (y)) return false;
+
+        std::vector<double> energies;
+        for (std::size_t start = 0; start + window <= total; start += window)
+            energies.push_back (fct::windowEnergy (y, start, window));
+        if (energies.size() < 2) return true;
+
+        std::size_t peakIdx = 0;
+        for (std::size_t i = 1; i < energies.size(); ++i)
+            if (energies[i] > energies[peakIdx]) peakIdx = i;
+
+        // Anti-runaway guard: a real divergence never turns over, so its
+        // "peak" sits at (or near) the LAST observed window -- require the
+        // measured peak to land within the first third of the tail (a
+        // generous warm-up allowance, well beyond the single-window build-up
+        // this fix targets), so this check still fails a genuine runaway.
+        if (peakIdx >= energies.size() / 3)
+            return false;
+
+        double prev = energies[peakIdx];
+        for (std::size_t i = peakIdx + 1; i < energies.size(); ++i)
+        {
+            if (energies[i] > prev * tolerance) return false;
+            prev = std::max (energies[i], 1e-300);
+        }
+        return true;
+    }
+
     // Regression class A: worst-case wash feedback stability (loop gain < 1).
     void engineWashStabilityTest (double fs)
     {
@@ -1365,8 +1475,8 @@ namespace
                 return (double) buf[0];
             };
 
-            if (! fct::impulseResponseNonIncreasing (perSample, fs, 6.0, 0.25, 1.05))
-                fail ("engineWashStabilityTest: impulse response energy increased (clock=" + std::to_string (clockHz) + ")" + tag);
+            if (! washNonIncreasingAfterPeak (perSample, fs, 6.0, 0.25, 1.05))
+                fail ("engineWashStabilityTest: impulse response energy increased after its build-up peak (clock=" + std::to_string (clockHz) + ")" + tag);
         }
     }
     // §5.6: long-hold worst case. 8s stereo LCG, prime-chunk driven, full-range +
@@ -1697,9 +1807,61 @@ namespace
         run (false, aL, aR);
         run (true,  bL, bR);
 
-        if (std::memcmp (aL.data(), bL.data(), aL.size() * sizeof (float)) != 0
-         || std::memcmp (aR.data(), bR.data(), aR.size() * sizeof (float)) != 0)
-            fail ("engineChunkInvarianceTest: fixed-512 vs prime-chunk runs not bit-identical (static params)" + tag);
+        // D1 (approved resolution): bit-exact chunk invariance is
+        // mathematically impossible here. VariPolyphaseResampler's per-output
+        // step ramp (outPos += step; step += kRampAlpha*(targetStep - step))
+        // makes outPos/step a running, NON-ASSOCIATIVE floating-point
+        // accumulator -- its state after N samples depends on the exact
+        // sequence of process() call boundaries (the order floating-point
+        // additions are grouped in), not just on the N samples delivered, so
+        // splitting the same total input into a different chunk schedule
+        // changes that accumulation order. The resulting divergence is tiny
+        // (~1e-6 absolute), confined to isolated samples, and the two streams
+        // RE-CONVERGE immediately afterward (not a growing drift) -- so a
+        // tolerance-based comparison is the CORRECT oracle, not a loosened
+        // gate. Sample-COUNT alignment stays an EXACT check.
+        //
+        // Metric fix (2026-07-13, approved): a PURE relative-error metric
+        // (da / max(|a|,|b|,1e-9)) is not a valid oracle here -- near a
+        // zero-crossing both streams pass through values far smaller than the
+        // ~1e-6 absolute divergence itself, so the 1e-9 denominator floor
+        // divides a ~1e-6 absolute diff by a ~1e-6-scale signal and reports a
+        // spurious O(1) "relative error" even though the two streams agree to
+        // within the same benign absolute tolerance everywhere else. Measured
+        // directly (worst absolute diff over the full standard rate matrix):
+        // ~1e-6..~4e-6, i.e. the SAME order as the pre-D2/D6 engine -- D2/D6
+        // did NOT introduce a new chunk-dependence bug. Fixed with the
+        // standard absolute+relative criterion so near-zero samples are
+        // judged on absolute difference instead of blowing up a relative
+        // ratio: |a-b| <= atol + rtol*max(|a|,|b|), atol chosen with margin
+        // above the measured ~4e-6 worst case, rtol for the (already-passing,
+        // far-from-zero) bulk of samples.
+        if (aL.size() != bL.size() || aR.size() != bR.size())
+        {
+            fail ("engineChunkInvarianceTest: fixed-512 vs prime-chunk runs produced different sample counts" + tag);
+            return;
+        }
+
+        const double atol = 1.0e-5, rtol = 1.0e-5;
+        double worstMargin = 0.0;   // (|a-b| - (atol + rtol*max(|a|,|b|))), > 0 => failing sample
+        size_t worstIdx = 0; double worstDa = 0.0, worstA = 0.0, worstB = 0.0;
+        for (size_t i = 0; i < aL.size(); ++i)
+        {
+            const double daL = std::fabs ((double) aL[i] - (double) bL[i]);
+            const double mL  = std::max (std::fabs ((double) aL[i]), std::fabs ((double) bL[i]));
+            const double marginL = daL - (atol + rtol * mL);
+            if (marginL > worstMargin) { worstMargin = marginL; worstIdx = i; worstDa = daL; worstA = aL[i]; worstB = bL[i]; }
+
+            const double daR = std::fabs ((double) aR[i] - (double) bR[i]);
+            const double mR  = std::max (std::fabs ((double) aR[i]), std::fabs ((double) bR[i]));
+            const double marginR = daR - (atol + rtol * mR);
+            if (marginR > worstMargin) { worstMargin = marginR; worstIdx = i; worstDa = daR; worstA = aR[i]; worstB = bR[i]; }
+        }
+        if (worstMargin > 0.0)
+            fail ("engineChunkInvarianceTest: fixed-512 vs prime-chunk runs diverged beyond atol=" + std::to_string (atol)
+                  + " + rtol=" + std::to_string (rtol) + "*max(|a|,|b|) at i=" + std::to_string (worstIdx)
+                  + " |a-b|=" + std::to_string (worstDa) + " a=" + std::to_string (worstA) + " b=" + std::to_string (worstB)
+                  + " (static params)" + tag);
     }
 
     // Regression class F: parameter smoothing actually exists (a discontinuous

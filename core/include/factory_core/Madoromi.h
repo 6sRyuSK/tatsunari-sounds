@@ -34,28 +34,69 @@
 //   VariPolyphaseResampler (Kaiser ~80 dB design; see that header), so at
 //   clock C input energy above C / 2 is suppressed by the stopband.
 //
-// Latency contract (published formula; D = VariPolyphaseResampler::kHalfTaps
-// = 31, all quantities in host samples, fsHost = prepared host rate):
-//   P0 = kFifoMargin + ceil(2 * D * (fsHost / kClockMinHz
-//                                    - max(1, fsHost / kInternalRateHz)))
-//   L  = lround(2 * D * max(1, fsHost / kInternalRateHz)) + P0
-//      ( == kFifoMargin + 2 * D * fsHost / kClockMinHz up to rounding )
-// (latencyForRate() / fifoPrefillForRate() below are the pure functions.)
-// The engine reports L, delays the dry path by exactly L integer samples,
-// and prefills the wet output FIFO with L + kFifoSafetyPad zeros. Because
-// the FIFO is pulled at exactly the input rate, the total wet transit is
-// CONSTANT at every clock: transit = prefill, while the FIFO occupancy
-// breathes as prefill minus the bracket's in-flight group delay
-// 2 * D * max(1, fsHost / C). At the clock floor C = kClockMinHz the
-// occupancy reaches its minimum,
-//   prefill - (L - kFifoMargin) = kFifoMargin + kFifoSafetyPad,
-// which safely covers the fractional-phase oscillation of the two streaming
-// stages (bounded by ~2 * (fsHost / kClockMinHz + 1) host samples) -- the
-// FIFO can never underrun at any in-range clock. Net timing: dry and the
-// reported latency are exactly L; the wet world plays kFifoSafetyPad
-// samples behind the dry world at every clock (a fixed, sub-1.5 ms offset
-// inside an ambient wash; no gate depends on it). P0 is the published
-// occupancy component of L at the C = kClockMaxHz reference.
+// Latency contract (tests depend on these exact formulas; D =
+// VariPolyphaseResampler::kHalfTaps = 31, all quantities in host samples,
+// fsHost = prepared host rate, C = preparedClockHz = the CLOCK value in
+// effect at the moment prepare() is called -- a caller that needs the
+// reported latency to reflect a specific clock MUST call setClockHz()
+// BEFORE prepare(), the established convention in this codebase; see e.g.
+// the test suite's prepareScheduleEngine()):
+//   P0(fsHost) = kFifoMargin + ceil(2 * D * (fsHost / kClockMinHz
+//                                            - max(1, fsHost / kInternalRateHz)))
+//     -- occupancy margin covering a CLOCK SWEEP all the way down to the
+//     floor kClockMinHz, independent of whatever clock is actually prepared
+//     (fifoPrefillForRate() below).
+//   fifoFill(fsHost) = lround(2 * D * max(1, fsHost / kInternalRateHz))
+//                     + P0(fsHost) + kFifoSafetyPad
+//     -- the wet output FIFO's prefill length (fifoFillForRate() below);
+//     this is NOT itself the reported latency (see the D2 fix note below)
+//     -- it is the FIFO's own internal, clock-sweep-safe occupancy budget,
+//     and its value is UNCHANGED by the D2 fix.
+//   G(fsHost, C) = lround(2 * D * max(1, fsHost / C))
+//     -- the round-trip VariPolyphaseResampler group delay (down + up,
+//     converted to host samples), evaluated at clock C. Computed from the
+//     resamplers' own groupDelayInputSamples() (bracketGroupDelayHost()
+//     below) -- the same proof style OmoideEcho.h's sibling bracket uses,
+//     not a hand-rederivation.
+//   L(fsHost, C) = latencyForRate(fsHost, C) = fifoFill(fsHost) + G(fsHost, C)
+// The engine reports L (at the PREPARED clock), delays the dry path by
+// exactly L integer samples, and prefills the wet FIFO with fifoFill(fsHost)
+// zeros (NOT L). Because the FIFO is pulled at exactly the input rate, its
+// occupancy sits at the constant fifoFill(fsHost) once steady state is
+// reached; an input sample does not reach the up-resampler's output (i.e.
+// become available to push into the FIFO) until G(fsHost, C) host samples
+// later -- the cascade's own causal delay. Total: G(fsHost, C) +
+// fifoFill(fsHost) == L(fsHost, C) exactly -- wet emerges at PRECISELY the
+// reported latency, at the clock the engine was prepared with. QED.
+//
+// D2 fix (2026-07-12, approved): the previous revision of this header
+// reported only lround(2*D*max(1,fsHost/kInternalRateHz)) + P0(fsHost) --
+// omitting kFifoSafetyPad from the reported value (even though fifoFill, the
+// quantity actually pushed into the FIFO, already included it) AND always
+// evaluating the round-trip group delay at C == kInternalRateHz (48 kHz)
+// regardless of the actual prepared clock. Together these meant wet actually
+// emerged kFifoSafetyPad + G(fsHost, C_prepared) samples LATER than the
+// reported latency at every clock other than exactly 48 kHz -- a PDC
+// under-reporting bug (also producing a clock-dependent comb filter at
+// mix < 1, since dry and wet were misaligned by that same clock-dependent
+// amount). Fixed by folding BOTH terms into latencyForRate() itself,
+// parameterised on the prepared clock -- this now matches OmoideEcho.h's
+// already-correct sibling bracket (see that header's own "Latency contract"
+// for the general pattern).
+//
+// Clock-automation caveat: latency can only be reported once (a JUCE
+// AudioProcessor reports it exactly once per prepareToPlay), so it stays
+// fixed at L(fsHost, preparedClockHz) for the life of that prepare() call.
+// If CLOCK is automated to a different value afterward, the TRUE wet transit
+// at the new clock (fifoFill(fsHost) + G(fsHost, C_new)) drifts away from
+// the still-reported L -- this is INHERENT tape-repitch character (the same
+// "clock pin" contract that makes wash/loop timing itself track CLOCK), not
+// a residual defect: fifoFillForRate()'s own kClockMinHz-referenced margin
+// still guarantees the FIFO never underruns across the full sweep, so the
+// drift is a benign, bounded transit-length change, never a glitch. The
+// defect this fix addresses is the STATIC omission at the PREPARED clock --
+// L(fsHost, C) != true transit even with CLOCK held perfectly constant --
+// which is now an exact equality (proof above).
 //
 // Wash / tone mappings (published, monotone; ShimmerReverb in-range only,
 // so its loop-gain < 1 contract is inherited -- setShimmer(0) silences the
@@ -147,11 +188,46 @@ namespace factory_core
                                                - std::max (1.0, fsHost / kInternalRateHz)));
         }
 
-        static int latencyForRate (double fsHost) noexcept
+        // Wet output FIFO prefill length (host samples of silence pushed at
+        // reset()/recovery/resetForBypass()) -- P0(fsHost) unchanged, PLUS the
+        // kInternalRateHz-referenced baseline term PLUS kFifoSafetyPad. See
+        // the header's "Latency contract": this is a clock-sweep-safety
+        // budget, NOT the reported latency, and its value is UNCHANGED by the
+        // D2 fix below.
+        static int fifoFillForRate (double fsHost) noexcept
         {
             const double d = (double) VariPolyphaseResampler::kHalfTaps;
             return (int) std::lround (2.0 * d * std::max (1.0, fsHost / kInternalRateHz))
-                 + fifoPrefillForRate (fsHost);
+                 + fifoPrefillForRate (fsHost)
+                 + kFifoSafetyPad;
+        }
+
+        // Round-trip VariPolyphaseResampler group delay (HOST samples) at
+        // clock C: down's own domain IS the host stream (ratio
+        // rDown = fsHost/C), so its group delay is already in host samples;
+        // up's own domain IS the C-rate stream (ratio rUp = C/fsHost), so its
+        // raw group delay (C-rate samples) is converted to host samples by
+        // * (fsHost/C). Structurally identical to OmoideEcho.h's own
+        // (fixed-ratio) derivation, just evaluated at the variable clock C.
+        static double bracketGroupDelayHost (double fsHost, double clockHzPrepared) noexcept
+        {
+            const double rDown = fsHost / clockHzPrepared;
+            const double rUp   = clockHzPrepared / fsHost;
+            const double downDelayHost = VariPolyphaseResampler::groupDelayInputSamples (rDown);
+            const double upDelayHost   = VariPolyphaseResampler::groupDelayInputSamples (rUp)
+                                        * (fsHost / clockHzPrepared);
+            return downDelayHost + upDelayHost;
+        }
+
+        // TRUE wet transit / reported latency (host samples) at clock
+        // clockHzPrepared -- see the header's "Latency contract" / "D2 fix"
+        // notes. clockHzPrepared is the CLOCK in effect at prepare() time
+        // (preparedClockHz below); this is exactly what prepare() calls.
+        static int latencyForRate (double fsHost, double clockHzPrepared) noexcept
+        {
+            const double c = std::clamp (clockHzPrepared, kClockMinHz, kClockMaxHz);
+            return fifoFillForRate (fsHost)
+                 + (int) std::lround (bracketGroupDelayHost (fsHost, c));
         }
 
         void prepare (double sampleRate, int numChannels)
@@ -159,9 +235,15 @@ namespace factory_core
             fs       = std::max (8000.0, sampleRate);
             channels = std::clamp (numChannels, 1, kMaxChannels);
 
+            // D2 fix: latency is fixed HERE, at prepare() time, from whatever
+            // clock TARGET (clockHz) is current -- see the header's Latency
+            // contract. A caller that needs the reported latency to reflect a
+            // specific clock value MUST call setClockHz() before prepare().
+            preparedClockHz = std::clamp (clockHz, kClockMinHz, kClockMaxHz);
+
             prefill  = fifoPrefillForRate (fs);
-            latency  = latencyForRate (fs);
-            fifoFill = latency + kFifoSafetyPad;   // wet FIFO prefill (see header)
+            fifoFill = fifoFillForRate (fs);                       // clock-independent (see header)
+            latency  = latencyForRate (fs, preparedClockHz);       // TRUE transit at preparedClockHz
 
             // Worst-case scratch sizes (fixed slices -> no n-dependent sizing).
             intCap = (int) std::ceil ((double) kHostChunk * kClockMaxHz / fs) + 16;
@@ -208,6 +290,24 @@ namespace factory_core
 
         void reset() noexcept
         {
+            // Determinism fix (2026-07-13, approved): latency/dryCap became
+            // CLOCK-dependent by the D2 fix (latencyForRate(fsHost, C)), but a
+            // plain reset() used to leave preparedClockHz/latency/dryCap at
+            // whatever prepare() last computed them as -- so if clockHz had
+            // been changed since prepare() (with no intervening prepare()
+            // call), reset()-then-run would silently keep the STALE dry-line
+            // length/delay instead of the one a fresh prepare() at the CURRENT
+            // clockHz would produce, breaking "reset()-then-rerun == fresh-
+            // prepare run" bit-exactness. Re-derive both here, exactly as
+            // prepare() does, and resize the dry line if its length changed.
+            // (Only prepare() itself -- the message thread -- calls this full
+            // reset(); resetForBypass() is the separate, allocation-free,
+            // audio-thread-safe variant and deliberately does NOT do this --
+            // see its own contract comment: JUCE's reported latency must not
+            // change mid-stream from a bypass toggle.)
+            preparedClockHz = std::clamp (clockHz, kClockMinHz, kClockMaxHz);
+            latency = latencyForRate (fs, preparedClockHz);
+
             clockSm = clockHz;
             washSm  = wash01;
             toneSm  = toneHz;
@@ -230,9 +330,64 @@ namespace factory_core
             looper.reset();
             looper.setFrozen (frozenParam);   // params survive reset (house rule)
 
-            for (int ch = 0; ch < kMaxChannels; ++ch)
-                std::fill (dryBuf[ch].begin(), dryBuf[ch].end(), 0.0);
+            const int newDryCap = latency + 8;
+            if (newDryCap != dryCap)
+            {
+                dryCap = newDryCap;
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                    dryBuf[ch].assign ((size_t) dryCap, 0.0);
+            }
+            else
+            {
+                for (int ch = 0; ch < kMaxChannels; ++ch)
+                    std::fill (dryBuf[ch].begin(), dryBuf[ch].end(), 0.0);
+            }
             dryPos = 0;
+        }
+
+        // D6 fix (bypass de-click, approved): a plain reset() on a bypass
+        // transition zeros the dry compensation delay line too, producing an
+        // audible dropout (the dry path is a pure passthrough delay, not a
+        // feedback/history node -- it does not need clearing for state
+        // hygiene). resetForBypass() resets every ACTUAL DSP/feedback node
+        // (wash FDN, looper, both resamplers, both output FIFOs) exactly like
+        // reset() above, but LEAVES dryBuf/dryPos untouched, so the dry path
+        // stays sample-continuous across the transition. It also snaps every
+        // smoother (including mixSm) to its CURRENT target immediately,
+        // rather than letting it glide: the wet-side content is jumping
+        // discontinuously (to silence, on reset) at this exact instant, so
+        // gliding the crossfade WEIGHT against that jump would blend a stale
+        // weight against a discontinuous signal for up to kParamSmoothMs --
+        // audible. Snapping makes the weight and the content change together.
+        // Call this (not reset()) from the wrapper on bypass transitions;
+        // keep the full reset() for prepare()/channel-count changes. The
+        // wrapper must push its bypass-appropriate parameter targets (mix in
+        // particular) BEFORE calling this, so mixSm snaps to the right value.
+        void resetForBypass() noexcept
+        {
+            clockSm = clockHz;
+            washSm  = wash01;
+            toneSm  = toneHz;
+            balSm   = balance;
+            mixSm   = mix;
+
+            for (int lane = 0; lane < 2; ++lane)
+            {
+                down[(size_t) lane].setTargetRatio (fs / clockSm);
+                up[(size_t) lane].setTargetRatio (clockSm / fs);
+                down[(size_t) lane].reset();
+                up[(size_t) lane].reset();
+                fifo[(size_t) lane].reset();
+                fifo[(size_t) lane].pushZeros (fifoFill);
+            }
+
+            wash.reset();
+            applyWashParams();
+
+            looper.reset();
+            looper.setFrozen (frozenParam);   // params survive reset (house rule)
+
+            // dryBuf / dryPos: DELIBERATELY NOT touched -- see contract above.
         }
 
         // -- parameters (audio thread, between process calls) ---------------
@@ -469,6 +624,7 @@ namespace factory_core
         // smoothed / runtime state
         double clockSm = 32000.0, washSm = 0.5, toneSm = 6000.0, balSm = 0.5, mixSm = 0.5;
         double aHost = 1.0, aInt = 1.0;
+        double preparedClockHz = kClockMaxHz;   // clock captured at prepare() time (D2 fix)
         int    latency = 0, prefill = 0, fifoFill = 0, intCap = 0, upCap = 0;
         int    dryCap = 8, dryPos = 0;
     };

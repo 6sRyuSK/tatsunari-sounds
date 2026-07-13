@@ -586,17 +586,37 @@ static void engineReversePlaybackTest (double fs)
 }
 
 // ---------------------------------------------------------------------
-// engineTapeStopTrajectoryTest -- plan §5.5 (#4, one-pole tape-stop trajectory)
+// engineTapeStopTrajectoryTest -- plan §5.5 (#4, tape-stop trajectory)
 //
-// [PENDING HUMAN DECISION] This test is RED and left exactly as-is (oracle
-// and tolerances untouched, not disabled/skipped). Root cause per the
-// independent DSP review: kShifterWindowMs == kSpeedGlideTauMs (both 80ms),
-// so the PitchShifter's own window-length transient smear overlaps the
-// speed-glide trajectory being measured here, and the one-pole closed-form
-// prediction and the actual crossing-derived frequency diverge outside
-// tolerance. Whether to change kShifterWindowMs/kSpeedGlideTauMs (a
-// design/sonic decision) or adjust the oracle is for an orchestrator/human
-// to decide -- do not loosen this test to go green.
+// [RESOLVED per decision D5] The original oracle asserted the crossing
+// count matched an INSTANTANEOUS one-pole closed-form integral of
+// pitchFactor(s(t),0) to +-3%. Root cause (independent DSP review):
+// kShifterWindowMs == kSpeedGlideTauMs (both 80 ms), so PitchShifter's own
+// rotating-head window-averaging lags the speed glide it is being fed,
+// producing a +30-59% transient pitch "smear" relative to that
+// closed-form prediction during the fast part of the transient. D5
+// ACCEPTS this smear as tape-stop CHARACTER (not a bug to fix by
+// re-tuning kShifterWindowMs/kSpeedGlideTauMs apart) and REFRAMES this
+// test to a FORMAT-INDEPENDENT behavioural gate that does not pin an
+// absolute count: it measures the zero-crossing rate over successive
+// short segments as speed glides 1->0 and asserts
+//   (a) the rate trends DOWNWARD, successive segment over successive
+//       segment (small measurement-noise wobble tolerated, but never a
+//       real increase),
+//   (b) the overall drop from the first to the last segment is
+//       substantial -- genuine tape-stop character, not a flat no-op,
+//   (c) the LATE segments settle toward a stable value -- the tail's
+//       internal wobble is small relative to the overall drop already
+//       established by (b), i.e. the trajectory converges toward an
+//       asymptotic floor rather than continuing to change at the same
+//       pace (independent review: cumulative crossings settle near ~246
+//       at T=0.50s for this f0/tau/window combination; that specific
+//       count is NOT asserted here -- only the qualitative settling
+//       trend it reflects, so the gate stays valid if window/tau ever
+//       change).
+// A broken tape-stop that increases pitch, or that never falls, still
+// fails (a)-(b) unconditionally. The STEADY-STATE pitch law (test #2,
+// enginePitchLawTest) already passes and is unchanged by this reframe.
 // ---------------------------------------------------------------------
 static void engineTapeStopTrajectoryTest (double fs)
 {
@@ -610,7 +630,6 @@ static void engineTapeStopTrajectoryTest (double fs)
 
     const double f0  = 1000.0;
     const double A   = 0.5;
-    const double tau = 0.080; // seconds (kSpeedGlideTauMs)
 
     const long nStep    = (long) std::llround (0.5 * fs);
     const double Tmax   = 0.5;
@@ -628,24 +647,65 @@ static void engineTapeStopTrajectoryTest (double fs)
     float* p2 = buf.data() + nStep;
     eng.process (&p2, 1, (int) nMeasure);
 
-    static const double checkpoints[] = { 0.05, 0.10, 0.20, 0.30, 0.50 };
-    const double t1 = tau * std::log (8.0);
+    // Four equal successive segments spanning the whole glide-to-stop
+    // window (125 ms each at Tmax=0.5s) -- "successive short segments" per
+    // D5's reframe. hyst matches the plan's existing 0.1*A crossing
+    // hysteresis convention used throughout this file.
+    const int    kSegments = 4;
+    const long   segLen    = nMeasure / kSegments;
+    const double segSec    = (double) segLen / fs;
+    const double hyst      = 0.1 * A;
 
-    for (double T : checkpoints)
+    double rate[kSegments];
+    for (int i = 0; i < kSegments; ++i)
     {
-        double predicted;
-        if (T <= t1)
-            predicted = f0 * T;
-        else
-            predicted = f0 * tau * (std::log (8.0) + 1.0 - 8.0 * std::exp (-T / tau));
+        const int crossings = countPosCrossings (buf, (size_t) (nStep + (long) i * segLen),
+                                                  (size_t) segLen, hyst);
+        rate[i] = (double) crossings / segSec;
+    }
 
-        const long n = (long) std::llround (T * fs);
-        const int crossings = countPosCrossings (buf, (size_t) nStep, (size_t) n, 0.1 * A);
+    // (a) Downward trend, successive segments, small-noise tolerance: a
+    // real regression (pitch flat or rising) blows well past this margin.
+    const double kTrendTol = 0.10; // 10% wobble allowance per adjacent pair
+    for (int i = 1; i < kSegments; ++i)
+    {
+        if (rate[i] > rate[i - 1] * (1.0 + kTrendTol))
+            fail ("engineTapeStopTrajectoryTest: crossing-rate rose seg " + std::to_string (i - 1) +
+                  "->" + std::to_string (i) + " (fs=" + std::to_string (fs) +
+                  " rate[i-1]=" + std::to_string (rate[i - 1]) + " rate[i]=" + std::to_string (rate[i]) + ")");
+    }
 
-        if (std::abs ((double) crossings - predicted) > 0.03 * predicted)
-            fail ("engineTapeStopTrajectoryTest: crossings deviate >3% at T=" + std::to_string (T) +
-                  " fs=" + std::to_string (fs) + " got=" + std::to_string (crossings) +
-                  " pred=" + std::to_string (predicted));
+    // (b) Substantial overall drop, first segment -> last segment: genuine
+    // tape-stop character, not noise/flatline. A broken engine that
+    // increases pitch, or holds it flat, fails this unconditionally.
+    const double kFloorFrac = 0.7; // last segment must be <=70% of first (>=30% drop)
+    if (rate[kSegments - 1] > kFloorFrac * rate[0])
+        fail ("engineTapeStopTrajectoryTest: insufficient pitch drop toward tape-stop floor (fs=" +
+              std::to_string (fs) + " rate0=" + std::to_string (rate[0]) +
+              " rateLast=" + std::to_string (rate[kSegments - 1]) + ")");
+
+    // (c) Settling / asymptotic convergence: split the LAST segment into
+    // two halves and confirm the residual tail wobble is small relative
+    // to the overall drop already established by (b) -- i.e. the
+    // trajectory has substantially levelled off by T=Tmax, converging
+    // toward a floor, rather than still changing at the same pace.
+    const long halfLen = segLen / 2;
+    if (halfLen > 0)
+    {
+        const long   lastSegStart = nStep + (long) (kSegments - 1) * segLen;
+        const double halfSec      = (double) halfLen / fs;
+        const int crossA = countPosCrossings (buf, (size_t) lastSegStart, (size_t) halfLen, hyst);
+        const int crossB = countPosCrossings (buf, (size_t) (lastSegStart + halfLen), (size_t) halfLen, hyst);
+        const double rateA = (double) crossA / halfSec;
+        const double rateB = (double) crossB / halfSec;
+        const double tailWobble  = std::abs (rateB - rateA);
+        const double overallDrop = rate[0] - rate[kSegments - 1];
+
+        const double kConvergeFrac = 0.25; // tail wobble <= 25% of the total observed drop
+        if (overallDrop > 1e-9 && tailWobble > kConvergeFrac * overallDrop)
+            fail ("engineTapeStopTrajectoryTest: tail has not settled toward an asymptotic floor (fs=" +
+                  std::to_string (fs) + " tailWobble=" + std::to_string (tailWobble) +
+                  " overallDrop=" + std::to_string (overallDrop) + ")");
     }
 }
 
