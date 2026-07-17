@@ -16,15 +16,19 @@ Inputs:
 
 Output (JSON object on stdout):
   {
-    "plugins":     [{slug, version, name, target}, ...],  # every plugin, glob order
-    "changed":     ["slug", ...],                          # rebuild set
-    "include":     [{slug, target, version, os}, ...],     # build matrix (changed x OS)
+    "plugins":     [{slug, version, name, target, kind}, ...],  # every plugin, glob order
+    "changed":     ["slug", ...],                               # rebuild set
+    "include":     [{slug, target, kind, version, os}, ...],    # build matrix (changed x OS)
     "any_changed": bool,
-    "manifest":    {"slug": "version", ...},               # next release's manifest.json
-    "plan":        [{slug, version, name, target, changed, action}, ...]
+    "manifest":    {"slug": "version", ...},                    # next release's manifest.json
+    "plan":        [{slug, version, name, target, kind, changed, action}, ...]
   }
 
 `action` is "build" for changed plugins and "carry-over" for unchanged ones.
+`kind` is the target-declaration style — "juce" (juce_add_plugin) or "clap"
+(factory_clap_plugin) — carried on every per-plugin/per-target structure so a
+future release.yml can branch the build on it. It is deliberately kept OUT of
+`manifest`, which stays the slug->version carry-over contract with prior releases.
 
 Edge cases (preserved verbatim from the inline shell):
   * No previous manifest (first release, or --prev-manifest omitted / missing
@@ -53,9 +57,16 @@ from pathlib import Path
 # in this order to match the previous inline shell (`for os in macOS Windows`).
 OSES = ["macOS", "Windows"]
 
-# Extract the CMake target from `juce_add_plugin(<Target> ...)`. Mirrors the
-# workflow's grep/sed: first juce_add_plugin call, first identifier after it.
-_TARGET_RE = re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)")
+# Extract the CMake target from the plugin's declaration macro, keyed by the
+# declaration style ("kind"). Two styles are recognised: the current JUCE
+# `juce_add_plugin(<Target> ...)` and the forward-looking clap-first
+# `factory_clap_plugin(<Target> ...)` (whose macro does not exist in the repo
+# yet — that's expected). Both mirror the workflow's grep/sed: first call of the
+# macro, first identifier after the opening paren.
+_TARGET_RES = {
+    "juce": re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)"),
+    "clap": re.compile(r"factory_clap_plugin\(\s*([A-Za-z0-9_]+)"),
+}
 
 
 class ReleasePlanError(Exception):
@@ -73,11 +84,29 @@ def _plugin_table(toml_path: Path) -> dict:
     return raw.get("plugin", raw)
 
 
-def _resolve_target(cmake_path: Path) -> str:
+def _resolve_target(cmake_path: Path) -> tuple[str, str]:
+    """Resolve a plugin's (target, kind) from its CMakeLists. kind is "juce" for
+    a juce_add_plugin target, "clap" for a factory_clap_plugin one. Declaring
+    both styles in one file is ambiguous — which one ships? — so it is a hard
+    error, in the same spirit as the no-target case. A missing file or no match
+    yields ("", ""), which enumerate_plugins turns into the no-target error."""
     if not cmake_path.is_file():
-        return ""
-    m = _TARGET_RE.search(cmake_path.read_text(encoding="utf-8"))
-    return m.group(1) if m else ""
+        return "", ""
+    text = cmake_path.read_text(encoding="utf-8")
+    found: dict[str, str] = {}
+    for kind, rx in _TARGET_RES.items():
+        m = rx.search(text)
+        if m:
+            found[kind] = m.group(1)
+    if len(found) > 1:
+        raise ReleasePlanError(
+            f"{cmake_path.parent.name} declares multiple plugin target styles "
+            f"({', '.join(sorted(found))}); expected exactly one of "
+            "juce_add_plugin / factory_clap_plugin"
+        )
+    for kind, target in found.items():
+        return target, kind
+    return "", ""
 
 
 def enumerate_plugins(repo_root: Path) -> list[dict]:
@@ -91,14 +120,15 @@ def enumerate_plugins(repo_root: Path) -> list[dict]:
         p = _plugin_table(toml_path)
         version = str(p.get("version", "")).strip()
         name = str(p.get("name", "")).strip()
-        target = _resolve_target(toml_path.parent / "CMakeLists.txt")
+        target, kind = _resolve_target(toml_path.parent / "CMakeLists.txt")
         if not version or not target:
             raise ReleasePlanError(
                 f"Could not resolve version/target for {slug} "
                 f"(version={version!r}, target={target!r})"
             )
         plugins.append(
-            {"slug": slug, "version": version, "name": name, "target": target}
+            {"slug": slug, "version": version, "name": name,
+             "target": target, "kind": kind}
         )
     return plugins
 
@@ -134,7 +164,8 @@ def build_plan(plugins: list[dict], prev_manifest: dict | None) -> dict:
             changed.append(slug)
             for os_ in OSES:
                 include.append(
-                    {"slug": slug, "target": pl["target"], "version": ver, "os": os_}
+                    {"slug": slug, "target": pl["target"], "kind": pl["kind"],
+                     "version": ver, "os": os_}
                 )
         plan.append(
             {**pl, "changed": is_changed, "action": "build" if is_changed else "carry-over"}

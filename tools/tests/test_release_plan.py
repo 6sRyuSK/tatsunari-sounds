@@ -17,8 +17,11 @@ import release_plan  # noqa: E402
 
 
 def make_plugin(root: Path, slug: str, *, version: str, name: str | None = None,
-                target: str | None = None, toml_body: str | None = None) -> None:
-    """Write plugins/<slug>/plugin.toml + CMakeLists.txt under root."""
+                target: str | None = None, toml_body: str | None = None,
+                cmake_body: str | None = None) -> None:
+    """Write plugins/<slug>/plugin.toml + CMakeLists.txt under root. cmake_body
+    overrides the default juce_add_plugin(<target>) CMakeLists verbatim — used to
+    exercise the clap-first (factory_clap_plugin) and ambiguous declarations."""
     d = root / "plugins" / slug
     d.mkdir(parents=True, exist_ok=True)
     if toml_body is None:
@@ -33,10 +36,10 @@ def make_plugin(root: Path, slug: str, *, version: str, name: str | None = None,
             'formats   = ["VST3", "AU"]\n'
         )
     (d / "plugin.toml").write_text(toml_body, encoding="utf-8")
-    tgt = target if target is not None else "".join(w.title() for w in slug.split("-"))
-    (d / "CMakeLists.txt").write_text(
-        f"juce_add_plugin({tgt}\n  PRODUCT_NAME \"x\")\n", encoding="utf-8"
-    )
+    if cmake_body is None:
+        tgt = target if target is not None else "".join(w.title() for w in slug.split("-"))
+        cmake_body = f"juce_add_plugin({tgt}\n  PRODUCT_NAME \"x\")\n"
+    (d / "CMakeLists.txt").write_text(cmake_body, encoding="utf-8")
 
 
 def write_manifest(root: Path, mapping: dict) -> str:
@@ -146,6 +149,61 @@ class TargetResolutionTest(TmpRepoTest):
         r = self.compute(prev_manifest=None)
         self.assertEqual(r["plugins"][0]["target"], "MyCustomTarget")
         self.assertTrue(all(e["target"] == "MyCustomTarget" for e in r["include"]))
+
+
+class KindResolutionTest(TmpRepoTest):
+    """Each target is tagged with its declaration style: "juce" for
+    juce_add_plugin, "clap" for the forward-looking factory_clap_plugin. The
+    tag rides the per-plugin structures + the build matrix, never the manifest."""
+
+    def test_juce_target_kind(self):
+        make_plugin(self.root, "alpha", version="1.0.0", target="AlphaTarget")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["plugins"][0]["target"], "AlphaTarget")
+        self.assertEqual(r["plugins"][0]["kind"], "juce")
+        # kind also rides the plan entry and every build-matrix include entry.
+        self.assertEqual(r["plan"][0]["kind"], "juce")
+        self.assertTrue(all(e["kind"] == "juce" for e in r["include"]))
+
+    def test_clap_target_kind(self):
+        make_plugin(self.root, "alpha", version="1.0.0",
+                    cmake_body="factory_clap_plugin(AlphaClap\n  PRODUCT_NAME \"x\")\n")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["plugins"][0]["target"], "AlphaClap")
+        self.assertEqual(r["plugins"][0]["kind"], "clap")
+        self.assertEqual(r["plan"][0]["kind"], "clap")
+        self.assertTrue(all(e["kind"] == "clap" for e in r["include"]))
+
+    def test_neither_macro_raises(self):
+        # A CMakeLists with neither macro -> target unresolved, existing error.
+        make_plugin(self.root, "alpha", version="1.0.0",
+                    cmake_body="add_library(alpha STATIC alpha.cpp)\n")
+        with self.assertRaises(release_plan.ReleasePlanError) as cm:
+            self.compute(prev_manifest=None)
+        self.assertIn("Could not resolve version/target", str(cm.exception))
+
+    def test_both_macros_raise(self):
+        # Declaring both styles is ambiguous -> hard error, like no-target.
+        make_plugin(self.root, "alpha", version="1.0.0",
+                    cmake_body="juce_add_plugin(AlphaJuce)\n"
+                               "factory_clap_plugin(AlphaClap)\n")
+        with self.assertRaises(release_plan.ReleasePlanError) as cm:
+            self.compute(prev_manifest=None)
+        msg = str(cm.exception)
+        self.assertIn("multiple", msg)
+        self.assertIn("juce_add_plugin", msg)
+        self.assertIn("factory_clap_plugin", msg)
+
+    def test_manifest_has_no_kind_field(self):
+        # kind must never leak into manifest.json (the carry-over contract),
+        # even with a mix of juce and clap plugins in the plan.
+        make_plugin(self.root, "alpha", version="1.0.0")
+        make_plugin(self.root, "beta", version="0.2.0",
+                    cmake_body="factory_clap_plugin(BetaClap\n  PRODUCT_NAME \"x\")\n")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["manifest"], {"alpha": "1.0.0", "beta": "0.2.0"})
+        # Serialised on its own, the manifest carries no "kind" anywhere.
+        self.assertNotIn("kind", json.dumps(r["manifest"]))
 
 
 class ErrorTest(TmpRepoTest):
