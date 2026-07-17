@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "FACTORY_FREETYPE_MIRROR_DIR": "$env{FACTORY_FREETYPE_MIRROR_DIR}"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "wasm dev (-O0, fast link — the daily loop)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-O0",
+        "CMAKE_CXX_FLAGS": "-O0"
+      }
+    },
+    {
+      "name": "rel",
+      "displayName": "wasm rel (-O2 — publish / CI)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev", "targets": ["gallery"] },
+    { "name": "rel", "configurePreset": "rel", "targets": ["gallery"] }
+  ]
+}
