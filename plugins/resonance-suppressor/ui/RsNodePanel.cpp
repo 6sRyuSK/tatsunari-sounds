@@ -1,0 +1,386 @@
+#include "RsNodePanel.h"
+
+#include "factory_ui_visage/Fonts.h"
+#include "factory_params/Text.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+namespace rs_ui
+{
+    using factory_ui_visage::regularFont;
+    using factory_ui_visage::boldFont;
+    namespace fuv = factory_ui_visage;
+
+    namespace
+    {
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kArcStart = 3.926990817f;  // 225 deg
+        constexpr float kArcEnd   = 8.639379797f;   // 495 deg
+
+        void strokeArc (visage::Canvas& canvas, float cx, float cy, float r, float a0, float a1, float w)
+        {
+            const float sweep = a1 - a0;
+            const int steps = std::max (2, (int) std::ceil (std::abs (sweep) / (2.0f * kPi / 180.0f)));
+            visage::Path path;
+            for (int i = 0; i <= steps; ++i)
+            {
+                const float a = a0 + sweep * ((float) i / (float) steps);
+                const visage::Point p (cx + r * std::sin (a), cy - r * std::cos (a));
+                (i == 0) ? path.moveTo (p) : path.lineTo (p);
+            }
+            canvas.fill (path.stroke (w, visage::Path::Join::Round, visage::Path::EndCap::Round));
+        }
+
+        // The 6 filter-type glyphs (viewBox 0 0 24 14), verbatim from NodePanel::eqGlyph.
+        visage::Path eqGlyph (int type)
+        {
+            visage::Path p;
+            switch (type)
+            {
+                case 0: p.moveTo (2, 12); p.bezierTo (8, 12, 8, 3, 12, 3); p.bezierTo (16, 3, 16, 12, 22, 12); break;
+                case 1: p.moveTo (2, 4); p.lineTo (9, 4); p.bezierTo (12, 4, 12, 11, 15, 11); p.lineTo (22, 11); break;
+                case 2: p.moveTo (2, 11); p.lineTo (9, 11); p.bezierTo (12, 11, 12, 4, 15, 4); p.lineTo (22, 4); break;
+                case 3: p.moveTo (2, 11); p.lineTo (6, 11); p.bezierTo (8, 11, 8, 4, 10, 4); p.lineTo (14, 4);
+                        p.bezierTo (16, 4, 16, 11, 18, 11); p.lineTo (22, 11); break;
+                case 4: p.moveTo (2, 4); p.lineTo (8, 4); p.bezierTo (10, 4, 10, 12, 12, 12); p.bezierTo (14, 12, 14, 4, 16, 4); p.lineTo (22, 4); break;
+                default: p.moveTo (3, 12); p.lineTo (21, 4); break;
+            }
+            return p;
+        }
+    } // namespace
+
+    RsNodePanel::RsNodePanel (const RsTheme& theme, RsProfileModel& model, RsFeed& feed)
+        : theme_ (theme), model_ (model), feed_ (feed)
+    {
+        setNode (0);
+    }
+
+    std::string RsNodePanel::nodeName() const
+    {
+        if (isCut_) return nodeId_ == 0 ? "Low Cut" : "High Cut";
+        return "Band " + std::to_string (nodeId_ - 1);
+    }
+
+    std::uint32_t RsNodePanel::nodeColour() const
+    {
+        if (isCut_) return nodeId_ == 0 ? theme_.rs.orange : theme_.rs.highCutRing;
+        return theme_.base.palette.bandColours[(std::size_t) ((nodeId_ - 2) % 6)];
+    }
+
+    void RsNodePanel::setNode (int id)
+    {
+        nodeId_ = id;
+        isCut_ = RsProfileModel::isCut (id);
+        choiceCount_ = isCut_ ? 4 : 6;
+
+        auto& store = model_.store();
+        freqK_.paramIndex = model_.idxFreq (id);
+        freqK_.label = "FREQ"; freqK_.freq = true; freqK_.decimals = 0; freqK_.visible = true;
+        freqK_.range = factory_params::makeRange (store.desc (freqK_.paramIndex));
+
+        if (! isCut_)
+        {
+            sensK_.paramIndex = model_.idxSens (id);
+            sensK_.label = "SENS"; sensK_.freq = false; sensK_.decimals = 2; sensK_.visible = true;
+            sensK_.range = factory_params::makeRange (store.desc (sensK_.paramIndex));
+            widthK_.paramIndex = model_.idxWidth (id);
+            widthK_.label = "WIDTH"; widthK_.freq = false; widthK_.decimals = 2; widthK_.visible = true;
+            widthK_.range = factory_params::makeRange (store.desc (widthK_.paramIndex));
+        }
+        else
+        {
+            sensK_.visible = false; widthK_.visible = false;
+        }
+
+        refreshListen();
+        computeLayout();
+        redraw();
+    }
+
+    void RsNodePanel::refreshListen() { listenOn_ = (feed_.getListenNode() == nodeId_); }
+
+    void RsNodePanel::resized() { computeLayout(); }
+
+    void RsNodePanel::computeLayout()
+    {
+        const float w = width(), h = height();
+        closeBtn_ = { w - 28.0f, 8.0f, 18.0f, 18.0f };
+
+        // inner reduced(14,12)
+        float rx = 14.0f, ry = 12.0f, rw = w - 28.0f, rh = h - 24.0f;
+
+        // right knob column
+        const float knobW = 52.0f, kgap = 10.0f;
+        const float knobsW = isCut_ ? knobW : knobW * 3 + kgap * 2;
+        float knobsX = rx + rw - knobsW;
+        rw -= (knobsW + 16.0f);
+        const float knobsY = ry + 18.0f, knobsH = rh - 18.0f;
+        freqK_.area = { knobsX, knobsY, knobW, knobsH };
+        if (! isCut_)
+        {
+            sensK_.area  = { knobsX + knobW + kgap, knobsY, knobW, knobsH };
+            widthK_.area = { knobsX + 2.0f * (knobW + kgap), knobsY, knobW, knobsH };
+        }
+
+        // header row (26)
+        float hx = rx, hy = ry;
+        dotRect_ = { hx, hy + (26.0f - 14.0f) * 0.5f, 14.0f, 14.0f };
+        hx += 18.0f + 4.0f;
+        nameRect_ = { hx, hy, 76.0f, 26.0f };
+        hx += 76.0f + 8.0f;
+        onBadge_ = { hx, hy + 2.0f, 40.0f, 22.0f };
+        hx += 40.0f + 6.0f;
+        const float listenW = std::min (90.0f, rx + rw - hx);
+        listenBadge_ = { hx, hy + 2.0f, std::max (40.0f, listenW), 22.0f };
+
+        // caption + choice row (at ry + 26 + 18)
+        float cy = ry + 26.0f + 18.0f;
+        captionRect_ = { rx, cy, (isCut_ ? 52.0f : 38.0f), 30.0f };
+        float bx = rx + captionRect_.w + 8.0f;
+        const float bw = isCut_ ? 40.0f : 32.0f, bgap = 4.0f, bh = 27.0f;
+        for (int i = 0; i < choiceCount_; ++i)
+        {
+            choiceBtns_[(std::size_t) i] = { bx, cy + (30.0f - bh) * 0.5f, bw, bh };
+            bx += bw + bgap;
+        }
+    }
+
+    std::string RsNodePanel::valueText (const MiniKnob& k) const
+    {
+        const float v = model_.store().value (k.paramIndex);
+        if (k.freq)
+        {
+            char buf[16];
+            if (v >= 1000.0f)
+            {
+                const float kk = v / 1000.0f;
+                const bool whole = std::abs (kk - std::round (kk)) < 0.05f;
+                if (whole) std::snprintf (buf, sizeof buf, "%dkHz", (int) std::round (kk));
+                else       std::snprintf (buf, sizeof buf, "%.1fkHz", kk);
+            }
+            else std::snprintf (buf, sizeof buf, "%dHz", (int) std::round (v));
+            return buf;
+        }
+        return factory_params::formatValue (model_.store().desc (k.paramIndex), v, k.decimals);
+    }
+
+    void RsNodePanel::drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k)
+    {
+        if (! k.visible) return;
+        const Rect& a = k.area;
+        const float labelH = 13.0f, valueH = 13.0f;
+        // label
+        canvas.setColor (visage::Color (theme_.base.palette.text));
+        canvas.text (k.label, boldFont (10.0f), visage::Font::kCenter, a.x, a.y, a.w, labelH);
+
+        const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
+        const float radius = std::min (a.w, dialH) * 0.5f - 3.0f;
+        const float cx = a.x + a.w * 0.5f, cy = dialTop + dialH * 0.5f;
+        const float lineW = std::max (2.5f, radius * 0.30f);
+        const float arcR = radius - lineW * 0.5f;
+        const float norm = factory_params::convertTo0to1 (k.range, model_.store().value (k.paramIndex));
+        const float toAng = kArcStart + std::clamp (norm, 0.0f, 1.0f) * (kArcEnd - kArcStart);
+
+        canvas.setColor (visage::Color (theme_.base.palette.accentDim));
+        strokeArc (canvas, cx, cy, arcR, kArcStart, kArcEnd, lineW);
+        if (norm > 0.0f)
+        {
+            canvas.setColor (visage::Color (theme_.rs.orange));
+            strokeArc (canvas, cx, cy, arcR, kArcStart, toAng, lineW);
+        }
+        // face + pointer
+        const float bodyR = radius - lineW * 1.1f;
+        canvas.setColor (visage::Brush::vertical (visage::Color (0xffffffff), visage::Color (theme_.rs.plotBottom)));
+        canvas.circle (cx - bodyR, cy - bodyR, bodyR * 2.0f);
+        canvas.setColor (visage::Color (theme_.base.palette.track));
+        canvas.ring (cx - bodyR, cy - bodyR, bodyR * 2.0f, 1.0f);
+        const float pr = bodyR * 0.85f;
+        canvas.setColor (visage::Color (theme_.rs.orange));
+        canvas.segment (cx, cy, cx + pr * std::sin (toAng), cy - pr * std::cos (toAng), 2.0f, true);
+
+        // value
+        canvas.setColor (visage::Color (theme_.base.palette.accent));
+        canvas.text (valueText (k), boldFont (11.0f), visage::Font::kCenter, a.x, a.y + a.h - valueH, a.w, valueH);
+    }
+
+    void RsNodePanel::draw (visage::Canvas& canvas)
+    {
+        computeLayout();
+        const float w = width(), h = height();
+
+        // card
+        canvas.setColor (visage::Color (0xffffffff).withAlpha (0.97f));
+        canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusPopover);
+        canvas.setColor (visage::Color (theme_.base.palette.track));
+        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusPopover, 1.0f);
+
+        // header dot
+        canvas.setColor (visage::Color (theme_.rs.dotRing));
+        canvas.circle (dotRect_.x - 3.0f, dotRect_.y - 3.0f, dotRect_.w + 6.0f);
+        canvas.setColor (visage::Color (nodeColour()));
+        canvas.circle (dotRect_.x, dotRect_.y, dotRect_.w);
+        // name
+        canvas.setColor (visage::Color (theme_.base.palette.text));
+        canvas.text (nodeName(), boldFont (15.0f), visage::Font::kLeft, nameRect_.x, nameRect_.y, nameRect_.w, nameRect_.h);
+
+        // ON badge
+        {
+            const bool on = model_.nodeOn (nodeId_);
+            canvas.setColor (visage::Color (on ? theme_.rs.teal : theme_.rs.footerBg));
+            canvas.roundedRectangle (onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h, theme_.rs.radiusBadge);
+            if (! on)
+            {
+                canvas.setColor (visage::Color (theme_.base.palette.track));
+                canvas.roundedRectangleBorder (onBadge_.x + 0.5f, onBadge_.y + 0.5f, onBadge_.w - 1.0f, onBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            }
+            canvas.setColor (visage::Color (on ? 0xffffffff : theme_.base.palette.textSecondary));
+            canvas.text (on ? "ON" : "OFF", boldFont (11.0f), visage::Font::kCenter, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h);
+        }
+
+        // Listen badge
+        {
+            canvas.setColor (visage::Color (listenOn_ ? theme_.rs.teal : theme_.rs.footerBg));
+            canvas.roundedRectangle (listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h, theme_.rs.radiusBadge);
+            canvas.setColor (visage::Color (listenOn_ ? theme_.rs.teal : theme_.base.palette.track));
+            canvas.roundedRectangleBorder (listenBadge_.x + 0.5f, listenBadge_.y + 0.5f, listenBadge_.w - 1.0f, listenBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            const float dotD = 7.0f, dotX = listenBadge_.x + 8.0f, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
+            canvas.setColor (visage::Color (listenOn_ ? 0xffffffff : theme_.base.palette.textSecondary));
+            canvas.circle (dotX, dotY, dotD);
+            canvas.text ("Listen", boldFont (11.0f), visage::Font::kLeft, dotX + dotD + 4.0f, listenBadge_.y, listenBadge_.w - 24.0f, listenBadge_.h);
+        }
+
+        // close X
+        {
+            const Rect& c = closeBtn_;
+            const float in = 4.0f;
+            canvas.setColor (visage::Color (theme_.rs.textFaint));
+            canvas.segment (c.x + in, c.y + in, c.x + c.w - in, c.y + c.h - in, 1.8f, true);
+            canvas.segment (c.x + in, c.y + c.h - in, c.x + c.w - in, c.y + in, 1.8f, true);
+        }
+
+        // caption + choice buttons
+        canvas.setColor (visage::Color (theme_.rs.typeCaption));
+        canvas.text (isCut_ ? "SLOPE" : "TYPE", boldFont (10.0f), visage::Font::kLeft, captionRect_.x, captionRect_.y, captionRect_.w, captionRect_.h);
+
+        const int sel = isCut_ ? model_.cutSlope (nodeId_) : model_.nodeType (nodeId_);
+        const char* slopeLabels[] = { "6", "12", "24", "48" };
+        for (int i = 0; i < choiceCount_; ++i)
+        {
+            const Rect& b = choiceBtns_[(std::size_t) i];
+            const bool active = (i == sel);
+            canvas.setColor (visage::Color (active ? theme_.rs.orange : theme_.rs.footerBg));
+            canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f);
+            if (! active)
+            {
+                canvas.setColor (visage::Color (theme_.base.palette.track));
+                canvas.roundedRectangleBorder (b.x + 0.5f, b.y + 0.5f, b.w - 1.0f, b.h - 1.0f, 8.0f, 1.0f);
+            }
+            const std::uint32_t fg = active ? 0xffffffff : theme_.rs.iconInactive;
+            if (isCut_)
+            {
+                canvas.setColor (visage::Color (fg));
+                canvas.text (slopeLabels[i], boldFont (11.0f), visage::Font::kCenter, b.x, b.y, b.w, b.h);
+            }
+            else
+            {
+                const float boxW = 24.0f, boxH = 14.0f;
+                const float ax = b.x + 6.0f, ay = b.y + 7.0f, aw = b.w - 12.0f, ah = b.h - 14.0f;
+                const float sc = std::min (aw / boxW, ah / boxH);
+                visage::Path g = eqGlyph (i).scaled (sc).translated (ax + aw * 0.5f - boxW * sc * 0.5f,
+                                                                     ay + ah * 0.5f - boxH * sc * 0.5f);
+                canvas.setColor (visage::Color (fg));
+                canvas.fill (g.stroke (2.2f * sc, visage::Path::Join::Round, visage::Path::EndCap::Round));
+            }
+        }
+
+        // mini-knobs
+        drawMiniKnob (canvas, freqK_);
+        drawMiniKnob (canvas, sensK_);
+        drawMiniKnob (canvas, widthK_);
+    }
+
+    void RsNodePanel::writeKnob (MiniKnob& k, float norm)
+    {
+        norm = std::clamp (norm, 0.0f, 1.0f);
+        model_.store().setFromUi (k.paramIndex, factory_params::convertFrom0to1 (k.range, norm));
+        if (onNodeEdited) onNodeEdited (nodeId_);
+        redraw();
+    }
+
+    void RsNodePanel::mouseDown (const visage::MouseEvent& e)
+    {
+        const visage::Point pos = e.position;
+
+        if (closeBtn_.contains (pos)) { if (onCloseRequested) onCloseRequested(); return; }
+
+        if (onBadge_.contains (pos))
+        {
+            const bool turningOff = model_.nodeOn (nodeId_);
+            model_.store().beginGesture (model_.idxOn (nodeId_));
+            model_.store().setFromUi (model_.idxOn (nodeId_), turningOff ? 0.0f : 1.0f);
+            model_.store().endGesture (model_.idxOn (nodeId_));
+            if (turningOff && feed_.getListenNode() == nodeId_) { feed_.setListenNode (-1); refreshListen(); }
+            if (onNodeEdited) onNodeEdited (nodeId_);
+            if (onGestureEnd) onGestureEnd();
+            redraw();
+            return;
+        }
+        if (listenBadge_.contains (pos))
+        {
+            feed_.setListenNode (listenOn_ ? -1 : nodeId_);
+            refreshListen();
+            redraw();
+            return;
+        }
+        for (int i = 0; i < choiceCount_; ++i)
+            if (choiceBtns_[(std::size_t) i].contains (pos))
+            {
+                const int idx = isCut_ ? model_.idxSlope (nodeId_) : model_.idxType (nodeId_);
+                model_.store().beginGesture (idx);
+                model_.store().setFromUi (idx, (float) i);
+                model_.store().endGesture (idx);
+                if (onNodeEdited) onNodeEdited (nodeId_);
+                if (onGestureEnd) onGestureEnd();
+                redraw();
+                return;
+            }
+
+        // mini-knobs
+        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        for (int i = 0; i < 3; ++i)
+            if (ks[i]->visible && ks[i]->area.contains (pos))
+            {
+                dragKnob_ = i;
+                dragNorm_ = factory_params::convertTo0to1 (ks[i]->range, model_.store().value (ks[i]->paramIndex));
+                dragLast_ = pos;
+                model_.store().beginGesture (ks[i]->paramIndex);
+                return;
+            }
+    }
+
+    void RsNodePanel::mouseDrag (const visage::MouseEvent& e)
+    {
+        if (dragKnob_ < 0) return;
+        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        MiniKnob& k = *ks[dragKnob_];
+        const float fine = e.isShiftDown() ? 0.25f : 1.0f;
+        const float dy = dragLast_.y - e.position.y; // up = increase
+        const float dx = e.position.x - dragLast_.x;
+        dragLast_ = e.position;
+        dragNorm_ = std::clamp (dragNorm_ + (dx + dy) / 200.0f * fine, 0.0f, 1.0f);
+        writeKnob (k, dragNorm_);
+    }
+
+    void RsNodePanel::mouseUp (const visage::MouseEvent&)
+    {
+        if (dragKnob_ >= 0)
+        {
+            MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+            model_.store().endGesture (ks[dragKnob_]->paramIndex);
+            dragKnob_ = -1;
+            if (onGestureEnd) onGestureEnd();
+        }
+    }
+}

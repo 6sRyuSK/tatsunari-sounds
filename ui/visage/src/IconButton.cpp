@@ -25,6 +25,15 @@ namespace factory_ui_visage
         }
     }
 
+    void IconButton::setDimmed (bool dim)
+    {
+        if (dimmed_ != dim)
+        {
+            dimmed_ = dim;
+            redraw();
+        }
+    }
+
     void IconButton::draw (visage::Canvas& canvas)
     {
         const IconButtonMetrics& m = theme_.iconButton;
@@ -46,9 +55,10 @@ namespace factory_ui_visage
             canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, m.cornerRadius, 1.0f);
         }
 
-        // Glyph, tinted accent when on else the caption mid-tone.
+        // Glyph, tinted accent when on else the caption mid-tone (dimmed to the
+        // muted tone when the owner has marked the action unavailable).
         const float inset = h * m.glyphInsetFactor;
-        canvas.setColor (visage::Color (on_ ? p.accent : p.textSecondary));
+        canvas.setColor (visage::Color (on_ ? p.accent : (dimmed_ ? p.textDim : p.textSecondary)));
         icons::paintGlyph (canvas, glyph_, inset, inset, w - 2.0f * inset, h - 2.0f * inset);
     }
 

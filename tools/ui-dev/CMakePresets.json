@@ -33,7 +33,7 @@
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev", "targets": ["gallery"] },
-    { "name": "rel", "configurePreset": "rel", "targets": ["gallery"] }
+    { "name": "dev", "configurePreset": "dev", "targets": ["gallery", "rs-editor"] },
+    { "name": "rel", "configurePreset": "rel", "targets": ["gallery", "rs-editor"] }
   ]
 }

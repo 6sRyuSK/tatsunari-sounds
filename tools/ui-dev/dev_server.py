@@ -40,6 +40,9 @@ parser.add_argument("--port", type=int, default=8080)
 parser.add_argument("--watch", action="store_true", help="rebuild the gallery on source change + auto reload")
 parser.add_argument("--cmake-build-dir", default=None, help="cmake binary dir to `cmake --build` on change")
 parser.add_argument("--target", default="gallery", help="cmake target to rebuild (default: gallery)")
+parser.add_argument("--theme-file", default=None,
+                    help="path served at /theme.json (default: <src-dir>/theme.json). "
+                         "Point at plugins/<slug>/ui/theme-rs.json for a plugin editor.")
 parser.add_argument("--coi", action="store_true", help="add COOP/COEP (only needed with pthreads)")
 args = parser.parse_args()
 
@@ -51,6 +54,8 @@ OVERLAY = {"/theme.json", "/harness.js"}
 WATCH_ROOTS = [
     os.path.join(REPO, "ui", "visage"),
     os.path.join(HERE, "gallery"),
+    os.path.join(HERE, "rs-editor"),
+    os.path.join(REPO, "plugins", "resonance-suppressor", "ui"),
     os.path.join(HERE, "shell.html"),
 ]
 WATCH_EXTS = (".h", ".hpp", ".cpp", ".cc", ".txt", ".cmake")
@@ -153,7 +158,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # --- theme.json / harness.js overlay from the source dir -----------------
     def _serve_overlay(self, route):
-        local = os.path.join(args.src_dir, route.lstrip("/"))
+        # /theme.json may be redirected to an explicit --theme-file (a plugin's
+        # theme-rs.json) so the same harness.js hot-reload path themes any editor.
+        if route == "/theme.json" and args.theme_file:
+            local = args.theme_file
+        else:
+            local = os.path.join(args.src_dir, route.lstrip("/"))
         if not os.path.isfile(local):
             self.send_error(404, "overlay file not found")
             return

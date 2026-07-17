@@ -60,6 +60,7 @@ namespace factory_ui_visage
     {
         const KnobMetrics& m = theme_.knob;
         const factory_params::ParamDesc& desc = store_.desc (index_);
+        const std::uint32_t accent = accentOverride_ != 0 ? accentOverride_ : theme_.palette.accent;
 
         // Layout: dial square on top, two text rows (value, name) below.
         const float textH = 18.0f;
@@ -84,9 +85,9 @@ namespace factory_ui_visage
         // Value arc (soft glow underlay + solid accent).
         if (pos > 0.0f)
         {
-            canvas.setColor (visage::Color (theme_.palette.accent).withAlpha (m.glowAlpha));
+            canvas.setColor (visage::Color (accent).withAlpha (m.glowAlpha));
             strokeArc (canvas, cx, cy, arcR, m.arcStart, toAngle, lineW * m.glowWidthFactor);
-            canvas.setColor (visage::Color (theme_.palette.accent));
+            canvas.setColor (visage::Color (accent));
             strokeArc (canvas, cx, cy, arcR, m.arcStart, toAngle, lineW);
         }
 
@@ -113,7 +114,7 @@ namespace factory_ui_visage
         const float pr = bodyR * m.pointerPosFactor;
         const float dotX = cx + pr * std::sin (toAngle);
         const float dotY = cy - pr * std::cos (toAngle);
-        canvas.setColor (visage::Color (theme_.palette.accent));
+        canvas.setColor (visage::Color (accent));
         canvas.circle (dotX - dotR, dotY - dotR, dotR * 2.0f);
 
         // Value + name text below the dial.
@@ -121,7 +122,8 @@ namespace factory_ui_visage
         canvas.text (factory_params::formatValue (desc, store_.value (index_), decimals_),
                      regularFont (theme_.font.label), visage::Font::kCenter,
                      0.0f, knobAreaH, width(), textH);
-        canvas.text (desc.name, regularFont (theme_.font.label), visage::Font::kCenter,
+        canvas.text (nameOverride_.empty() ? desc.name : nameOverride_,
+                     regularFont (theme_.font.label), visage::Font::kCenter,
                      0.0f, knobAreaH + textH, width(), textH);
     }
 

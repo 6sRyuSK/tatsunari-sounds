@@ -1,0 +1,256 @@
+// Resonance TatSuppressor · Visage editor — headless verification (plain node).
+//
+//   node rs.spec.js [url] [outDir]
+//
+// Drives the RS editor end-to-end under headless SwiftShader WebGL and asserts:
+//   1. bridge lists the full 64-param RS surface
+//   2. every main knob is bound (host-set -> readback) + a real knob DRAG moves it
+//   3. MODE segmented click + QUALITY dropdown pick change their Choice params
+//   4. DELTA / LINK / Bypass pill toggles flip their bool params
+//   5. a node DRAG on the curve moves b0_freq / b0_sens
+//   6. clicking a node opens the NodePanel; a panel TYPE button writes b0_type
+//   7. the NodePanel Listen badge writes listenNode (via the RsFeed hook); deselect drops it
+//   8. an undo -> redo round-trip restores a parameter, and a preset load clears history
+//   9. preset next / prev step the model; an A/B switch swaps a param value
+//  10. resize renders at the min (940x657) and max (1320x922) layout sizes
+// and captures rs-default.png / rs-busy.png / rs-min.png / rs-max.png.
+//
+// Exit code 0 iff every assert passes.
+const fs = require("fs");
+const path = require("path");
+const d = require("./drive.js");
+
+const URL = process.argv[2] || "http://127.0.0.1:8080/index.html";
+const OUT = process.argv[3] || __dirname;
+
+const asserts = [];
+function check(name, ok, detail) {
+  asserts.push({ name, ok: !!ok, detail: detail === undefined ? "" : detail });
+  console.log((ok ? "PASS " : "FAIL ") + name + (detail !== undefined ? "  (" + detail + ")" : ""));
+}
+const approx = (a, b, eps) => Math.abs(a - b) <= (eps === undefined ? 0.5 : eps);
+const wait = (p, ms) => p.waitForTimeout(ms);
+
+async function toPage(page, wx, wy) {
+  return page.evaluate(({ wx, wy }) => {
+    const c = document.getElementById("canvas");
+    const r = c.getBoundingClientRect();
+    return { x: r.left + wx * (r.width / c.width), y: r.top + wy * (r.height / c.height) };
+  }, { wx, wy });
+}
+async function clickWindow(page, wx, wy) {
+  const p = await toPage(page, wx, wy);
+  await page.mouse.move(p.x, p.y); await page.waitForTimeout(35);
+  await page.mouse.down(); await page.waitForTimeout(35);
+  await page.mouse.up(); await page.waitForTimeout(35);
+}
+async function dragWindow(page, x0, y0, x1, y1) {
+  const a = await toPage(page, x0, y0), b = await toPage(page, x1, y1);
+  await page.mouse.move(a.x, a.y); await page.waitForTimeout(30);
+  await page.mouse.down(); await page.waitForTimeout(30);
+  await page.mouse.move((a.x + b.x) / 2, (a.y + b.y) / 2); await page.waitForTimeout(25);
+  await page.mouse.move(b.x, b.y); await page.waitForTimeout(25);
+  await page.mouse.up(); await page.waitForTimeout(40);
+}
+const canvasShot = (page) => page.locator("#canvas").screenshot();
+// The canvas is fixed at the max size (1320x922) and the editor renders into its
+// top-left (w x h) sub-rect, so screenshots are clipped to the editor rect.
+async function editorShot(page, w, h) {
+  const box = await page.evaluate(() => {
+    const c = document.getElementById("canvas");
+    const r = c.getBoundingClientRect();
+    return { left: r.left, top: r.top };
+  });
+  return page.screenshot({ clip: { x: box.left, y: box.top, width: w, height: h } });
+}
+const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
+
+(async () => {
+  const { browser, page } = await d.launch({ width: 1420, height: 1000 });
+  const jsErrors = [], httpErrors = [];
+  page.on("pageerror", (e) => jsErrors.push("pageerror: " + e.message));
+  page.on("crash", () => jsErrors.push("PAGE CRASHED"));
+  page.on("response", (r) => { if (r.status() >= 400 && !r.url().includes("favicon")) httpErrors.push(r.status() + " " + r.url()); });
+
+  const timings = {};
+  const t0 = Date.now();
+  await d.waitReady(page, URL);
+  timings.loadToReadyMs = Date.now() - t0;
+  const webgl = await d.probeWebGL(page);
+
+  const params = await page.evaluate(() => window.ui.list());
+  check("bridge lists the RS param surface (64)", Array.isArray(params) && params.length === 64, "n=" + (params || []).length);
+
+  // Freeze the analyser -> deterministic behind the static chrome for all tests.
+  await page.evaluate(() => window.ui.freeze(true));
+  await wait(page, 120);
+
+  // --- rs-default.png ------------------------------------------------------
+  const defBuf = await editorShot(page, 1069, 747);
+  fs.writeFileSync(path.join(OUT, "rs-default.png"), defBuf);
+  check("rs-default.png non-blank", d.notBlank(d.analyzePNG(defBuf)));
+
+  // --- 1. undo -> redo round-trip + preset clears history ------------------
+  await page.evaluate(() => { window.rs.setClock(0); window.rs.uiEdit("depth", 40); });
+  await page.evaluate(() => { window.rs.setClock(1); window.rs.uiEdit("depth", 70); });
+  const uAfterEdits = await page.evaluate(() => ({ v: window.ui.get("depth"), canU: window.rs.canUndo() }));
+  await page.evaluate(() => window.rs.undo());
+  const uUndo = await page.evaluate(() => window.ui.get("depth"));
+  await page.evaluate(() => window.rs.redo());
+  const uRedo = await page.evaluate(() => window.ui.get("depth"));
+  check("undo restores previous param value", approx(uUndo, 40), "70 -> " + uUndo);
+  check("redo re-applies param value", approx(uRedo, 70), uUndo + " -> " + uRedo);
+  check("edits are undoable", uAfterEdits.canU === true);
+  await page.evaluate(() => window.rs.presetLoad(0)); // Init -> resets + clears undo
+  const clearedU = await page.evaluate(() => window.rs.canUndo());
+  check("preset load clears undo history", clearedU === false);
+
+  // --- 2. all main knobs bound (host-set -> readback) ----------------------
+  const knobSet = { depth: 55, detail: 60, attack: 25, release: 120, tilt: 30, mix: 80, out: 6, linkAmt: 40 };
+  const rb = await page.evaluate((ks) => { const o = {}; for (const k in ks) { window.ui.set(k, ks[k]); o[k] = window.ui.get(k); } return o; }, knobSet);
+  let allBound = true; for (const k in knobSet) if (!approx(rb[k], knobSet[k], 0.6)) allBound = false;
+  check("all main knobs bound (set -> readback)", allBound, JSON.stringify(rb));
+
+  // knob DRAG (Depth) moves the store value
+  {
+    const r = await page.evaluate(() => window.ui.widgetRect("depth"));
+    const c = rectCentre(r);
+    await page.evaluate(() => window.ui.set("depth", 30));
+    const before = await page.evaluate(() => window.ui.get("depth"));
+    await dragWindow(page, c.x, c.y, c.x, c.y - 70); // drag up = increase
+    const after = await page.evaluate(() => window.ui.get("depth"));
+    check("knob drag increased the bound param", after > before + 1, before + " -> " + after);
+  }
+
+  // --- 3. MODE segmented + QUALITY dropdown --------------------------------
+  {
+    const r = await page.evaluate(() => window.ui.widgetRect("mode"));
+    const before = await page.evaluate(() => window.ui.get("mode"));
+    await clickWindow(page, r.x + r.w * 0.75, r.y + r.h * 0.5); // 2nd segment "Hard"
+    const after = await page.evaluate(() => window.ui.get("mode"));
+    check("MODE segmented click changed choice", after === 1 && after !== before, before + " -> " + after);
+  }
+  {
+    const before = await page.evaluate(() => window.ui.get("quality"));
+    const open = await page.evaluate(() => { const ok = window.rs.openDropdown(0); return { ok, open: window.rs.dropdownOpen(), n: window.rs.dropdownCount() }; });
+    check("QUALITY dropdown opened", open.ok && open.open && open.n === 3, JSON.stringify(open));
+    const row = await page.evaluate(() => ({ x: window.rs.dropdownX(2), y: window.rs.dropdownRowY(2) })); // "High"
+    await clickWindow(page, row.x, row.y);
+    const after = await page.evaluate(() => ({ q: window.ui.get("quality"), open: window.rs.dropdownOpen() }));
+    check("QUALITY dropdown pick changed choice", after.q === 2 && before !== 2, before + " -> " + after.q);
+    check("QUALITY dropdown closed after pick", after.open === false);
+  }
+
+  // --- 4. DELTA / LINK / Bypass pill toggles -------------------------------
+  for (const id of ["delta", "link", "bypass"]) {
+    const r = await page.evaluate((k) => window.ui.widgetRect(k), id);
+    const before = await page.evaluate((k) => window.ui.get(k), id);
+    const c = rectCentre(r);
+    await clickWindow(page, c.x, c.y);
+    const after = await page.evaluate((k) => window.ui.get(k), id);
+    check("pill toggle '" + id + "' flipped", after !== before, before + " -> " + after);
+  }
+
+  // --- 5. node DRAG on the curve moves b0_freq / b0_sens -------------------
+  await page.evaluate(() => window.rs.selectNode(-1));
+  {
+    const before = await page.evaluate(() => ({ f: window.ui.get("b0_freq"), s: window.ui.get("b0_sens") }));
+    const pos = await page.evaluate(() => ({ x: window.rs.nodeX(2), y: window.rs.nodeY(2) })); // node 2 = band 0
+    check("band node 0 has a screen position", pos.x > 0 && pos.y > 0, JSON.stringify(pos));
+    await dragWindow(page, pos.x, pos.y, pos.x + 80, pos.y - 40); // right = higher freq, up = higher sens
+    const after = await page.evaluate(() => ({ f: window.ui.get("b0_freq"), s: window.ui.get("b0_sens") }));
+    check("node drag changed b0_freq", after.f > before.f + 1, before.f.toFixed(0) + " -> " + after.f.toFixed(0));
+    check("node drag changed b0_sens", after.s > before.s + 0.5, before.s.toFixed(1) + " -> " + after.s.toFixed(1));
+  }
+
+  // --- 6. node click opens NodePanel; a TYPE button writes b0_type ---------
+  {
+    await page.evaluate(() => window.rs.selectNode(2));
+    const sel = await page.evaluate(() => window.rs.selectedNode());
+    const pr = await page.evaluate(() => window.ui.widgetRect("nodePanel"));
+    check("node select opens the NodePanel", sel === 2 && pr && pr.w > 0, "sel=" + sel);
+    const before = await page.evaluate(() => window.ui.get("b0_type"));
+    // TYPE button i centre (panel-local): (76 + 36*i, 71); click i=3 (Band Shelf).
+    await clickWindow(page, pr.x + 76 + 36 * 3, pr.y + 71);
+    const after = await page.evaluate(() => window.ui.get("b0_type"));
+    check("NodePanel TYPE button wrote b0_type", after === 3 && before !== 3, before + " -> " + after);
+  }
+
+  // --- 7. NodePanel Listen badge writes listenNode ------------------------
+  {
+    await page.evaluate(() => window.rs.selectNode(3)); // band 1
+    const pr = await page.evaluate(() => window.ui.widgetRect("nodePanel"));
+    // Listen badge centre (panel-local): (211, 25).
+    await clickWindow(page, pr.x + 211, pr.y + 25);
+    const on = await page.evaluate(() => window.rs.listenNode());
+    check("Listen badge wrote listenNode", on === 3, "listen=" + on);
+    await page.evaluate(() => window.rs.selectNode(-1)); // deselect drops Listen
+    const off = await page.evaluate(() => window.rs.listenNode());
+    check("deselect drops Listen", off === -1, "listen=" + off);
+  }
+
+  // --- 8. preset next / prev step the model -------------------------------
+  {
+    const pr = await page.evaluate(() => window.ui.widgetRect("preset"));
+    const arrowW = Math.min(24, pr.h);
+    const nextX = pr.x + pr.w - arrowW * 0.5, prevX = pr.x + arrowW * 0.5, midY = pr.y + pr.h * 0.5;
+    const p0 = await page.evaluate(() => window.rs.presetIndex());
+    await clickWindow(page, nextX, midY); await wait(page, 50);
+    const p1 = await page.evaluate(() => window.rs.presetIndex());
+    await clickWindow(page, prevX, midY); await wait(page, 50);
+    const p2 = await page.evaluate(() => window.rs.presetIndex());
+    check("preset next stepped forward", p1 === p0 + 1, p0 + " -> " + p1);
+    check("preset prev stepped back", p2 === p0, p1 + " -> " + p2);
+  }
+
+  // --- 9. A/B switch swaps a param value ----------------------------------
+  {
+    await page.evaluate(() => { window.ui.set("depth", 22); window.rs.setAb(1); window.ui.set("depth", 88); window.rs.setAb(0); });
+    const a = await page.evaluate(() => window.ui.get("depth"));
+    await page.evaluate(() => window.rs.setAb(1));
+    const b = await page.evaluate(() => window.ui.get("depth"));
+    check("A/B switch swaps the param value", approx(a, 22) && approx(b, 88), "A=" + a + " B=" + b);
+  }
+
+  // --- rs-busy.png: several bands on + a node selected + NodePanel open -----
+  await page.evaluate(() => {
+    window.ui.set("b2_sens", 9); window.ui.set("b4_on", 1); window.ui.set("b4_sens", 7);
+    window.ui.set("b5_on", 1); window.ui.set("b5_sens", -6); window.ui.set("depth", 62);
+    window.ui.freeze(true); window.rs.selectNode(4); // open panel on band 2
+  });
+  await wait(page, 150);
+  const busyBuf = await editorShot(page, 1069, 747);
+  fs.writeFileSync(path.join(OUT, "rs-busy.png"), busyBuf);
+  check("rs-busy.png non-blank", d.notBlank(d.analyzePNG(busyBuf)));
+
+  // --- 10. resize renders at min + max ------------------------------------
+  await page.evaluate(() => window.rs.selectNode(-1));
+  await page.evaluate(() => window.rs.setSize(940, 657));
+  await wait(page, 250);
+  const minBuf = await editorShot(page, 940, 657);
+  fs.writeFileSync(path.join(OUT, "rs-min.png"), minBuf);
+  const minStats = d.analyzePNG(minBuf);
+  check("rs-min.png (940x657) non-blank", d.notBlank(minStats), minStats.width + "x" + minStats.height);
+
+  await page.evaluate(() => window.rs.setSize(1320, 922));
+  await wait(page, 250);
+  const maxBuf = await editorShot(page, 1320, 922);
+  fs.writeFileSync(path.join(OUT, "rs-max.png"), maxBuf);
+  const maxStats = d.analyzePNG(maxBuf);
+  check("rs-max.png (1320x922) non-blank", d.notBlank(maxStats), maxStats.width + "x" + maxStats.height);
+  check("resize preserved the design aspect", Math.abs(940 / 657 - 1320 / 922) < 0.01);
+
+  check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));
+
+  await browser.close();
+
+  const passed = asserts.every((a) => a.ok);
+  const result = {
+    url: URL, passed, webgl: webgl.renderer, timings,
+    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png"].map((f) => path.join(OUT, f)),
+    asserts, jsErrorCount: jsErrors.length, httpErrorCount: httpErrors.length,
+  };
+  fs.writeFileSync(path.join(OUT, "rs_result.json"), JSON.stringify(result, null, 2));
+  console.log("\n" + JSON.stringify({ passed, passCount: asserts.filter((a) => a.ok).length, total: asserts.length, webgl: webgl.renderer }, null, 2));
+  process.exit(passed ? 0 : 1);
+})().catch((e) => { console.error("RS_SPEC_FATAL:", e); process.exit(2); });

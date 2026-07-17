@@ -27,6 +27,11 @@ namespace factory_ui_visage
         void setToggleState (bool on);
         bool toggleState() const { return on_; }
 
+        // Dim the glyph (a disabled affordance, e.g. Undo/Redo with nothing to
+        // undo). Purely visual — the owner still gates the action in onClick.
+        void setDimmed (bool dim);
+        bool dimmed() const { return dimmed_; }
+
         std::function<void()>     onClick;   // fired on every press
         std::function<void (bool)> onToggle; // fired (with the new state) in toggle mode
 
@@ -43,5 +48,6 @@ namespace factory_ui_visage
         bool on_ = false;
         bool hover_ = false;
         bool down_ = false;
+        bool dimmed_ = false;
     };
 }

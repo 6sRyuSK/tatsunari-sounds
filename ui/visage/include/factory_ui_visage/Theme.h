@@ -183,6 +183,16 @@ namespace factory_ui_visage
         // no exceptions) on any failure — safe to call from the wasm bridge.
         static bool tryParse (const std::string& jsonText, Theme& out, std::string& error);
 
+        // Overlay a JSON theme document onto THIS theme: identical to tryParse but
+        // SEEDED FROM THE CURRENT VALUES instead of defaults(), so a plugin can
+        // layer a small partial override (every key optional — additive) on top of
+        // the shared theme, "shared theme + plugin overlay merged at load". A
+        // top-level "rs" object is reserved for plugin-specific extras and is
+        // IGNORED here (the plugin's own theme model consumes it, e.g.
+        // plugins/resonance-suppressor/ui/RsTheme). Strict within every recognized
+        // block; returns false + fills `error` on malformed input (no exceptions).
+        bool applyOverlay (const std::string& jsonText, std::string& error);
+
         // Convenience wrappers for host tools/tests (these THROW std::runtime_error
         // on malformed input). Do not call from the exception-free wasm path.
         static Theme fromJsonText (const std::string& jsonText);

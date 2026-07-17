@@ -4,6 +4,9 @@
 #include "factory_params/ParamStore.h"
 #include "factory_params/Range.h"
 
+#include <string>
+#include <utility>
+
 #include <visage_ui/frame.h>
 
 //
@@ -29,6 +32,17 @@ namespace factory_ui_visage
         // in place for hot reload, so the reference always sees the current values.
         Knob (factory_params::ParamStore& store, int paramIndex, const Theme& theme, int decimals = 1);
 
+        // Per-instance arc/pointer accent (0xAARRGGBB). 0 (the default) keeps the
+        // theme accent, so existing call sites are unaffected; a plugin editor sets
+        // this to give a knob its own accent (e.g. the RS amber ATK/REL, mint TILT)
+        // without forking the widget.
+        void setAccentColour (std::uint32_t argb) { accentOverride_ = argb; redraw(); }
+
+        // Override the label drawn under the dial (default: the parameter's display
+        // name). Lets a plugin editor use its own short/upper-case caption (e.g. the
+        // RS "ATK"/"REL"/"TILT") without forking the widget. Empty = use desc.name.
+        void setNameOverride (std::string name) { nameOverride_ = std::move (name); redraw(); }
+
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
         void mouseDrag (const visage::MouseEvent& e) override;
@@ -46,6 +60,9 @@ namespace factory_ui_visage
         const Theme& theme_;
         int decimals_;
         factory_params::RangeSpec range_;
+
+        std::uint32_t accentOverride_ = 0; // 0 == use theme accent
+        std::string   nameOverride_;       // empty == use desc.name
 
         bool dragging_ = false;
         float dragNorm_ = 0.0f;         // authoritative accumulator during a drag

@@ -319,27 +319,22 @@ namespace factory_ui_visage
         return Theme {};
     }
 
-    bool Theme::tryParse (const std::string& jsonText, Theme& out, std::string& error)
+    namespace
     {
-        JsonParser parser (jsonText);
-        JsonValue root;
-        if (! parser.parse (root))
-        {
-            error = parser.error();
-            return false;
-        }
-        if (root.type != JsonValue::Type::Object)
-        {
-            error = "theme document must be a JSON object";
-            return false;
-        }
-
-        // Start from the compiled-in defaults; override every present key.
-        Theme t = Theme::defaults();
-
-        if (! checkNoUnknownKeys (root, { "palette", "knob", "toggle", "card", "font",
-                                          "segmented", "dropdown", "iconButton", "valueSetting",
-                                          "linkSlider", "spectrum" }, "theme", error))
+    // Apply a parsed theme document `root` onto `t`, overriding only the keys that
+    // are present (every key optional). Shared by Theme::tryParse (seeded from
+    // defaults()) and Theme::applyOverlay (seeded from the caller's theme). When
+    // `allowPluginExtras` is true a top-level "rs" object is permitted and ignored
+    // here — a plugin overlay carries its own extras under that key, consumed by
+    // the plugin's own theme model (see plugins/*/ui/RsTheme).
+    bool applyRootInto (const JsonValue& root, Theme& t, bool allowPluginExtras, std::string& error)
+    {
+        std::vector<std::string> topLevel { "palette", "knob", "toggle", "card", "font",
+                                            "segmented", "dropdown", "iconButton", "valueSetting",
+                                            "linkSlider", "spectrum" };
+        if (allowPluginExtras)
+            topLevel.push_back ("rs");
+        if (! checkNoUnknownKeys (root, topLevel, "theme", error))
             return false;
 
         if (const JsonValue* p = root.find ("palette"))
@@ -592,7 +587,49 @@ namespace factory_ui_visage
             if (! n ("fillBottomAlpha", t.spectrum.fillBottomAlpha)) return false;
         }
 
+        return true;
+    }
+    } // namespace
+
+    bool Theme::tryParse (const std::string& jsonText, Theme& out, std::string& error)
+    {
+        JsonParser parser (jsonText);
+        JsonValue root;
+        if (! parser.parse (root))
+        {
+            error = parser.error();
+            return false;
+        }
+        if (root.type != JsonValue::Type::Object)
+        {
+            error = "theme document must be a JSON object";
+            return false;
+        }
+        Theme t = Theme::defaults();
+        if (! applyRootInto (root, t, /*allowPluginExtras*/ false, error))
+            return false;
         out = t;
+        return true;
+    }
+
+    bool Theme::applyOverlay (const std::string& jsonText, std::string& error)
+    {
+        JsonParser parser (jsonText);
+        JsonValue root;
+        if (! parser.parse (root))
+        {
+            error = parser.error();
+            return false;
+        }
+        if (root.type != JsonValue::Type::Object)
+        {
+            error = "theme overlay must be a JSON object";
+            return false;
+        }
+        Theme t = *this;
+        if (! applyRootInto (root, t, /*allowPluginExtras*/ true, error))
+            return false;
+        *this = t;
         return true;
     }
 

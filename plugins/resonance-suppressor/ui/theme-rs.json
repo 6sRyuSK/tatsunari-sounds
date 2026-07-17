@@ -1,0 +1,88 @@
+{
+  "_comment": "RS plugin theme overlay. Top-level keys are the shared factory_ui_visage schema, applied to the shared Theme via Theme::applyOverlay (LIVE hot-reload) — this is the RsLookAndFeel chunky arc knob. The 'rs' object is RS-specific extras consumed by rs_ui::RsTheme (see RsTheme.h RsExtras). The 'rs.analyzer.*' values are the ex-AnalyzerDevPanel (kV201Style) constants — PENDING HUMAN SIGN-OFF.",
+
+  "knob": {
+    "lineWidthRatio": 0.30,
+    "bodyInsetFactor": 1.2,
+    "glowAlpha": 0.12,
+    "arcStart": 3.926990817,
+    "arcEnd": 8.639379797
+  },
+  "card": {
+    "cornerRadius": 16
+  },
+
+  "rs": {
+    "palette": {
+      "plotTop": "#fffffaf7",
+      "plotBottom": "#fffff4ee",
+      "chipBg": "#fffffdfb",
+      "footerBg": "#fffff4ee",
+      "segTrackBg": "#fffff1ec",
+      "modeBoxTop": "#fffff6f3",
+      "modeBoxBorder": "#ffffcabf",
+      "borderLight": "#fff7e7e0",
+      "linkTrack": "#fff4e3db",
+      "linkFillStart": "#ffffb0a3",
+      "toggleOffBg": "#ffe7d3ca",
+      "orange": "#ffff9472",
+      "pink": "#ffff6f91",
+      "amber": "#ffffba6b",
+      "mint": "#ff7fd1ae",
+      "teal": "#ff45b8ac",
+      "highCutRing": "#ff79b8ef",
+      "iconInactive": "#ff9c857c",
+      "textFaint": "#ffc9b3aa",
+      "glowPink": "#66ff6f91",
+      "shadowTaupe": "#246b5750",
+      "nodeShadow": "#476b5750",
+      "dotRing": "#ffffe4db",
+      "typeCaption": "#ffc39a8c",
+      "grBg": "#ffeafaf7",
+      "grBorder": "#ffb8e8e2",
+      "grText": "#ff2f9488"
+    },
+    "radius": {
+      "outer": 22,
+      "card": 16,
+      "popover": 18,
+      "box": 12,
+      "badge": 9,
+      "badgeLg": 11,
+      "cutHandle": 4
+    },
+    "spacing": {
+      "panelPad": 20,
+      "panelGap": 16,
+      "bigKnobGap": 22,
+      "smallKnobGap": 18
+    },
+    "node": {
+      "bandDot": 15,
+      "bandDotSel": 20,
+      "cutHandle": 13,
+      "cutHandleSel": 18,
+      "hitRadius": 14
+    },
+    "analyzer": {
+      "_signoff": "PENDING — transcribed from AnalyzerStyle.h kV201Style (shipped v2.0.1). The AnalyzerDevPanel that adjusted these is NOT ported (human decision pending).",
+      "inputFillTopAlpha": 0.22,
+      "inputFillBotAlpha": 0.02,
+      "inputColour": "#ffb9a39b",
+      "postLineWidth": 1.4,
+      "postLineAlpha": 0.85,
+      "postColour": "#ffff7a6b",
+      "deltaFillAlpha": 0.28,
+      "deltaStrokeAlpha": 0.8,
+      "deltaStrokeWidth": 1.0,
+      "perNodeFillAlpha": 0.12,
+      "perNodeStrokeAlpha": 0.7,
+      "combinedGlowAlpha": 0.22,
+      "combinedGlowWidth": 5.0,
+      "combinedStrokeWidth": 2.2,
+      "combinedStrokeAlpha": 1.0,
+      "combinedColour": "#ffff7a6b",
+      "displaySmoothMs": 50.0
+    }
+  }
+}

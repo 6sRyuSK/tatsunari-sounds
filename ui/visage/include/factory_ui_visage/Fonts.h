@@ -10,16 +10,22 @@
 // "kawaii" look; the two weights are static instances (wght=400 / wght=700) of
 // the Google Fonts variable font, embedded at build time from ui/visage/fonts/.
 //
-// FONT-FAMILY SWITCH (Phase P2b taste comparison). The final typeface is an
-// explicit human taste decision, so the library embeds THREE candidate families
-// and picks between them at RUNTIME via a single global selector:
-//   * Quicksand            — the current default (unchanged until a human picks)
-//   * Nunito               — OFL, static 400/700
-//   * M PLUS Rounded 1c    — OFL, Latin subset 400/700 (the full CJK face is huge)
+// CONFIRMED DEFAULT (human sign-off 2026-07-17): Quicksand is the final, approved
+// design-system typeface — no longer provisional. The Phase P2b taste comparison
+// is settled in its favour.
+//
+// FONT-FAMILY SWITCH (retained for experiments). The library still embeds THREE
+// families and can switch between them at RUNTIME via a single global selector,
+// so a future taste experiment (or a per-plugin trial) needs no rebuild — but
+// Quicksand is the shipped default and nothing should change it without a new
+// human decision:
+//   * Quicksand            — the CONFIRMED default (2026-07-17)
+//   * Nunito               — OFL, static 400/700 (experiment only)
+//   * M PLUS Rounded 1c    — OFL, Latin subset 400/700 (experiment only; the full CJK face is huge)
 // See ui/visage/fonts/*-OFL.txt for the licences. `regularFont`/`boldFont` return
 // the ACTIVE family's face, so a `setFontFamily(...)` call followed by a redraw
-// re-types the whole UI with no rebuild. The default stays Quicksand; nothing in
-// the widget code names a concrete face — it all goes through here.
+// re-types the whole UI with no rebuild. Nothing in the widget code names a
+// concrete face — it all goes through here.
 //
 // Adding/removing a candidate is a one-place change: drop the .ttf into
 // ui/visage/fonts/ (the CMake glob embeds it) and extend the switch in Fonts.cpp.

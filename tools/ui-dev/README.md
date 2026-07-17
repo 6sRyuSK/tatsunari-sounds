@@ -15,14 +15,44 @@ candidate typefaces (Quicksand / Nunito / M PLUS Rounded 1c).
 ```
 tools/ui-dev/
   gallery/            visage app: GalleryFrame + main + the JS<->WASM Bridge
+  rs-editor/          Phase P3 app: main + RsBridge + SyntheticFeed + Mocks (the RS
+                      editor itself lives JUCE-free in plugins/resonance-suppressor/ui/)
   shell.html          emscripten shell page (baked into index.html at link)
-  harness.js          page JS: bridge wrappers, theme hot-reload, live rebuild reload
+  harness.js          page JS: bridge wrappers (window.ui + window.rs), theme hot-reload, live reload
   theme.json          live-editable theme (a copy of ui/visage/theme/factory-default.json)
-  dev_server.py       static server (+ --watch rebuild + /events reload)
-  playwright/         drive.js (reusable driver) + smoke.js (scripted verification)
-  CMakeLists.txt      STANDALONE project; add_subdirectory(../../ui/visage)
-  CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs
+  dev_server.py       static server (+ --watch rebuild + /events reload + --theme-file)
+  playwright/         drive.js (reusable driver) + smoke.js (gallery) + rs.spec.js (rs-editor)
+  CMakeLists.txt      STANDALONE project; add_subdirectory(../../ui/visage); targets: gallery, rs-editor
+  CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs — both build gallery + rs-editor
 ```
+
+## rs-editor (Phase P3) — the resonance-suppressor editor
+
+The flagship visual port: the full RS editor, composed from `factory_ui_visage`
+widgets + the RS-specific views (`RsSuppressionCurveView`, `RsNodePanel`,
+`RsPillCell`), all **JUCE-free**, bound to a real `factory_params::ParamStore`
+(the actual 64-param `buildRsParams()` table), a synthetic `RsFeed` (deterministic
+pre/post/reduction spectra; the reduction curtain deepens with the Depth param;
+freezable) and mock preset / A-B models. The editor + its RS theme overlay live in
+`plugins/resonance-suppressor/ui/`; only the app shell (`main` + `RsBridge` +
+`SyntheticFeed` + `Mocks`) is here.
+
+```bash
+cmake --build --preset dev            # builds gallery + rs-editor -> build/dev/{web,web-rs}
+# serve rs-editor; theme-rs.json is served at /theme.json so the shared harness.js
+# hot-reloads the RS chunky-knob overlay (the "rs" extras block is applied at load).
+python3 dev_server.py --web-dir build/dev/web-rs --port 8081 \
+        --theme-file ../../plugins/resonance-suppressor/ui/theme-rs.json \
+        --watch --cmake-build-dir build/dev --target rs-editor
+# verify (30 asserts + 4 screenshots rs-default/busy/min/max):
+cd playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node rs.spec.js http://127.0.0.1:8081/index.html .
+```
+
+The rs-editor canvas is fixed at the **max** resize size (1320×922) and the editor
+frame renders into its top-left sub-rect; `rs.setSize(w,h)` re-lays-out at
+940×657 / 1069×747 / 1320×922 (fixed design aspect) and the driver clips the
+screenshot to `(w,h)` — the native window can't be resized under Emscripten
+(`computeWindowBounds` isn't linkable), so only the editor frame resizes.
 
 The design system it exercises lives in **`ui/visage/`** (`factory_ui_visage`):
 `Theme` (+ JSON parser), `Fonts` (3-family runtime switch), `Chrome`, `Knob`,
@@ -134,8 +164,10 @@ configure.)
 **Font comparison.** `font_compare.js` renders the identical frozen gallery in each
 candidate typeface (`ui.setFont`) → `font-quicksand.png` / `font-nunito.png` /
 `font-mplus.png`, then restores the Quicksand default. The three faces are embedded
-from `ui/visage/fonts/` (`*-OFL.txt` licences); swapping the default is a one-place
-change in `src/Fonts.cpp` once a human picks.
+from `ui/visage/fonts/` (`*-OFL.txt` licences). **Quicksand is the confirmed default
+typeface** (human sign-off 2026-07-17); the runtime switch (`ui.setFont` / Nunito /
+M PLUS Rounded 1c) is retained for future experiments only — changing the shipped
+default is a one-place change in `src/Fonts.cpp` and needs a fresh human decision.
 
 Font provenance (all OFL, fetched via a sparse checkout of `google/fonts`):
 ```bash
@@ -169,6 +201,26 @@ pyftsubset ofl/mplusrounded1c/MPLUSRounded1c-Bold.ttf    --unicodes="$UNI" --lay
 The store is a real `factory_params::ParamStore` with no host draining its
 write queue (a mock host): UI edits go through `beginGesture`/`setFromUi`/
 `endGesture`, host edits through `setFromHost`.
+
+**rs-editor extras** (`window.rs` in harness.js; C in `rs-editor/RsBridge.cpp`).
+The rs-editor also exports the core `ui.*` calls above (`list`/`get`/`set`/
+`freeze`/`reloadTheme`/`accent`/`widgetRect`/`setFont`), plus:
+
+| Call | Meaning |
+|---|---|
+| `rs.selectNode(i)` / `rs.selectedNode()` | select a curve node (opens the NodePanel) / read the selection |
+| `rs.nodeX(i)` / `rs.nodeY(i)` | node handle centre in window px (aim a drag); `-1` for a hidden band |
+| `rs.listenNode()` | the feed's live Listen (solo) target (`-1` = off) |
+| `rs.displaySmooth()` | the analyser display-smoothing ms the editor pushed (`RsFeed::setDisplaySmoothMs`) |
+| `rs.abSlot()` / `rs.setAb(s)` / `rs.copyAb()` | A/B compare: active slot / switch / copy active→other |
+| `rs.presetIndex()` / `rs.presetLoad(i)` | preset selection / load (resets + clears undo) |
+| `rs.uiEdit(id, v)` | simulate a UI gesture (begin/setFromUi/end + pump) — deterministic undo capture |
+| `rs.undo()` / `rs.redo()` / `rs.canUndo()` / `rs.canRedo()` | undo timeline (`factory_params::UndoStack`) |
+| `rs.setClock(s)` / `rs.pump()` | inject a fixed clock (undo coalescing) / drain the gesture queue |
+| `rs.openDropdown(w)` | open a value-setting/preset dropdown (`0`=quality, `1`=channel, `2`=preset) |
+| `rs.dropdownOpen()` / `rs.dropdownCount()` / `rs.dropdownX(i)` / `rs.dropdownRowY(i)` | shared-dropdown state + row positions |
+| `rs.plotRect()` | analyser plot rect `{x,y,w,h}` (window px) |
+| `rs.setSize(w,h)` | re-lay-out the editor at `(w,h)` (min/max screenshots) |
 
 ## Measured loop timings (in-container, SwiftShader WebGL2)
 
