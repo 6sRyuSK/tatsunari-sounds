@@ -1,7 +1,7 @@
-# tools/ui-dev/dev.ps1 — the daily Visage UI dev loop entry point (Windows).
+# tools/ui-dev/dev.ps1 -- the daily Visage UI dev loop entry point (Windows).
 #
 # UNTESTED: authored on Linux; the maintainer cannot execute PowerShell here.
-# It mirrors dev.sh — verify on a real Windows box before relying on it.
+# It mirrors dev.sh -- verify on a real Windows box before relying on it.
 #
 # Activates the pinned emsdk (running setup.ps1 first if .emsdk is missing),
 # configures the wasm build if needed, builds, and serves it with live rebuild.
@@ -26,7 +26,7 @@ $App = if ($Gallery) { "gallery" } else { "rs-editor" }
 
 # --- ensure emsdk exists, then activate it -----------------------------------
 if (-not (Test-Path (Join-Path $Here ".emsdk\emsdk_env.ps1"))) {
-    Write-Host "no .emsdk found — running setup.ps1 first"
+    Write-Host "no .emsdk found -- running setup.ps1 first"
     & (Join-Path $Here "setup.ps1")
 }
 

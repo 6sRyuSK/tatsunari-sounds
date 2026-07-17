@@ -1,7 +1,7 @@
-# tools/ui-dev/setup.ps1 — one-shot developer bootstrap for the Visage UI dev harness (Windows).
+# tools/ui-dev/setup.ps1 -- one-shot developer bootstrap for the Visage UI dev harness (Windows).
 #
 # UNTESTED: authored on Linux; the maintainer cannot execute PowerShell here.
-# It mirrors setup.sh — verify on a real Windows box before relying on it.
+# It mirrors setup.sh -- verify on a real Windows box before relying on it.
 #
 # Installs the pinned Emscripten SDK (6.0.3) into tools/ui-dev\.emsdk and verifies
 # the host build tools. Idempotent + upgrade-safe.
@@ -78,7 +78,7 @@ $versionFile = Join-Path $EmsdkDir "upstream\emscripten\emscripten-version.txt"
 $dotEmscripten = Join-Path $EmsdkDir ".emscripten"
 if ((Test-Path $dotEmscripten) -and (Test-Path $versionFile) -and
     (Select-String -Path $versionFile -Pattern $EmsdkVersion -Quiet)) {
-    Write-Host "emsdk $EmsdkVersion already installed + activated — skipping"
+    Write-Host "emsdk $EmsdkVersion already installed + activated -- skipping"
 } else {
     Push-Location $EmsdkDir
     try {
