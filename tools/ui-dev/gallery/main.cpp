@@ -11,8 +11,8 @@
 //
 namespace
 {
-    constexpr int kWidth  = 640;
-    constexpr int kHeight = 440;
+    constexpr int kWidth  = 780;
+    constexpr int kHeight = 720;
 }
 
 int runExample()

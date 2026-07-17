@@ -1,10 +1,16 @@
-# tools/ui-dev — the Visage UI daily-development loop (Phase P2a)
+# tools/ui-dev — the Visage UI daily-development loop (Phase P2a/P2b)
 
 The vertical slice of the new Visage-based UI foundation: a widget gallery built
 to **WebAssembly**, served locally, driven + screenshotted under headless
 Chromium. Edit a widget's C++ (or the theme JSON) → see it in the browser in
 seconds. This is a **local dev harness only** — it is not wired into the
 repository-root build or CI.
+
+Phase P2b completed the widget set: the gallery now has a **second card** with a
+Segmented strip, IconButtons, a ValueSetting, a LinkSlider, a PresetSelectorView
+(over our own Dropdown overlay) and an animated SpectrumView fed by a
+deterministic synthetic generator, plus a runtime **font switch** across three
+candidate typefaces (Quicksand / Nunito / M PLUS Rounded 1c).
 
 ```
 tools/ui-dev/
@@ -19,8 +25,18 @@ tools/ui-dev/
 ```
 
 The design system it exercises lives in **`ui/visage/`** (`factory_ui_visage`):
-`Theme` (+ JSON parser), `Fonts`, `Chrome`, `Knob`, `PillToggle`. See that
-directory for the widgets; this README is just the loop.
+`Theme` (+ JSON parser), `Fonts` (3-family runtime switch), `Chrome`, `Knob`,
+`PillToggle`, and the P2b set — `Segmented`, `IconButton`/`Icons`, `ValueSetting`,
+`LinkSlider`, `PresetSelectorView`, `Dropdown`, `SpectrumModel` + `SpectrumView`.
+See that directory for the widgets; this README is just the loop.
+
+**Visage mouse gotcha (load-bearing).** In a widget's `mouseDown`/`mouseDrag`, use
+`e.position` (the click's frame-local coordinate = `windowPosition − positionInWindow`)
+for hit-testing. `e.relativePosition()` is a **movement delta** since the last
+event (for relative-drag mode), NOT a hit point — using it silently sends every
+hit to `(0,0)`. Also: a single click is `repeatClickCount() == 1` (double-click is
+`2`), so gate double-click actions on `>= 2`. The `ui_last_mouse_x/y` bridge calls
+report where visage actually delivered the last click, for coordinate calibration.
 
 ## Prerequisites (pinned — see docs/migration/s1-wasm-loop.md)
 
@@ -90,11 +106,47 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node smoke.js http://127.0.0.1:8080/in
 # quick non-blank-only check: node drive.js <url> out.png
 ```
 
-`smoke.js` asserts: bridge lists the params, store round-trip (`set depth=55` →
-readback 55), a simulated knob **drag** moves the bound store parameter, the
-gallery renders non-blank, and **theme hot reload → pixel** (accent changed via
-`ui_reload_theme`, no rebuild) with a malformed theme rejected. It writes
-`gallery.png` + `theme-edit.png` + `smoke_result.json`.
+`smoke.js` asserts the P2a foundation (bridge lists the 9 params, store
+round-trip, a knob **drag** moves the bound param, gallery non-blank, **theme hot
+reload → pixel** with a malformed theme rejected) AND the P2b widget set through
+real mouse events: **Segmented** click → Choice param changes; **LinkSlider** drag
+→ Float param changes; **PresetSelectorView** `<`/`>` step (skipping the non-
+steppable "Save As…"); **ValueSetting** → Dropdown open + row click → Choice param
+changes; and the **SpectrumView** region is non-blank, **changes** between two
+synthetic frames, then **freezes deterministically** (two frozen frames identical).
+It writes `gallery.png`, `gallery2.png` (extended, frozen), `dropdown.png`,
+`theme-edit.png`, and `smoke_result.json`.
+
+**Native tests** (visage-free/JUCE-free, host compiler — like the theme test):
+```bash
+# theme model + JSON parser round-trip
+c++ -std=c++17 -I ../../ui/visage/include \
+    ../../ui/visage/tests/theme_roundtrip_test.cpp ../../ui/visage/src/Theme.cpp -o t && ./t
+# SpectrumModel: on-bin sinusoid -> peak bin + dB (independent Hann-gain oracle),
+# across the full 44.1–192 kHz rate matrix
+c++ -std=c++17 -I ../../ui/visage/include -I ../../core/include \
+    ../../ui/visage/tests/spectrum_model_test.cpp ../../ui/visage/src/SpectrumModel.cpp -o s && ./s
+```
+(Both are also registered as CMake targets `factory_ui_visage_theme_test` /
+`factory_ui_visage_spectrum_test`, built only under a native — non-Emscripten —
+configure.)
+
+**Font comparison.** `font_compare.js` renders the identical frozen gallery in each
+candidate typeface (`ui.setFont`) → `font-quicksand.png` / `font-nunito.png` /
+`font-mplus.png`, then restores the Quicksand default. The three faces are embedded
+from `ui/visage/fonts/` (`*-OFL.txt` licences); swapping the default is a one-place
+change in `src/Fonts.cpp` once a human picks.
+
+Font provenance (all OFL, fetched via a sparse checkout of `google/fonts`):
+```bash
+# Nunito: static 400/700 instanced from the variable font (full Latin, ~132 KB/face)
+fonttools varLib.instancer 'ofl/nunito/Nunito[wght].ttf' wght=400 -o Nunito-Regular.ttf
+fonttools varLib.instancer 'ofl/nunito/Nunito[wght].ttf' wght=700 -o Nunito-Bold.ttf
+# M PLUS Rounded 1c: the full face is ~3.4 MB (CJK); subset to Latin -> ~43 KB/face
+UNI="U+0020-007E,U+00A0-00FF,U+2013,U+2014,U+2018,U+2019,U+201C,U+201D,U+2026,U+2190,U+2192,U+25B2,U+25BC,U+2212"
+pyftsubset ofl/mplusrounded1c/MPLUSRounded1c-Regular.ttf --unicodes="$UNI" --layout-features='*' --output-file=MPLUSRounded1c-Regular.ttf
+pyftsubset ofl/mplusrounded1c/MPLUSRounded1c-Bold.ttf    --unicodes="$UNI" --layout-features='*' --output-file=MPLUSRounded1c-Bold.ttf
+```
 
 ## JS ↔ WASM bridge (window.ui in harness.js; C in gallery/Bridge.cpp)
 
@@ -102,10 +154,17 @@ gallery renders non-blank, and **theme hot reload → pixel** (accent changed vi
 |---|---|
 | `ui.list()` | JSON of every param (index, id, name, type, range, default, live value, unit) |
 | `ui.get(id)` / `ui.set(id, real)` | read / **host-drive** a param (`setFromHost`) by id |
-| `ui.freeze(bool)` | stop continuous animation for deterministic capture (P2a widgets are static; reserved for animated P2b widgets) |
+| `ui.freeze(bool)` | stop the SpectrumView animation for deterministic capture; freezing also injects a fixed synthetic frame so the held image is stable |
 | `ui.reloadTheme(jsonText)` | re-apply a theme at runtime → returns false on malformed input (`ui.lastError()`) |
 | `ui.accent()` | current theme accent `0xAARRGGBB` (for verifying a reload landed) |
 | `ui.widgetX(id)` / `ui.widgetY(id)` | bound widget centre in window px (aim mouse events) |
+| `ui.widgetRect(key)` | rect `{x,y,w,h}` (window px) of a control by param id or a special name (`"preset"` / `"spectrum"` / `"valueSetting"`); `null` if unknown |
+| `ui.setFont(name)` / `ui.font()` | switch / read the active typeface (`"quicksand"` \| `"nunito"` \| `"mplus"`); default stays Quicksand |
+| `ui.feedSpectrum(phase)` | inject a **fixed** synthetic spectrum frame and converge the model (deterministic frozen capture) |
+| `ui.openDropdown(which)` | open a control's Dropdown (`0` = preset selector, `1` = value setting) |
+| `ui.dropdownOpen()` / `ui.dropdownCount()` | overlay state + number of item rows |
+| `ui.dropdownX(i)` / `ui.dropdownRowY(i)` | window-px centre of an open dropdown's item row `i` (aim a row click) |
+| `ui.presetIndex()` | current PresetSelectorView item-row index (verify `<`/`>` onChange) |
 
 The store is a real `factory_params::ParamStore` with no host draining its
 write queue (a mock host): UI edits go through `beginGesture`/`setFromUi`/

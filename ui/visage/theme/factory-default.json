@@ -8,33 +8,34 @@
     "accent": "#ffff7a6b",
     "accentDim": "#ffffd6cd",
     "text": "#ff6b5750",
+    "textSecondary": "#ff8f7a72",
     "textDim": "#ffb9a39b",
     "shadow": "#33d6a89a",
     "bandColours": ["#ffff6f91", "#ffff9472", "#ffffba6b", "#ff7fd1ae", "#ff79b8ef", "#ffb79be8"]
   },
   "knob": {
     "boundsInset": 6,
-    "lineWidthRatio": 0.18,
-    "glowWidthFactor": 1.9,
+    "lineWidthRatio": 0.180000007,
+    "glowWidthFactor": 1.89999998,
     "glowAlpha": 0.25,
-    "bodyInsetFactor": 1.7,
+    "bodyInsetFactor": 1.70000005,
     "shadowBlurFactor": 0.5,
     "shadowOffset": [0, 2],
-    "pointerDotFactor": 0.55,
-    "pointerPosFactor": 0.62,
-    "arcStart": 3.769911184307752,
-    "arcEnd": 8.796459430051420
+    "pointerDotFactor": 0.550000012,
+    "pointerPosFactor": 0.620000005,
+    "arcStart": 3.76991129,
+    "arcEnd": 8.7964592
   },
   "toggle": {
     "height": 20,
-    "widthFactor": 1.7,
+    "widthFactor": 1.70000005,
     "knobInset": 4,
     "cornerRadiusFactor": 0.5,
     "textGap": 8
   },
   "card": {
     "cornerRadius": 10,
-    "outlineWidth": 1.2,
+    "outlineWidth": 1.20000005,
     "shadowBlur": 16,
     "shadowOffset": [0, 5]
   },
@@ -42,6 +43,49 @@
     "label": 13,
     "labelBold": 13,
     "title": 20,
-    "callout": 14
+    "callout": 14,
+    "caption": 11
+  },
+  "segmented": {
+    "height": 28,
+    "cornerRadius": 9,
+    "pillInset": 3,
+    "pillCornerRadius": 7
+  },
+  "dropdown": {
+    "rowHeight": 26,
+    "cornerRadius": 10,
+    "paddingX": 10,
+    "paddingY": 6,
+    "separatorInset": 10,
+    "shadowBlur": 16,
+    "shadowOffsetY": 6
+  },
+  "iconButton": {
+    "cornerRadius": 9,
+    "glyphInsetFactor": 0.280000001
+  },
+  "valueSetting": {
+    "cornerRadius": 9,
+    "paddingX": 9,
+    "iconSize": 16
+  },
+  "linkSlider": {
+    "cornerRadius": 9,
+    "paddingX": 9,
+    "trackHeight": 7,
+    "trackCorner": 3.5,
+    "captionColumn": 76,
+    "valueColumn": 52,
+    "glyphSize": 16
+  },
+  "spectrum": {
+    "cornerRadius": 12,
+    "topDb": 0,
+    "bottomDb": -100,
+    "traceWidth": 2,
+    "peakWidth": 1.39999998,
+    "fillTopAlpha": 0.330000013,
+    "fillBottomAlpha": 0.0199999996
   }
 }

@@ -2,6 +2,7 @@
 #include "GalleryFrame.h"
 
 #include "factory_params/ParamDesc.h"
+#include "factory_ui_visage/Fonts.h"
 
 #include <sstream>
 #include <string>
@@ -24,6 +25,7 @@ namespace
     GalleryFrame* g_gallery = nullptr;
     std::string   g_listBuffer;   // ui_list_params() result
     std::string   g_errorBuffer;  // ui_reload_theme() / ui_last_error() message
+    std::string   g_rectBuffer;   // ui_widget_rect() result
 
     std::string jsonEscape (const std::string& s)
     {
@@ -165,4 +167,90 @@ extern "C"
             return -1.0;
         return static_cast<double> (y);
     }
+
+    // --- P2b additions --------------------------------------------------------
+
+    // Rect (window px) of a control keyed by param id ("mode"/"link"/…) or a
+    // special name ("preset"/"spectrum"/"valueSetting"). JSON, or "null".
+    KEEPALIVE const char* ui_widget_rect (const char* key)
+    {
+        g_rectBuffer = "null";
+        if (g_gallery != nullptr && key != nullptr)
+        {
+            float x = 0, y = 0, w = 0, h = 0;
+            if (g_gallery->widgetRectInWindow (key, x, y, w, h))
+            {
+                std::ostringstream o;
+                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
+                g_rectBuffer = o.str();
+            }
+        }
+        return g_rectBuffer.c_str();
+    }
+
+    // Switch the active typeface ("quicksand" | "nunito" | "mplus"). 1 on success.
+    KEEPALIVE int ui_set_font (const char* name)
+    {
+        if (! factory_ui_visage::setFontFamilyByName (name))
+            return 0;
+        if (g_gallery != nullptr)
+            g_gallery->redrawAll();
+        return 1;
+    }
+
+    KEEPALIVE const char* ui_font() { return factory_ui_visage::fontFamilyName(); }
+
+    // Inject a FIXED synthetic spectrum frame at `phase` and converge the model,
+    // so a frozen screenshot is deterministic (repeated calls -> identical pixels).
+    KEEPALIVE void ui_feed_spectrum (double phase)
+    {
+        if (g_gallery != nullptr)
+            g_gallery->feedSpectrum (phase);
+    }
+
+    // Open a control's dropdown (0 = preset selector, 1 = value setting). 1 on ok.
+    KEEPALIVE int ui_open_dropdown (int which)
+    {
+        return (g_gallery != nullptr && g_gallery->openNamedDropdown (which)) ? 1 : 0;
+    }
+
+    KEEPALIVE int ui_dropdown_open()
+    {
+        return (g_gallery != nullptr && g_gallery->dropdownOpen()) ? 1 : 0;
+    }
+
+    KEEPALIVE int ui_dropdown_item_count()
+    {
+        return (g_gallery != nullptr && g_gallery->dropdown() != nullptr)
+                   ? g_gallery->dropdown()->itemCount() : 0;
+    }
+
+    // Centre (window px) of an open dropdown's item row, so the driver can click it.
+    KEEPALIVE double ui_dropdown_x (int itemIndex)
+    {
+        float x = 0.0f, y = 0.0f;
+        if (g_gallery != nullptr && g_gallery->dropdown() != nullptr
+            && g_gallery->dropdown()->rowCentreInWindow (itemIndex, x, y))
+            return static_cast<double> (x);
+        return -1.0;
+    }
+
+    KEEPALIVE double ui_dropdown_row_y (int itemIndex)
+    {
+        float x = 0.0f, y = 0.0f;
+        if (g_gallery != nullptr && g_gallery->dropdown() != nullptr
+            && g_gallery->dropdown()->rowCentreInWindow (itemIndex, x, y))
+            return static_cast<double> (y);
+        return -1.0;
+    }
+
+    // Current preset-selector item-row index (for verifying next/prev onChange).
+    KEEPALIVE int ui_preset_index()
+    {
+        return g_gallery != nullptr ? g_gallery->presetIndex() : -1;
+    }
+
+    // Where visage delivered the last mouse-down (window px) — coordinate probe.
+    KEEPALIVE double ui_last_mouse_x() { return g_gallery ? (double) g_gallery->lastMouseX() : -1.0; }
+    KEEPALIVE double ui_last_mouse_y() { return g_gallery ? (double) g_gallery->lastMouseY() : -1.0; }
 }

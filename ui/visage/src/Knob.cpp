@@ -127,8 +127,10 @@ namespace factory_ui_visage
 
     void Knob::mouseDown (const visage::MouseEvent& e)
     {
-        // Double-click (repeat count 1) restores the default value.
-        if (e.repeatClickCount() >= 1)
+        // Double-click restores the default value. A single click is repeat count
+        // 1 in visage (a double-click is 2), so the threshold must be >= 2 — else
+        // every press would reset instead of starting a drag.
+        if (e.repeatClickCount() >= 2)
         {
             const factory_params::ParamDesc& desc = store_.desc (index_);
             store_.beginGesture (index_);
@@ -141,7 +143,7 @@ namespace factory_ui_visage
 
         dragging_ = true;
         dragNorm_ = currentNorm();
-        lastDragPos_ = e.relativePosition();
+        lastDragPos_ = e.position; // frame-local anchor; successive positions give true deltas
         store_.beginGesture (index_);
     }
 
@@ -150,7 +152,7 @@ namespace factory_ui_visage
         if (! dragging_)
             return;
 
-        const visage::Point pos = e.relativePosition();
+        const visage::Point pos = e.position; // frame-local position (not a move delta)
         const float dx = pos.x - lastDragPos_.x;
         const float dy = pos.y - lastDragPos_.y;
         lastDragPos_ = pos;
