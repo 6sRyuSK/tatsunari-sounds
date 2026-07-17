@@ -58,17 +58,19 @@
       "hitRadius": 14
     },
     "analyzer": {
-      "_signoff": "PENDING — design reference 2026-07-17 (supersedes AnalyzerStyle.h kV201Style). Teal curtain hangs from the plot top; PRE = solid coral line, POST = dashed muted coral; per-node = pale coral bumps.",
+      "_signoff": "PENDING — design reference 2026-07-17 (supersedes AnalyzerStyle.h kV201Style). Teal curtain hangs from the plot top; PRE + POST = thin solid coral lines (POST solid per kV201Style); the combined reduction PROFILE is a dashed muted-coral line through the node dots; per-node = subtle pale bump fills near the baseline.",
       "curtainFillAlpha": 0.34,
       "curtainClampFrac": 0.5,
       "preColour": "#ffff7a6b",
       "preLineWidth": 2.0,
-      "postColour": "#ffe08a7f",
-      "postLineWidth": 1.5,
-      "postDashOn": 5.0,
-      "postDashOff": 4.0,
+      "postColour": "#ffff7a6b",
+      "postLineWidth": 1.4,
+      "postLineAlpha": 0.85,
+      "profileColour": "#ffe08a7f",
+      "profileLineWidth": 1.5,
+      "profileDashOn": 5.0,
+      "profileDashOff": 4.0,
       "perNodeFillAlpha": 0.12,
-      "perNodeStrokeAlpha": 0.5,
       "displaySmoothMs": 50.0
     }
   }

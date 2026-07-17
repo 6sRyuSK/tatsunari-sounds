@@ -2,8 +2,10 @@
 
 #include "RsEditor.h"
 #include "SyntheticFeed.h"
+#include "RsProfileModel.h"
 
 #include "factory_params/ParamDesc.h"
+#include "factory_core/ReductionProfile.h"
 #include "factory_ui_visage/Fonts.h"
 
 #include <visage/app.h>
@@ -221,6 +223,17 @@ extern "C"
     {
         (void) g_app;
         if (g_editor) g_editor->setBounds (0.0f, 0.0f, (float) w, (float) h);
+    }
+
+    // Combined reduction-profile deviation (dB) at a frequency, evaluated over the
+    // live node set with the SAME factory_core::reductionProfileDbAt the editor's
+    // curve + the audio path use. The driver maps this through the plot's sens axis
+    // to assert a band's node handle sits ON the drawn combined curve.
+    KEEPALIVE double rs_profile_db_at (double freqHz)
+    {
+        if (g_editor == nullptr) return 0.0;
+        rs_ui::RsProfileModel model (g_editor->store());
+        return (double) factory_core::reductionProfileDbAt (freqHz, model.buildNodes());
     }
 
     KEEPALIVE const char* rs_plot_rect()

@@ -283,15 +283,15 @@ namespace rs_ui
                 strokePolyline (canvas, pts, theme_.rs.preLineWidth);
             }
         }
-        // POST (output): a dashed muted-coral line (dash on/off px).
+        // POST (output): a thin SOLID coral line (kV201Style role — the dashed
+        // line is the combined reduction profile, drawn in drawProfile).
         if (analyzerMode_ != AnalyzerMode::Pre)
         {
             build (snapPost_, pts);
             if (pts.size() >= 2)
             {
-                canvas.setColor (visage::Color (theme_.rs.postColour));
-                strokeDashedPolyline (canvas, pts, theme_.rs.postLineWidth,
-                                      theme_.rs.postDashOn, theme_.rs.postDashOff);
+                canvas.setColor (visage::Color (theme_.rs.postColour).withAlpha (theme_.rs.postLineAlpha));
+                strokePolyline (canvas, pts, theme_.rs.postLineWidth);
             }
         }
     }
@@ -335,52 +335,83 @@ namespace rs_ui
         flush();
     }
 
+    // The reduction-profile face (design reference 2026-07-17). Geometry is the
+    // shipped SuppressionCurveComponent's: the sens baseline sits at sensToY(0) —
+    // the plot's vertical MIDDLE — and the ±30 dB sens range spans the full plot
+    // height (plot.h/60 px per dB), so bumps stay subdued and never balloon to the
+    // top. Two layers, back to front:
+    //   (1) each active band's own contribution as a SUBTLE pale fill hugging the
+    //       baseline (rs.analyzer.perNodeFillAlpha), and
+    //   (2) the COMBINED profile — factory_core::reductionProfileDbAt over ALL
+    //       nodes (the same shape the audio path runs) — as a dashed muted-coral
+    //       line that passes through the node dots (whose y is sensToY(sens), so a
+    //       band's dot rides its own peak on the curve).
+    // Both are drawn from primitives (tiled fill rects / SEGMENT dash pieces): a
+    // plot-wide filled or stroked path would poison the frame's path atlas and
+    // silently drop every path fill (see strokePolyline / strokeDashedPolyline).
     void RsSuppressionCurveView::drawProfile (visage::Canvas& canvas)
     {
-        const auto nodes = model_.buildNodes();
-        const int steps = std::max (2, (int) plot_.w);
-        const float y0 = sensToY (0.0f);
+        const auto  nodes = model_.buildNodes();
+        const int   steps = std::max (2, (int) plot_.w);
+        const float y0    = sensToY (0.0f); // nominal (0 dB) baseline = plot middle
 
-        // Each active BAND node draws a pale coral bump below the nominal line
-        // (design reference: per-node bumps, no bold combined curve). Cut nodes are
-        // shown by their dashed guides + handles (drawNodes), not a filled bump.
-        for (int id = 0; id < RsProfileModel::kNumNodes; ++id)
+        // (1) Per-node contribution fills — subtle, from the baseline to each
+        // active band's own bump, as tiled edge-to-edge bars.
+        if (theme_.rs.perNodeFillAlpha > 0.0f)
         {
-            if (RsProfileModel::isCut (id) || ! model_.nodeOn (id)) continue;
-            const auto single = RsProfileModel::singleNode (nodes, id);
-            std::vector<visage::Point> pts;
-            pts.reserve ((std::size_t) steps + 1);
-            for (int i = 0; i <= steps; ++i)
+            for (int id = 0; id < RsProfileModel::kNumNodes; ++id)
             {
-                const float x = plot_.x + (float) i * plot_.w / steps;
-                const float yB = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), single));
-                pts.push_back (visage::Point (x, yB));
-            }
-            const std::uint32_t col = RsProfileModel::isCut (id) ? theme_.base.palette.textDim : bandColour (id);
-            // Pale fill from the baseline up to the bump, as tiled edge-to-edge
-            // bars (a filled path would poison the frame's path atlas — see
-            // strokePolyline); then a thin segment outline.
-            if (theme_.rs.perNodeFillAlpha > 0.0f)
-            {
-                canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeFillAlpha));
-                for (std::size_t i = 0; i + 1 < pts.size(); ++i)
+                if (RsProfileModel::isCut (id) || ! model_.nodeOn (id)) continue;
+                const auto single = RsProfileModel::singleNode (nodes, id);
+                canvas.setColor (visage::Color (bandColour (id)).withAlpha (theme_.rs.perNodeFillAlpha));
+                float prevX = plot_.x;
+                float prevY = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (plot_.x), single));
+                for (int i = 1; i <= steps; ++i)
                 {
-                    const float top = std::min (pts[i].y, y0);
-                    const float hgt = std::abs (y0 - pts[i].y);
+                    const float x = plot_.x + (float) i * plot_.w / steps;
+                    const float y = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), single));
+                    const float top = std::min (prevY, y0);
+                    const float hgt = std::abs (y0 - prevY);
                     if (hgt > 0.5f)
-                        canvas.fill (pts[i].x, top, std::max (1.0f, pts[i + 1].x - pts[i].x), hgt);
+                        canvas.fill (prevX, top, std::max (1.0f, x - prevX), hgt);
+                    prevX = x; prevY = y;
                 }
             }
-            // Outline only the raised hump — skip the flat baseline runs so bands
-            // don't draw a full-width line across the plot at the nominal level.
-            if (theme_.rs.perNodeStrokeAlpha > 0.0f)
-            {
-                canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeStrokeAlpha));
-                for (std::size_t i = 1; i < pts.size(); ++i)
-                    if (std::abs (pts[i - 1].y - y0) > 1.0f || std::abs (pts[i].y - y0) > 1.0f)
-                        canvas.segment (pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, 1.0f, /*rounded*/ true);
-            }
         }
+
+        // (2) The combined profile as a dashed line through the dots. Trim runs
+        // that sit on the plot floor (a low/high cut rolled fully off) into their
+        // own sub-polylines so we never dash a flat line along the bottom edge —
+        // mirrors SuppressionCurveComponent's floor trim.
+        const float floorY = plot_.y + plot_.h;
+        std::vector<std::vector<visage::Point>> subpaths;
+        std::vector<visage::Point> cur;
+        bool penDown = false, haveAnchor = false;
+        visage::Point anchor;
+        auto flushCur = [&] { if (cur.size() >= 2) subpaths.push_back (cur); cur.clear(); };
+        for (int i = 0; i <= steps; ++i)
+        {
+            const float x = plot_.x + (float) i * plot_.w / steps;
+            const float y = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), nodes));
+            if (y >= floorY - 0.5f)                 // on the floor: hold the pen
+            {
+                if (penDown) { cur.push_back (visage::Point (x, y)); flushCur(); penDown = false; }
+                anchor = visage::Point (x, y); haveAnchor = true;
+            }
+            else if (! penDown)                     // lifting off the floor
+            {
+                if (haveAnchor) cur.push_back (anchor);
+                cur.push_back (visage::Point (x, y));
+                penDown = true; haveAnchor = false;
+            }
+            else cur.push_back (visage::Point (x, y));
+        }
+        flushCur();
+
+        canvas.setColor (visage::Color (theme_.rs.profileColour));
+        for (const auto& sp : subpaths)
+            strokeDashedPolyline (canvas, sp, theme_.rs.profileLineWidth,
+                                  theme_.rs.profileDashOn, theme_.rs.profileDashOff);
     }
 
     void RsSuppressionCurveView::drawNodes (visage::Canvas& canvas)

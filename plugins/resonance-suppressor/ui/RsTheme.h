@@ -92,19 +92,23 @@ namespace rs_ui
 
         // ---- analyser style (design reference 2026-07-17 — supersedes the ported
         // kV201Style). The reduction "curtain" hangs from the plot TOP in teal
-        // (palette.positive), the PRE spectrum is a solid coral line, the POST
-        // spectrum a dashed muted-coral line, and each active node draws a pale
-        // coral bump. A human still signs off these values via theme-rs.json.
+        // (palette.positive); the PRE and POST spectra are both thin SOLID coral
+        // lines (POST returns to the kV201Style solid-line role); the combined
+        // reduction PROFILE is a dashed muted-coral line running through the node
+        // dots; and each active node adds a subtle pale bump fill near the baseline.
+        // A human still signs off these values via theme-rs.json.
         float curtainFillAlpha    = 0.34f;      // teal reduction curtain (from the top)
         float curtainClampFrac    = 0.5f;       // max curtain depth (fraction of plot height)
         std::uint32_t preColour   = 0xffff7a6b; // PRE (input) — solid coral line
         float preLineWidth        = 2.0f;
-        std::uint32_t postColour  = 0xffe08a7f; // POST (output) — dashed muted coral
-        float postLineWidth       = 1.5f;
-        float postDashOn          = 5.0f;       // dash pattern (on / off px)
-        float postDashOff         = 4.0f;
-        float perNodeFillAlpha    = 0.12f;      // pale per-node bump fill
-        float perNodeStrokeAlpha  = 0.5f;
+        std::uint32_t postColour  = 0xffff7a6b; // POST (output) — thin SOLID coral (kV201Style)
+        float postLineWidth       = 1.4f;       // kV201Style postLineWidth
+        float postLineAlpha       = 0.85f;      // kV201Style postLineAlpha
+        std::uint32_t profileColour = 0xffe08a7f; // combined profile — dashed muted coral
+        float profileLineWidth    = 1.5f;
+        float profileDashOn       = 5.0f;       // combined-profile dash pattern (on / off px)
+        float profileDashOff      = 4.0f;
+        float perNodeFillAlpha    = 0.12f;      // subtle per-node bump fill (near the baseline)
         float displaySmoothMs     = 50.0f;      // -> RsFeed::setDisplaySmoothMs
 
         static RsExtras defaults() { return RsExtras {}; }

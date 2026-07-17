@@ -96,6 +96,29 @@ function regionMeanAbsDiff(bufA, bufB, rect) {
   return n ? sum / n : 0;
 }
 
+// Mean RGB over a small (2*rad+1)² neighbourhood around (x,y) in a PNG buffer
+// (window px == canvas buffer px for a #canvas locator screenshot). Robust to a
+// 1px anti-aliased seam; used to assert a knob ring zone's solid colour.
+function samplePixel(buf, x, y, rad) {
+  const png = PNG.sync.read(buf);
+  const { width, height, data } = png;
+  rad = rad === undefined ? 1 : rad;
+  const cx = Math.round(x), cy = Math.round(y);
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let yy = cy - rad; yy <= cy + rad; yy++) {
+    for (let xx = cx - rad; xx <= cx + rad; xx++) {
+      if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+      const i = (yy * width + xx) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
+  }
+  return n ? { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n) } : null;
+}
+// Max per-channel abs difference between two {r,g,b} colours.
+function colorDist(a, b) {
+  return Math.max(Math.abs(a.r - b.r), Math.abs(a.g - b.g), Math.abs(a.b - b.b));
+}
+
 async function launch(viewport) {
   const browser = await chromium.launch({
     executablePath: CHROME,
@@ -155,7 +178,7 @@ async function probeWebGL(page) {
   });
 }
 
-module.exports = { CHROME, FLAGS, analyzePNG, notBlank, analyzeRegion, regionMeanAbsDiff, launch, waitReady, probeWebGL };
+module.exports = { CHROME, FLAGS, analyzePNG, notBlank, analyzeRegion, regionMeanAbsDiff, samplePixel, colorDist, launch, waitReady, probeWebGL };
 
 // Standalone use: `node drive.js <url> <out.png>` — load + non-blank check.
 if (require.main === module) {

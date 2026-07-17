@@ -13,7 +13,9 @@
 //   8. an undo -> redo round-trip restores a parameter, and a preset load clears history
 //   9. preset next / prev step the model; an A/B switch swaps a param value
 //  10. resize renders at the min (940x657) and max (1320x922) layout sizes
-// and captures rs-default.png / rs-busy.png / rs-min.png / rs-max.png.
+//  11. node-on-curve: an isolated band's dot rides the combined profile curve
+//  12. knob three-zone donut: the ring reads accent / accentDim / panelLo
+// and captures rs-default.png / rs-busy.png / rs-min.png / rs-max.png / rs-knob-depth.png.
 //
 // Exit code 0 iff every assert passes.
 const fs = require("fs");
@@ -240,6 +242,60 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   check("rs-max.png (1320x922) non-blank", d.notBlank(maxStats), maxStats.width + "x" + maxStats.height);
   check("resize preserved the design aspect", Math.abs(940 / 657 - 1320 / 922) < 0.01);
 
+  // --- 11. node-on-curve: a band's dot rides the combined profile curve -----
+  // Isolate one band (cuts off, all other bands off) so the combined profile at
+  // the band's frequency is that band's own peak == its sens; then the node
+  // handle (y = sensToY(sens)) must land on the profile curve's y at that x.
+  await page.evaluate(() => window.rs.selectNode(-1));
+  await page.evaluate(() => window.rs.setSize(1069, 747));
+  await wait(page, 200);
+  {
+    await page.evaluate(() => {
+      window.ui.set("lc_on", 0); window.ui.set("hc_on", 0);
+      for (let b = 0; b < 8; b++) window.ui.set("b" + b + "_on", 0);
+      window.ui.set("b0_type", 0); window.ui.set("b0_width", 0.5);
+      window.ui.set("b0_freq", 1000); window.ui.set("b0_sens", 12); window.ui.set("b0_on", 1);
+      window.ui.freeze(true);
+    });
+    await wait(page, 150);
+    const plot = await page.evaluate(() => window.rs.plotRect());
+    const st = await page.evaluate(() => ({
+      nf: window.ui.get("b0_freq"), ns: window.ui.get("b0_sens"),
+      nodeY: window.rs.nodeY(2), curveDb: window.rs.profileDbAt(window.ui.get("b0_freq")),
+    }));
+    // sens axis (window px): sensToY(s) = plot.y + plot.h - (clamp(s,-30,30)+30)/60 * plot.h
+    const sensToYWin = (s) => plot.y + plot.h - (Math.max(-30, Math.min(30, s)) + 30) / 60 * plot.h;
+    const curveY = sensToYWin(st.curveDb);
+    check("band node dot rides the combined profile curve (y within a few px)",
+      st.nodeY > 0 && Math.abs(st.nodeY - curveY) <= 4.0,
+      "nodeY=" + st.nodeY.toFixed(1) + " curveY=" + curveY.toFixed(1) +
+      " (profileDb=" + st.curveDb.toFixed(2) + " sens=" + st.ns.toFixed(2) + ")");
+  }
+
+  // --- 12. knob three-zone donut: sample one px in each ring zone ------------
+  // depth = 50 (%) -> value angle at 12 o'clock, so the ring's LEFT half is the
+  // accent fill, the RIGHT half is the accentDim remainder, and the BOTTOM is the
+  // panelLo dead zone. Sample the ring centreline (0.85R) at those three angles.
+  {
+    await page.evaluate(() => { window.ui.set("depth", 50); window.ui.freeze(true); });
+    await wait(page, 150);
+    const r = await page.evaluate(() => window.ui.widgetRect("depth"));
+    const cx = r.x + r.w * 0.5, cy = r.y + r.h * 0.5;
+    const R = Math.min(r.w - 12, (r.h - 44)) * 0.5;      // dial radius (see Knob::draw)
+    const arcR = R * 0.78;                                // inside the solid ring band (clear of the AA edges)
+    const shot = await canvasShot(page);
+    const accent = d.samplePixel(shot, cx - arcR, cy, 1);        // left  -> accent  #ff7a6b
+    const dim    = d.samplePixel(shot, cx + arcR, cy, 1);        // right -> accentDim #ffd6cd
+    const dead   = d.samplePixel(shot, cx, cy + arcR, 1);        // bottom-> panelLo  #fff4ee
+    const want = { accent: { r: 255, g: 122, b: 107 }, dim: { r: 255, g: 214, b: 205 }, dead: { r: 255, g: 244, b: 238 } };
+    const dA = d.colorDist(accent, want.accent), dD = d.colorDist(dim, want.dim), dZ = d.colorDist(dead, want.dead);
+    fs.writeFileSync(path.join(OUT, "rs-knob-depth.png"),
+      await page.screenshot({ clip: { x: Math.max(0, r.x - 8), y: Math.max(0, r.y - 8), width: r.w + 16, height: r.h + 16 } }));
+    check("knob ring zones read accent / accentDim / panelLo",
+      dA <= 30 && dD <= 30 && dZ <= 30,
+      "accent " + JSON.stringify(accent) + " d" + dA + " | dim " + JSON.stringify(dim) + " d" + dD + " | dead " + JSON.stringify(dead) + " d" + dZ);
+  }
+
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));
 
   await browser.close();
@@ -247,7 +303,7 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   const passed = asserts.every((a) => a.ok);
   const result = {
     url: URL, passed, webgl: webgl.renderer, timings,
-    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png"].map((f) => path.join(OUT, f)),
+    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png", "rs-knob-depth.png"].map((f) => path.join(OUT, f)),
     asserts, jsErrorCount: jsErrors.length, httpErrorCount: httpErrors.length,
   };
   fs.writeFileSync(path.join(OUT, "rs_result.json"), JSON.stringify(result, null, 2));

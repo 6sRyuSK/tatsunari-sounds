@@ -11,22 +11,47 @@ namespace factory_ui_visage
 {
     namespace
     {
-        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kPi    = 3.14159265358979323846f;
+        constexpr float kTwoPi = 6.28318530717958648f;
 
-        // Stroke a circular arc via visage's native flatArc GPU primitive (a solid,
-        // anti-aliased band — no path-fill atlas, which the RS frame's large
-        // analyser paths otherwise poison, silently dropping every path fill). Input
-        // is JUCE's angle convention (0 = 12 o'clock, growing clockwise); flatArc
-        // takes the band's mid angle + half-aperture, and its zero axis is 12
-        // o'clock growing clockwise too, so the mapping is direct. `r` is the band
-        // centreline radius; the band is `strokeWidth` thick, centred on r. Caller
-        // sets the brush.
-        void strokeArc (visage::Canvas& canvas, float cx, float cy, float r,
-                        float a0, float a1, float strokeWidth)
+        // Fill a flat donut band spanning [a0, a1] (a1 >= a0, radians; dial angle
+        // convention: 0 = 12 o'clock, growing clockwise) at centreline radius r with
+        // the given thickness, using visage's native flatArc GPU primitive (a solid,
+        // anti-aliased band — no path-fill atlas, which the RS frame's large analyser
+        // paths otherwise poison, silently dropping every path fill).
+        //
+        // flatArc takes a mid angle + half-aperture; its mirrored-arc SDF (and
+        // visage's own half-aperture clamp to π) do NOT render a single wide band
+        // faithfully — a zone approaching/over ~180° (a near-full value ring, or the
+        // pale remainder at a low value) over-covers its neighbours and the narrow
+        // zones drop out, collapsing the three-zone donut. So tile the span with
+        // small sub-arcs (each well inside the SDF's clean regime); pieces of one
+        // zone share the caller's brush, and a tiny angular overlap closes AA seams.
+        void fillArcBand (visage::Canvas& canvas, float cx, float cy, float r,
+                          float a0, float a1, float thickness)
         {
-            const float mid  = 0.5f * (a0 + a1);
-            const float half = 0.5f * std::abs (a1 - a0);
-            canvas.arc (cx - r, cy - r, 2.0f * r, strokeWidth, mid, half, /*rounded*/ false);
+            constexpr float kMaxSpan = 0.30f;  // ≈17° per piece — flatArc is faithful here
+            constexpr float kOverlap = 0.02f;  // ~1.1° same-brush overlap (hides seams)
+            const float total = a1 - a0;
+            if (total <= 1.0e-4f)
+                return;
+            const int   pieces = std::max (1, (int) std::ceil (total / kMaxSpan));
+            const float span   = total / (float) pieces;
+            for (int i = 0; i < pieces; ++i)
+            {
+                const float s = a0 + (float) i * span;
+                const float e = std::min (a1, a0 + (float) (i + 1) * span + (i < pieces - 1 ? kOverlap : 0.0f));
+                // flatArc renders a piece at screen angle (passed + 90°) in our dial
+                // convention (0 = 12 o'clock, growing clockwise — the same the needle
+                // uses; the +90° offset comes from visage's origin-flip on WebGL,
+                // measured empirically). So pass (intended mid − 90°) to land the
+                // piece where we want it. Normalise to [-π, π] (sin/cos are periodic)
+                // since the raw sweep runs past 2π for the dead zone.
+                float mid = 0.5f * (s + e) - 0.5f * kPi;
+                while (mid >  kPi) mid -= kTwoPi;
+                while (mid < -kPi) mid += kTwoPi;
+                canvas.arc (cx - r, cy - r, 2.0f * r, thickness, mid, 0.5f * (e - s), /*rounded*/ false);
+            }
         }
     } // namespace
 
@@ -55,7 +80,6 @@ namespace factory_ui_visage
         const Palette& p = theme_.palette;
         const factory_params::ParamDesc& desc = store_.desc (index_);
         const std::uint32_t accent = accentOverride_ != 0 ? accentOverride_ : p.accent;
-        constexpr float kTwoPi = 6.28318530717958648f;
 
         // Layout (design reference): name row (top), dial (middle), value row (bottom).
         const float textH = 16.0f;
@@ -79,14 +103,18 @@ namespace factory_ui_visage
         canvas.roundedRectangleShadow (cx - R + m.shadowOffsetX, cy - R + m.shadowOffsetY,
                                        2.0f * R, 2.0f * R, R, m.shadowBlurFactor);
 
-        // Donut value ring: accent (0->value), accentDim remainder, panelLo dead
-        // zone (270°->360°) — flat radial edges (butt caps) so the segments meet.
+        // Full 360° flat donut in three solid zones of identical thickness `band`:
+        //   (a) accent (per-knob colour) from the sweep start (−135°) to the value,
+        //   (b) accentDim remainder from the value to the sweep end (+135°),
+        //   (c) panelLo across the bottom 90° dead zone (+135° → +225°).
+        // Each zone is tiled from small flatArc pieces (see fillArcBand) so a wide
+        // zone renders as a clean solid band instead of collapsing.
         canvas.setColor (visage::Color (accent));
-        strokeArc (canvas, cx, cy, arcR, m.arcStart, toAngle, band);
+        fillArcBand (canvas, cx, cy, arcR, m.arcStart, toAngle, band);
         canvas.setColor (visage::Color (p.accentDim));
-        strokeArc (canvas, cx, cy, arcR, toAngle, m.arcEnd, band);
+        fillArcBand (canvas, cx, cy, arcR, toAngle, m.arcEnd, band);
         canvas.setColor (visage::Color (p.panelLo));
-        strokeArc (canvas, cx, cy, arcR, m.arcEnd, m.arcStart + kTwoPi, band);
+        fillArcBand (canvas, cx, cy, arcR, m.arcEnd, m.arcStart + kTwoPi, band);
 
         // 1px track ring at the outer edge (inset hairline).
         canvas.setColor (visage::Color (p.track));
