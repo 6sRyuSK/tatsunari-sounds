@@ -18,6 +18,14 @@ layout.add (std::make_unique<juce::AudioParameterFloat> (
 // bool は AudioParameterBool、離散選択は AudioParameterChoice
 ```
 
+> **例外: resonance-suppressor(Phase P1 以降)** — このプラグインだけはパラメータを
+> `Source/Params.h` の宣言的テーブル(`factory_params::ParamDesc`)で定義し、APVTS
+> layout は `factory_params::buildApvtsLayout()` が**生成**する。`createParameterLayout`
+> を手書きせず、`Params.h` のテーブルに 1 エントリ足す(`floatParam/boolParam/
+> choiceParam` ヘルパ)。parity は `preset_test` の "paramdesc parity" が bit 単位で
+> ゲートするので、range/skew/default/label をテーブルに正確に写すこと。他プラグインは
+> 従来どおり(fleet 全体の移行は後続フェーズ)。
+
 - ID は snake/lower の英語。既存 ID の**改名・削除は state 互換を壊す**(major
   bump + Ask a human 級の判断)。デフォルト付きの追加なら古いプリセットはそのまま
   読める(APVTS の replaceState は欠損キーを許容)→ minor。

@@ -1,6 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "DetailParam.h"
+#include "Params.h"
+
+#include "factory_params/juce/ApvtsAdapter.h"
 
 #include <cmath>
 
@@ -41,198 +44,19 @@ ResonanceSuppressorAudioProcessor::readNodes (juce::AudioProcessorValueTreeState
 juce::AudioProcessorValueTreeState::ParameterLayout
 ResonanceSuppressorAudioProcessor::createParameterLayout()
 {
-    using namespace juce;
-    AudioProcessorValueTreeState::ParameterLayout layout;
-
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "depth", 1 }, "Depth",
-        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 30.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    // v2.1: "sharpness" (and "selectivity" below) are LEGACY — the DSP now
-    // reads only "detail" (see below). They stay registered with unchanged
-    // IDs/ranges so VST3 automation lanes and old sessions keep resolving
-    // (removing a parameter is a state/automation break = major bump); their
-    // values are simply no longer consumed. Display names say so.
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "sharpness", 1 }, "Sharpness (legacy)",
-        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    // Phase 6 DEFAULTS DRAFT (pending audition sign-off, CLAUDE.md "Ask a human"
-    // #1): attack was 100 ms, tuned for the pre-Phase-1 detector (a coarser,
-    // slower-reacting envelope that needed a sluggish attack to avoid chatter).
-    // The Phase 1 rework detects per STFT frame (H/fs ~ 5.3 ms hop @ 48 kHz
-    // Normal, 8x overlap) with a self-excluding-notch envelope + soft-knee
-    // contrast, so it is precise enough per frame that a 100 ms attack just
-    // lets a transient resonance (a harsh consonant, a pick attack) ring for
-    // ~19 frames before the suppressor catches up -- audibly late for a
-    // de-harsh tool. New default 20 ms (the skew centre of this range, so it
-    // sits at the dial's natural middle) reacts within ~4 frames while still
-    // averaging over enough frames to reject single-frame noise-floor jitter.
-    NormalisableRange<float> atkR { 1.0f, 200.0f }; atkR.setSkewForCentre (20.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "attack", 1 }, "Attack", atkR, 20.0f,
-        AudioParameterFloatAttributes().withLabel (" ms")));
-
-    // Release nudged 50 -> 65 ms alongside the faster attack: a snappier attack
-    // with an unchanged release skewed the ballistics' overall shape toward
-    // "grabs fast, lets go fast", which can pump on rhythmic material; a modest
-    // release increase keeps recovery still well inside a "fast" setting
-    // (release range tops out at 500 ms) while smoothing the gesture back out.
-    NormalisableRange<float> relR { 5.0f, 500.0f }; relR.setSkewForCentre (100.0f);
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "release", 1 }, "Release", relR, 65.0f,
-        AudioParameterFloatAttributes().withLabel (" ms")));
-
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "mix", 1 }, "Mix",
-        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 100.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "delta", 1 },  "Delta",  false));
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "link", 1 },   "Stereo Link", true));
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "bypass", 1 }, "Bypass", false));
-
-    // Detection mode. Soft (default): adaptive threshold, level-independent —
-    // reacts to relative tonal change. Hard: absolute-level threshold (Depth sets
-    // it), reacts to absolute harmonic level (Soothe2-style). Soft is the current
-    // behaviour, so it is the default and existing presets are unchanged.
-    layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { "mode", 1 }, "Mode", StringArray { "Soft", "Hard" }, 0));
-
-    // --- Phase 1 detector controls (Selectivity / Tilt / Quality) ---
-    // Version hint 2: these arrived in v1.3.0, after the original v1.x set, so a
-    // v1.2.0 session (which lacks them) still loads — its state simply leaves them
-    // at the defaults below (verified by preset_test's v1.2.0 fixture). Tilt and
-    // Quality are applied every block in processBlock; the engine epsilon-compares
-    // and rebuilds lazily, so no SmoothedValue is needed.
-    // Phase 6 DEFAULTS DRAFT: selectivity/depth/sharpness reviewed and left
-    // UNCHANGED (conservative) -- 50% is already the soft-knee law's own
-    // documented "nominal" point (ResonanceSuppressor::computeGains: T=3.5dB/
-    // W=4dB), and depth/sharpness are audition-first-impression choices better
-    // judged by ear against the Phase 6 pack than re-guessed here.
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "selectivity", 2 }, "Selectivity (legacy)",
-        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    // --- v2.1 macro + output controls (version hint 3: new in v2.1) ---
-    // Detail replaces the sharpness/selectivity pair as the single detection
-    // macro: sharpOct = 0.15 + 0.85*d/100, selectivity = d/100, and it also
-    // drives the reduction-smoothing width, (1/12)*2^((50-d)/50) oct clamped
-    // to [1/24, 1/6] (DetailParam.h). d = 50 reproduces the v2.0.1 defaults
-    // bit-exactly. Pre-detail sessions are migrated in setStateInformation
-    // (detail = mean of the legacy pair).
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "detail", 3 }, "Detail",
-        NormalisableRange<float> { 0.0f, 100.0f, 0.1f }, 50.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    // Output trim, applied AFTER the suppressor (post Mix, also in Delta) via
-    // a ~20 ms SmoothedValue in processBlock; NOT applied while the internal
-    // bypass is active (bypass stays a unity passthrough).
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "out", 3 }, "Output",
-        NormalisableRange<float> { -24.0f, 24.0f, 0.1f }, 0.0f,
-        AudioParameterFloatAttributes().withLabel (" dB")));
-
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "tilt", 2 }, "Tilt",
-        NormalisableRange<float> { -100.0f, 100.0f, 1.0f }, 0.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    // Quality trades latency for low-frequency time resolution (Fast = half
-    // latency, High = double). Excluded from presets (FactoryPresets kExclude): a
-    // preset switch must not renegotiate host PDC or override the user's choice.
-    layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { "quality", 2 }, "Quality", StringArray { "Fast", "Normal", "High" }, 1)); // Normal
-
-    // --- Phase 3 routing controls (Link Amount / Channel mode / Sidechain) ---
-    // Version hint 2: added in v1.5.0, after the v1.2.0 set, so an older session still
-    // loads and simply leaves these at the defaults below (guarded by preset_test's
-    // v1.2.0 fixture). linkAmt scales the continuous stereo-link blend and is only
-    // effective while the Stereo Link toggle is on (engine: lambda = link ? amt : 0);
-    // channelMode switches Stereo vs Mid/Side; scEnable/scListen are additionally
-    // gated on a live sidechain connection in processBlock, so an unpatched sidechain
-    // is safe. Applied every block like the detector controls (no SmoothedValue: the
-    // engine epsilon-compares and the routing switches ride their own crossfades).
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "linkAmt", 2 }, "Link Amount",
-        NormalisableRange<float> { 0.0f, 100.0f, 1.0f }, 100.0f,
-        AudioParameterFloatAttributes().withLabel (" %")));
-
-    layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { "channelMode", 2 }, "Channel Mode", StringArray { "Stereo", "Mid-Side" }, 0));
-
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "scEnable", 2 }, "Sidechain", false));
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { "scListen", 2 }, "SC Listen", false));
-
-    // --- Reduction / depth-EQ nodes (soothe-style) ---
-    // Two cuts bound where processing acts (rolling the profile off at a chosen
-    // slope), eight typed bands locally raise/lower the sensitivity over a
-    // per-band width (Phase 4). Defaults mirror the reference: low cut 450 Hz,
-    // high cut 16 kHz, bands 1-4 flat except a +6 dB emphasis at 5 kHz, so the
-    // factory sound is mid-focused, not full-band; bands 5-8 (Phase 4) are off
-    // by default so the shipped sound is unchanged until the user enables one.
-    const StringArray slopeChoices { "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct" };
-    const StringArray typeChoices  { "Bell", "Low Shelf", "High Shelf", "Band Shelf", "Band Reject", "Tilt" };
-
-    auto freqRange = [] { NormalisableRange<float> r { 20.0f, 20000.0f }; r.setSkewForCentre (650.0f); return r; };
-
-    struct CutDef  { const char* which; float freq; };
-    for (auto [w, cd] : { std::pair<int, CutDef> { 0, { "Low Cut",  450.0f } },
-                          std::pair<int, CutDef> { 1, { "High Cut", 16000.0f } } })
-    {
-        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { cutPid (w, "on"),    1 }, juce::String (cd.which) + " On", true));
-        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { cutPid (w, "freq"),  1 }, juce::String (cd.which) + " Freq", freqRange(), cd.freq,
-                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
-        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { cutPid (w, "slope"), 1 }, juce::String (cd.which) + " Slope", slopeChoices, 2)); // 24 dB/oct
-    }
-
-    // b0..b3 shipped pre-Phase-4 (version hint 1) -- defaults/hints unchanged.
-    const float bandFreqs[kNumBands] = { 1000.0f, 2500.0f, 5000.0f, 8000.0f, 150.0f, 500.0f, 3000.0f, 12000.0f };
-    const float bandSens [kNumBands] = { 0.0f,   0.0f,    6.0f,    0.0f,    0.0f,   0.0f,   0.0f,    0.0f };
-    constexpr int kNumBandsV1 = 4;
-    for (int b = 0; b < kNumBandsV1; ++b)
-    {
-        const juce::String name = "Band " + juce::String (b + 1);
-        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { bandPid (b, "on"),   1 }, name + " On", true));
-        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "freq"), 1 }, name + " Freq", freqRange(), bandFreqs[b],
-                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
-        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { bandPid (b, "type"), 1 }, name + " Type", typeChoices, 0)); // Bell
-        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "sens"), 1 }, name + " Sens",
-                                                            NormalisableRange<float> { -30.0f, 30.0f, 0.1f }, bandSens[b],
-                                                            AudioParameterFloatAttributes().withLabel (" dB")));
-    }
-
-    // Phase 4: bands 5-8, off by default (version hint 2 -- brand new IDs, never
-    // shipped before). Defaults spread across low/low-mid/high-mid/air so
-    // enabling one lands somewhere useful before the user retunes freq/type/sens.
-    for (int b = kNumBandsV1; b < kNumBands; ++b)
-    {
-        const juce::String name = "Band " + juce::String (b + 1);
-        layout.add (std::make_unique<AudioParameterBool>   (ParameterID { bandPid (b, "on"),   2 }, name + " On", false));
-        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "freq"), 2 }, name + " Freq", freqRange(), bandFreqs[b],
-                                                            AudioParameterFloatAttributes().withLabel (" Hz")));
-        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { bandPid (b, "type"), 2 }, name + " Type", typeChoices, 0)); // Bell
-        layout.add (std::make_unique<AudioParameterFloat>  (ParameterID { bandPid (b, "sens"), 2 }, name + " Sens",
-                                                            NormalisableRange<float> { -30.0f, 30.0f, 0.1f }, bandSens[b],
-                                                            AudioParameterFloatAttributes().withLabel (" dB")));
-    }
-
-    // Phase 4: per-band width, ALL 8 bands (version hint 2 -- brand new). Scales
-    // each shape's half-width/edge/span in ReductionProfile.h; default 0.50 is
-    // the pre-Phase-4 fixed width, so every band reproduces the old curve
-    // bit-for-bit until this is moved (see ReductionProfile.h's kWidthRef). The
-    // UI knob for this parameter is Phase 5a; only the parameter ships here.
-    for (int b = 0; b < kNumBands; ++b)
-        layout.add (std::make_unique<AudioParameterFloat> (
-            ParameterID { bandPid (b, "width"), 2 }, "Band " + juce::String (b + 1) + " Width",
-            NormalisableRange<float> { 0.10f, 2.00f, 0.01f }, 0.50f,
-            AudioParameterFloatAttributes().withLabel (" oct")));
-
-    return layout;
+    // Phase P1 (params-model migration): this plugin's parameters are declared
+    // as a single DECLARATIVE table in Source/Params.h (a factory_params::ParamDesc
+    // vector, JUCE-free), and the APVTS layout is GENERATED from it here by
+    // factory_params::buildApvtsLayout(). The generator reproduces the former
+    // hand-written juce::AudioParameter* objects bit-for-bit and in the same
+    // host-visible order (verified by preset_test's "paramdesc parity" check). To
+    // add or change a parameter, edit the table in Params.h -- do NOT hand-write
+    // juce::AudioParameter* objects here. The load-bearing rationale that used to
+    // live in this function (the v2.1 legacy note, the Phase 6 attack/release
+    // defaults draft, the Detail macro description, the Quality/PDC note, the
+    // Phase 3 routing note, and the reduction-node/band section comments) moved to
+    // Params.h alongside the corresponding entries.
+    return factory_params::buildApvtsLayout (resonance_suppressor_params::buildRsParams());
 }
 
 ResonanceSuppressorAudioProcessor::ResonanceSuppressorAudioProcessor()

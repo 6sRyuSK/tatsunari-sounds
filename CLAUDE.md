@@ -40,6 +40,9 @@ sources (or re-read workflow files / ui headers) to copy patterns:
 - `presets/include/factory_presets/` — shared **header-only** preset/program
   model: `PresetBank.h` (JUCE-free tables), `ProgramAdapter.h` (JUCE program
   API + the `stateToXml`/`applyStateXml` state helpers every processor uses).
+- `params/include/factory_params/` — shared **header-only** parameter model:
+  `ParamDesc.h`/`Range.h`/`Text.h`/`ParamStore.h`/`UndoStack.h` (JUCE-free),
+  `juce/ApvtsAdapter.h` (generates the APVTS layout from a `ParamDesc` table).
 - `plugins/<slug>/` — one plugin each: `plugin.toml`, `Source/` (thin
   `AudioProcessor`/`Editor` wrapper), `tests/`, `CMakeLists.txt`.
 - `cmake/FactoryHelpers.cmake` (`factory_read_version`), `cmake/NamCore.cmake`
