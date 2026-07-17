@@ -40,6 +40,7 @@ namespace rs_ui
 
         // --- MODE + settings -------------------------------------------------
         modeSeg_ = std::make_unique<fuv::Segmented> (store_, idx ("mode"), base);
+        modeSeg_->setGlyphs ({ fuv::icons::modeSoft(), fuv::icons::modeHard() }); // Soft bell / Hard square
         addChild (modeSeg_.get());
 
         qualitySet_ = std::make_unique<fuv::ValueSetting> (store_, idx ("quality"), base, fuv::icons::quality(), "QUALITY");
@@ -60,13 +61,13 @@ namespace rs_ui
         // --- pill cells ------------------------------------------------------
         struct PillDef { const char* id; fuv::icons::Glyph glyph; const char* cap; std::uint32_t on; };
         pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("delta"),    rsTheme_, rs_ui::icons::delta(),     "DELTA",     rsTheme_.base.palette.accent, true));
-        pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("scEnable"), rsTheme_, rs_ui::icons::sidechain(), "S-CHAIN",   rsTheme_.rs.teal, true));
-        pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("scListen"), rsTheme_, fuv::icons::listen(),      "SC LISTEN", rsTheme_.rs.teal, true));
+        pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("scEnable"), rsTheme_, rs_ui::icons::sidechain(), "S-CHAIN",   rsTheme_.base.palette.positive, true));
+        pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("scListen"), rsTheme_, fuv::icons::listen(),      "SC LISTEN", rsTheme_.base.palette.positive, true));
         pills_.push_back (std::make_unique<RsPillCell> (store_, idx ("link"),     rsTheme_, fuv::icons::link(),        "LINK",      rsTheme_.base.palette.accent, true));
         for (auto& p : pills_) addChild (p.get());
 
         bypass_ = std::make_unique<RsPillCell> (store_, idx ("bypass"), rsTheme_, fuv::icons::Glyph {}, "Bypass",
-                                                rsTheme_.rs.teal, /*card*/ false, /*hasGlyph*/ false);
+                                                rsTheme_.base.palette.positive, /*card*/ false, /*hasGlyph*/ false);
         addChild (bypass_.get());
 
         // --- header buttons --------------------------------------------------

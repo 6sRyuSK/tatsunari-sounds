@@ -342,7 +342,7 @@ namespace factory_ui_visage
             if (p->type != JsonValue::Type::Object)
                 return (error = "'palette' must be an object"), false;
             if (! checkNoUnknownKeys (*p, { "background", "backgroundLo", "panel", "panelLo", "track",
-                                            "accent", "accentDim", "text", "textSecondary", "textDim",
+                                            "accent", "accentDim", "positive", "text", "textSecondary", "textDim",
                                             "shadow", "bandColours" }, "palette", error))
                 return false;
 
@@ -359,6 +359,7 @@ namespace factory_ui_visage
             if (! col ("track",        t.palette.track))        return false;
             if (! col ("accent",       t.palette.accent))       return false;
             if (! col ("accentDim",    t.palette.accentDim))    return false;
+            if (! col ("positive",     t.palette.positive))     return false;
             if (! col ("text",         t.palette.text))          return false;
             if (! col ("textSecondary",t.palette.textSecondary)) return false;
             if (! col ("textDim",      t.palette.textDim))       return false;
@@ -379,10 +380,9 @@ namespace factory_ui_visage
         {
             if (k->type != JsonValue::Type::Object)
                 return (error = "'knob' must be an object"), false;
-            if (! checkNoUnknownKeys (*k, { "boundsInset", "lineWidthRatio", "glowWidthFactor",
-                                            "glowAlpha", "bodyInsetFactor", "shadowBlurFactor",
-                                            "shadowOffset", "pointerDotFactor", "pointerPosFactor",
-                                            "arcStart", "arcEnd" }, "knob", error))
+            if (! checkNoUnknownKeys (*k, { "boundsInset", "lineWidthRatio", "bodyInsetFactor",
+                                            "shadowBlurFactor", "shadowOffset", "needleWidthPx",
+                                            "needleLengthRatio", "arcStart", "arcEnd" }, "knob", error))
                 return false;
 
             const auto n = [&] (const char* key, float& dst) -> bool
@@ -392,15 +392,13 @@ namespace factory_ui_visage
                 return true;
             };
             if (! n ("boundsInset",      t.knob.boundsInset))      return false;
-            if (! n ("lineWidthRatio",   t.knob.lineWidthRatio))   return false;
-            if (! n ("glowWidthFactor",  t.knob.glowWidthFactor))  return false;
-            if (! n ("glowAlpha",        t.knob.glowAlpha))        return false;
-            if (! n ("bodyInsetFactor",  t.knob.bodyInsetFactor))  return false;
-            if (! n ("shadowBlurFactor", t.knob.shadowBlurFactor)) return false;
-            if (! n ("pointerDotFactor", t.knob.pointerDotFactor)) return false;
-            if (! n ("pointerPosFactor", t.knob.pointerPosFactor)) return false;
-            if (! n ("arcStart",         t.knob.arcStart))         return false;
-            if (! n ("arcEnd",           t.knob.arcEnd))           return false;
+            if (! n ("lineWidthRatio",    t.knob.lineWidthRatio))    return false;
+            if (! n ("bodyInsetFactor",   t.knob.bodyInsetFactor))   return false;
+            if (! n ("shadowBlurFactor",  t.knob.shadowBlurFactor))  return false;
+            if (! n ("needleWidthPx",     t.knob.needleWidthPx))     return false;
+            if (! n ("needleLengthRatio", t.knob.needleLengthRatio)) return false;
+            if (! n ("arcStart",          t.knob.arcStart))          return false;
+            if (! n ("arcEnd",            t.knob.arcEnd))            return false;
             if (const JsonValue* off = k->find ("shadowOffset"))
                 if (! asOffset (*off, t.knob.shadowOffsetX, t.knob.shadowOffsetY, "knob.shadowOffset", error))
                     return false;
@@ -664,6 +662,7 @@ namespace factory_ui_visage
         o << "    \"track\": "        << colour (palette.track)        << ",\n";
         o << "    \"accent\": "       << colour (palette.accent)       << ",\n";
         o << "    \"accentDim\": "    << colour (palette.accentDim)    << ",\n";
+        o << "    \"positive\": "     << colour (palette.positive)     << ",\n";
         o << "    \"text\": "          << colour (palette.text)          << ",\n";
         o << "    \"textSecondary\": " << colour (palette.textSecondary) << ",\n";
         o << "    \"textDim\": "        << colour (palette.textDim)       << ",\n";
@@ -675,16 +674,14 @@ namespace factory_ui_visage
 
         o << "  \"knob\": {\n";
         o << "    \"boundsInset\": "      << num (knob.boundsInset)      << ",\n";
-        o << "    \"lineWidthRatio\": "   << num (knob.lineWidthRatio)   << ",\n";
-        o << "    \"glowWidthFactor\": "  << num (knob.glowWidthFactor)  << ",\n";
-        o << "    \"glowAlpha\": "        << num (knob.glowAlpha)        << ",\n";
-        o << "    \"bodyInsetFactor\": "  << num (knob.bodyInsetFactor)  << ",\n";
-        o << "    \"shadowBlurFactor\": " << num (knob.shadowBlurFactor) << ",\n";
+        o << "    \"lineWidthRatio\": "    << num (knob.lineWidthRatio)    << ",\n";
+        o << "    \"bodyInsetFactor\": "   << num (knob.bodyInsetFactor)   << ",\n";
+        o << "    \"shadowBlurFactor\": "  << num (knob.shadowBlurFactor)  << ",\n";
         o << "    \"shadowOffset\": [" << num (knob.shadowOffsetX) << ", " << num (knob.shadowOffsetY) << "],\n";
-        o << "    \"pointerDotFactor\": " << num (knob.pointerDotFactor) << ",\n";
-        o << "    \"pointerPosFactor\": " << num (knob.pointerPosFactor) << ",\n";
-        o << "    \"arcStart\": "         << num (knob.arcStart)         << ",\n";
-        o << "    \"arcEnd\": "           << num (knob.arcEnd)           << "\n  },\n";
+        o << "    \"needleWidthPx\": "     << num (knob.needleWidthPx)     << ",\n";
+        o << "    \"needleLengthRatio\": " << num (knob.needleLengthRatio) << ",\n";
+        o << "    \"arcStart\": "          << num (knob.arcStart)          << ",\n";
+        o << "    \"arcEnd\": "            << num (knob.arcEnd)            << "\n  },\n";
 
         o << "  \"toggle\": {\n";
         o << "    \"height\": "             << num (toggle.height)             << ",\n";
@@ -760,6 +757,7 @@ namespace factory_ui_visage
             && palette.track == o.palette.track
             && palette.accent == o.palette.accent
             && palette.accentDim == o.palette.accentDim
+            && palette.positive == o.palette.positive
             && palette.text == o.palette.text
             && palette.textSecondary == o.palette.textSecondary
             && palette.textDim == o.palette.textDim
@@ -767,14 +765,12 @@ namespace factory_ui_visage
             && palette.bandColours == o.palette.bandColours
             && knob.boundsInset == o.knob.boundsInset
             && knob.lineWidthRatio == o.knob.lineWidthRatio
-            && knob.glowWidthFactor == o.knob.glowWidthFactor
-            && knob.glowAlpha == o.knob.glowAlpha
             && knob.bodyInsetFactor == o.knob.bodyInsetFactor
             && knob.shadowBlurFactor == o.knob.shadowBlurFactor
             && knob.shadowOffsetX == o.knob.shadowOffsetX
             && knob.shadowOffsetY == o.knob.shadowOffsetY
-            && knob.pointerDotFactor == o.knob.pointerDotFactor
-            && knob.pointerPosFactor == o.knob.pointerPosFactor
+            && knob.needleWidthPx == o.knob.needleWidthPx
+            && knob.needleLengthRatio == o.knob.needleLengthRatio
             && knob.arcStart == o.knob.arcStart
             && knob.arcEnd == o.knob.arcEnd
             && toggle.height == o.toggle.height

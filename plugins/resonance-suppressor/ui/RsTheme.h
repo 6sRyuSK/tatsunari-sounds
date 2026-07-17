@@ -48,7 +48,8 @@ namespace rs_ui
         std::uint32_t pink     = 0xffff6f91; // logo grad end
         std::uint32_t amber    = 0xffffba6b; // ATK / REL knob accent
         std::uint32_t mint     = 0xff7fd1ae; // TILT knob accent
-        std::uint32_t teal     = 0xff45b8ac; // toggle-ON / Listen / reduction curtain
+        // teal (toggle-ON / Listen / reduction curtain) is the shared
+        // palette.positive (#45b8ac) — see Theme::Palette::positive.
         std::uint32_t highCutRing = 0xff79b8ef; // HC handle ring
 
         // Text / muted extras.
@@ -89,26 +90,21 @@ namespace rs_ui
         float cutHandleSel  = 18.0f;
         float nodeHitRadius = 14.0f; // nodeAt() grab radius
 
-        // ---- analyser style (ex-AnalyzerDevPanel; kV201Style == shipped v2.0.1)
-        // These are the values the removed DEV panel used to adjust. They render
-        // the shipped v2.0.1 analyser look; a human signs off / vetoes them via
-        // theme-rs.json (they are NOT auditioned taste calls made here).
-        float inputFillTopAlpha   = 0.22f;
-        float inputFillBotAlpha   = 0.02f;
-        std::uint32_t inputColour = 0xffb9a39b; // textMuted
-        float postLineWidth       = 1.4f;
-        float postLineAlpha       = 0.85f;
-        std::uint32_t postColour  = 0xffff7a6b; // accent
-        float deltaFillAlpha      = 0.28f;      // reduction curtain fill (teal)
-        float deltaStrokeAlpha    = 0.8f;
-        float deltaStrokeWidth    = 1.0f;
-        float perNodeFillAlpha    = 0.12f;
-        float perNodeStrokeAlpha  = 0.7f;
-        float combinedGlowAlpha   = 0.22f;
-        float combinedGlowWidth   = 5.0f;
-        float combinedStrokeWidth = 2.2f;
-        float combinedStrokeAlpha = 1.0f;
-        std::uint32_t combinedColour = 0xffff7a6b; // accent
+        // ---- analyser style (design reference 2026-07-17 — supersedes the ported
+        // kV201Style). The reduction "curtain" hangs from the plot TOP in teal
+        // (palette.positive), the PRE spectrum is a solid coral line, the POST
+        // spectrum a dashed muted-coral line, and each active node draws a pale
+        // coral bump. A human still signs off these values via theme-rs.json.
+        float curtainFillAlpha    = 0.34f;      // teal reduction curtain (from the top)
+        float curtainClampFrac    = 0.5f;       // max curtain depth (fraction of plot height)
+        std::uint32_t preColour   = 0xffff7a6b; // PRE (input) — solid coral line
+        float preLineWidth        = 2.0f;
+        std::uint32_t postColour  = 0xffe08a7f; // POST (output) — dashed muted coral
+        float postLineWidth       = 1.5f;
+        float postDashOn          = 5.0f;       // dash pattern (on / off px)
+        float postDashOff         = 4.0f;
+        float perNodeFillAlpha    = 0.12f;      // pale per-node bump fill
+        float perNodeStrokeAlpha  = 0.5f;
         float displaySmoothMs     = 50.0f;      // -> RsFeed::setDisplaySmoothMs
 
         static RsExtras defaults() { return RsExtras {}; }
@@ -123,18 +119,11 @@ namespace rs_ui
         {
             RsTheme t;
             t.base = factory_ui_visage::Theme::defaults();
-            // Bake the RS "chunky arc" knob + card overlay so the compiled default
-            // already looks right (theme-rs.json's top-level knob/card mirror these
-            // exactly, and re-applying it via applyOverlay is idempotent). The RS
-            // 225°/270° sweep, a thick value ring and no soft glow reproduce the
-            // RsLookAndFeel rotary; the footer/analyser cards use the 16 px radius.
-            t.base.knob.lineWidthRatio  = 0.30f;
-            t.base.knob.bodyInsetFactor = 1.2f;
-            t.base.knob.glowAlpha       = 0.12f;
-            t.base.knob.arcStart        = 3.926990817f; // 225 deg
-            t.base.knob.arcEnd          = 8.639379797f; // 495 deg
-            t.base.card.cornerRadius    = 16.0f;
-            t.rs   = RsExtras::defaults();
+            // The shared "donut + needle" knob (design reference 2026-07-17) is now
+            // the factory-wide default, so the RS editor only overrides the card
+            // radius here; theme-rs.json's top-level `card` mirrors it.
+            t.base.card.cornerRadius = 16.0f;
+            t.rs = RsExtras::defaults();
             return t;
         }
 

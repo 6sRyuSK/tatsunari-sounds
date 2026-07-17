@@ -1,13 +1,6 @@
 {
-  "_comment": "RS plugin theme overlay. Top-level keys are the shared factory_ui_visage schema, applied to the shared Theme via Theme::applyOverlay (LIVE hot-reload) — this is the RsLookAndFeel chunky arc knob. The 'rs' object is RS-specific extras consumed by rs_ui::RsTheme (see RsTheme.h RsExtras). The 'rs.analyzer.*' values are the ex-AnalyzerDevPanel (kV201Style) constants — PENDING HUMAN SIGN-OFF.",
+  "_comment": "RS plugin theme overlay. Top-level keys are the shared factory_ui_visage schema, applied to the shared Theme via Theme::applyOverlay (LIVE hot-reload). The shared 'donut + needle' knob (design reference 2026-07-17) is now the factory-wide default, so no knob overlay is needed here — only the 16px card radius. The 'rs' object is RS-specific extras consumed by rs_ui::RsTheme (see RsTheme.h RsExtras). The 'rs.analyzer.*' values follow the design reference (they supersede the earlier kV201Style transcription) — a human still signs off on them.",
 
-  "knob": {
-    "lineWidthRatio": 0.30,
-    "bodyInsetFactor": 1.2,
-    "glowAlpha": 0.12,
-    "arcStart": 3.926990817,
-    "arcEnd": 8.639379797
-  },
   "card": {
     "cornerRadius": 16
   },
@@ -29,7 +22,6 @@
       "pink": "#ffff6f91",
       "amber": "#ffffba6b",
       "mint": "#ff7fd1ae",
-      "teal": "#ff45b8ac",
       "highCutRing": "#ff79b8ef",
       "iconInactive": "#ff9c857c",
       "textFaint": "#ffc9b3aa",
@@ -40,7 +32,8 @@
       "typeCaption": "#ffc39a8c",
       "grBg": "#ffeafaf7",
       "grBorder": "#ffb8e8e2",
-      "grText": "#ff2f9488"
+      "grText": "#ff2f9488",
+      "_note_teal": "teal (#45b8ac) is now the shared palette.positive (ON toggles / Listen / GR / reduction curtain)"
     },
     "radius": {
       "outer": 22,
@@ -65,23 +58,17 @@
       "hitRadius": 14
     },
     "analyzer": {
-      "_signoff": "PENDING — transcribed from AnalyzerStyle.h kV201Style (shipped v2.0.1). The AnalyzerDevPanel that adjusted these is NOT ported (human decision pending).",
-      "inputFillTopAlpha": 0.22,
-      "inputFillBotAlpha": 0.02,
-      "inputColour": "#ffb9a39b",
-      "postLineWidth": 1.4,
-      "postLineAlpha": 0.85,
-      "postColour": "#ffff7a6b",
-      "deltaFillAlpha": 0.28,
-      "deltaStrokeAlpha": 0.8,
-      "deltaStrokeWidth": 1.0,
+      "_signoff": "PENDING — design reference 2026-07-17 (supersedes AnalyzerStyle.h kV201Style). Teal curtain hangs from the plot top; PRE = solid coral line, POST = dashed muted coral; per-node = pale coral bumps.",
+      "curtainFillAlpha": 0.34,
+      "curtainClampFrac": 0.5,
+      "preColour": "#ffff7a6b",
+      "preLineWidth": 2.0,
+      "postColour": "#ffe08a7f",
+      "postLineWidth": 1.5,
+      "postDashOn": 5.0,
+      "postDashOff": 4.0,
       "perNodeFillAlpha": 0.12,
-      "perNodeStrokeAlpha": 0.7,
-      "combinedGlowAlpha": 0.22,
-      "combinedGlowWidth": 5.0,
-      "combinedStrokeWidth": 2.2,
-      "combinedStrokeAlpha": 1.0,
-      "combinedColour": "#ffff7a6b",
+      "perNodeStrokeAlpha": 0.5,
       "displaySmoothMs": 50.0
     }
   }

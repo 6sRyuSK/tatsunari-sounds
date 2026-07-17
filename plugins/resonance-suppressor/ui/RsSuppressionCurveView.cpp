@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 
 namespace rs_ui
@@ -36,12 +37,46 @@ namespace rs_ui
             return buf;
         }
 
-        visage::Path strokedPolyline (const std::vector<visage::Point>& pts)
+        // Stroke a polyline as connected flat GPU segments. visage's path-fill
+        // atlas silently drops every path fill in a frame that also submits a
+        // large plot-spanning path (which the analyser traces are), so the PRE
+        // line / per-node outlines are drawn from primitives instead of
+        // canvas.fill(path.stroke(...)).
+        void strokePolyline (visage::Canvas& canvas, const std::vector<visage::Point>& pts, float width)
         {
-            visage::Path p;
-            for (std::size_t i = 0; i < pts.size(); ++i)
-                (i == 0) ? p.moveTo (pts[i]) : p.lineTo (pts[i]);
-            return p;
+            for (std::size_t i = 1; i < pts.size(); ++i)
+                canvas.segment (pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, width, /*rounded*/ true);
+        }
+
+        // Stroke a polyline as a dash pattern (on/off px) — visage has no dashed
+        // stroke, so we walk the path and emit rounded segments for the "on" runs.
+        void strokeDashedPolyline (visage::Canvas& canvas, const std::vector<visage::Point>& pts,
+                                   float width, float on, float off)
+        {
+            if (pts.size() < 2 || on <= 0.0f)
+                return;
+            bool penDown = true;
+            float used = 0.0f; // distance into the current on/off run
+            for (std::size_t i = 1; i < pts.size(); ++i)
+            {
+                const visage::Point a = pts[i - 1], b = pts[i];
+                const float segLen = std::sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+                float t = 0.0f;
+                while (t < segLen)
+                {
+                    const float runLen = penDown ? on : off;
+                    const float step = std::min (runLen - used, segLen - t);
+                    if (penDown && step > 0.0f)
+                    {
+                        const float u0 = t / segLen, u1 = (t + step) / segLen;
+                        canvas.segment (a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0,
+                                        a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1, width, true);
+                    }
+                    t += step;
+                    used += step;
+                    if (used >= runLen - 0.001f) { penDown = ! penDown; used = 0.0f; }
+                }
+            }
         }
     } // namespace
 
@@ -223,7 +258,6 @@ namespace rs_ui
     {
         const int n = 2 * (snapBins_ - 1);
         if (n <= 0) return;
-        const float baseline = plot_.y + plot_.h;
 
         auto build = [&] (const std::vector<float>& data, std::vector<visage::Point>& out)
         {
@@ -239,30 +273,25 @@ namespace rs_ui
 
         std::vector<visage::Point> pts;
 
+        // PRE (input): a solid coral line (design reference).
         if (analyzerMode_ != AnalyzerMode::Post)
         {
             build (snapPre_, pts);
             if (pts.size() >= 2)
             {
-                visage::Path area;
-                area.moveTo (pts.front().x, baseline);
-                for (const auto& p : pts) area.lineTo (p.x, p.y);
-                area.lineTo (pts.back().x, baseline);
-                area.close();
-                canvas.setColor (visage::Brush::vertical (
-                    visage::Color (theme_.rs.inputColour).withAlpha (theme_.rs.inputFillTopAlpha),
-                    visage::Color (theme_.rs.inputColour).withAlpha (theme_.rs.inputFillBotAlpha)));
-                canvas.fill (area);
+                canvas.setColor (visage::Color (theme_.rs.preColour));
+                strokePolyline (canvas, pts, theme_.rs.preLineWidth);
             }
         }
+        // POST (output): a dashed muted-coral line (dash on/off px).
         if (analyzerMode_ != AnalyzerMode::Pre)
         {
             build (snapPost_, pts);
             if (pts.size() >= 2)
             {
-                canvas.setColor (visage::Color (theme_.rs.postColour).withAlpha (theme_.rs.postLineAlpha));
-                canvas.fill (strokedPolyline (pts).stroke (theme_.rs.postLineWidth,
-                             visage::Path::Join::Round, visage::Path::EndCap::Round));
+                canvas.setColor (visage::Color (theme_.rs.postColour));
+                strokeDashedPolyline (canvas, pts, theme_.rs.postLineWidth,
+                                      theme_.rs.postDashOn, theme_.rs.postDashOff);
             }
         }
     }
@@ -271,34 +300,39 @@ namespace rs_ui
     {
         const int n = 2 * (snapBins_ - 1);
         if (n <= 0) return;
-        const float top = dbToY (0.0f);
-        const float baseY = plot_.y + plot_.h;
+        // The curtain hangs from the plot's TOP edge (design reference), its depth
+        // proportional to the reduction, clamped to curtainClampFrac of the plot.
+        const float top   = plot_.y;
+        const float maxY  = plot_.y + theme_.rs.curtainClampFrac * plot_.h;
+        const float scale = plot_.h / 96.0f; // -96 dB spans the plot height
 
-        std::vector<visage::Point> pts;
+        // Visage's polygon triangulator chokes on the near-degenerate curtain
+        // contour (most bins sit exactly on the top edge, only a few dip deep),
+        // so instead of one filled path we emit one filled rect per plot pixel
+        // column, each hanging from the top down to that column's deepest
+        // reduction. Columns are 1px wide and pixel-aligned edge-to-edge, so the
+        // 0.34 alpha never double-covers (no seams) — and rects always rasterise.
+        canvas.setColor (visage::Color (theme_.base.palette.positive)
+                             .withAlpha (theme_.rs.curtainFillAlpha));
+        int   curCol   = std::numeric_limits<int>::min();
+        float curDepth = 0.0f;
+        auto flush = [&]
+        {
+            if (curCol != std::numeric_limits<int>::min() && curDepth > 0.25f)
+                canvas.fill ((float) curCol, top, 1.0f, curDepth);
+        };
         for (int k = 1; k < snapBins_; ++k)
         {
             const float f = (float) ((double) k * snapSr_ / n);
             if (f < 20.0f) continue;
             if (f > 20000.0f) break;
-            const float red = std::clamp (snapRed_[(std::size_t) k], -60.0f, 0.0f);
-            const float y = std::min (dbToY (red), baseY);
-            pts.push_back (visage::Point (freqToX (f), y));
+            const float red   = std::clamp (snapRed_[(std::size_t) k], -60.0f, 0.0f);
+            const float depth = std::min (top + (-red) * scale, maxY) - top;
+            const int   col   = (int) std::floor (freqToX (f));
+            if (col != curCol) { flush(); curCol = col; curDepth = depth; }
+            else               { curDepth = std::max (curDepth, depth); }
         }
-        if (pts.size() < 2) return;
-
-        visage::Path area;
-        area.moveTo (pts.front().x, top);
-        for (const auto& p : pts) area.lineTo (p.x, p.y);
-        area.lineTo (pts.back().x, top);
-        area.close();
-        canvas.setColor (visage::Color (theme_.rs.teal).withAlpha (theme_.rs.deltaFillAlpha));
-        canvas.fill (area);
-        if (theme_.rs.deltaStrokeAlpha > 0.0f && theme_.rs.deltaStrokeWidth > 0.0f)
-        {
-            canvas.setColor (visage::Color (theme_.rs.teal).withAlpha (theme_.rs.deltaStrokeAlpha));
-            canvas.fill (strokedPolyline (pts).stroke (theme_.rs.deltaStrokeWidth,
-                         visage::Path::Join::Round, visage::Path::EndCap::Round));
-        }
+        flush();
     }
 
     void RsSuppressionCurveView::drawProfile (visage::Canvas& canvas)
@@ -306,12 +340,13 @@ namespace rs_ui
         const auto nodes = model_.buildNodes();
         const int steps = std::max (2, (int) plot_.w);
         const float y0 = sensToY (0.0f);
-        const float floorY = plot_.y + plot_.h;
 
-        // Per-node translucent fills + coloured strokes (v2.0.1 PerNodePlusCombined).
+        // Each active BAND node draws a pale coral bump below the nominal line
+        // (design reference: per-node bumps, no bold combined curve). Cut nodes are
+        // shown by their dashed guides + handles (drawNodes), not a filled bump.
         for (int id = 0; id < RsProfileModel::kNumNodes; ++id)
         {
-            if (! model_.nodeOn (id)) continue;
+            if (RsProfileModel::isCut (id) || ! model_.nodeOn (id)) continue;
             const auto single = RsProfileModel::singleNode (nodes, id);
             std::vector<visage::Point> pts;
             pts.reserve ((std::size_t) steps + 1);
@@ -322,54 +357,30 @@ namespace rs_ui
                 pts.push_back (visage::Point (x, yB));
             }
             const std::uint32_t col = RsProfileModel::isCut (id) ? theme_.base.palette.textDim : bandColour (id);
+            // Pale fill from the baseline up to the bump, as tiled edge-to-edge
+            // bars (a filled path would poison the frame's path atlas — see
+            // strokePolyline); then a thin segment outline.
             if (theme_.rs.perNodeFillAlpha > 0.0f)
             {
-                visage::Path fp = strokedPolyline (pts);
-                fp.lineTo (plot_.x + plot_.w, y0);
-                fp.lineTo (plot_.x, y0);
-                fp.close();
                 canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeFillAlpha));
-                canvas.fill (fp);
+                for (std::size_t i = 0; i + 1 < pts.size(); ++i)
+                {
+                    const float top = std::min (pts[i].y, y0);
+                    const float hgt = std::abs (y0 - pts[i].y);
+                    if (hgt > 0.5f)
+                        canvas.fill (pts[i].x, top, std::max (1.0f, pts[i + 1].x - pts[i].x), hgt);
+                }
             }
+            // Outline only the raised hump — skip the flat baseline runs so bands
+            // don't draw a full-width line across the plot at the nominal level.
             if (theme_.rs.perNodeStrokeAlpha > 0.0f)
             {
                 canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeStrokeAlpha));
-                canvas.fill (strokedPolyline (pts).stroke (1.0f, visage::Path::Join::Round, visage::Path::EndCap::Round));
+                for (std::size_t i = 1; i < pts.size(); ++i)
+                    if (std::abs (pts[i - 1].y - y0) > 1.0f || std::abs (pts[i].y - y0) > 1.0f)
+                        canvas.segment (pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, 1.0f, /*rounded*/ true);
             }
         }
-
-        // Combined response: soft glow under a crisp stroke. Break the path where it
-        // sits on the floor (a cut rolled all the way off) so we don't stroke a flat
-        // run out to the edges (mirrors the JUCE floor-trimming, simplified).
-        std::vector<visage::Point> run;
-        auto flushRun = [&] ()
-        {
-            if (run.size() < 2) { run.clear(); return; }
-            if (theme_.rs.combinedGlowAlpha > 0.0f && theme_.rs.combinedGlowWidth > 0.0f)
-            {
-                canvas.setColor (visage::Color (theme_.rs.combinedColour).withAlpha (theme_.rs.combinedGlowAlpha));
-                canvas.fill (strokedPolyline (run).stroke (theme_.rs.combinedGlowWidth,
-                             visage::Path::Join::Round, visage::Path::EndCap::Round));
-            }
-            canvas.setColor (visage::Color (theme_.rs.combinedColour).withAlpha (theme_.rs.combinedStrokeAlpha));
-            canvas.fill (strokedPolyline (run).stroke (theme_.rs.combinedStrokeWidth,
-                         visage::Path::Join::Round, visage::Path::EndCap::Round));
-            run.clear();
-        };
-        for (int i = 0; i <= steps; ++i)
-        {
-            const float x = plot_.x + (float) i * plot_.w / steps;
-            const float yT = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), nodes));
-            if (yT >= floorY - 0.5f) // at the floor: land, then lift the pen
-            {
-                if (! run.empty()) { run.push_back (visage::Point (x, yT)); flushRun(); }
-            }
-            else
-            {
-                run.push_back (visage::Point (x, yT));
-            }
-        }
-        flushRun();
     }
 
     void RsSuppressionCurveView::drawNodes (visage::Canvas& canvas)
@@ -395,7 +406,7 @@ namespace rs_ui
                 const float x0 = p.x - sz * 0.5f, y0 = p.y - sz * 0.5f;
                 if (id == listen)
                 {
-                    canvas.setColor (visage::Color (theme_.rs.teal).withAlpha (0.9f));
+                    canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (0.9f));
                     canvas.roundedRectangleBorder (x0 - 5.0f, y0 - 5.0f, sz + 10.0f, sz + 10.0f,
                                                    theme_.rs.radiusCutHandle + 3.0f, 2.0f);
                 }
@@ -413,7 +424,7 @@ namespace rs_ui
                 const float haloD = dotD + 6.0f;
                 if (id == listen)
                 {
-                    canvas.setColor (visage::Color (theme_.rs.teal).withAlpha (0.9f));
+                    canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (0.9f));
                     const float rd = haloD + 7.0f;
                     canvas.ring (p.x - rd * 0.5f, p.y - rd * 0.5f, rd, 2.0f);
                 }

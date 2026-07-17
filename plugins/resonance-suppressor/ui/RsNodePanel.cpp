@@ -19,18 +19,15 @@ namespace rs_ui
         constexpr float kArcStart = 3.926990817f;  // 225 deg
         constexpr float kArcEnd   = 8.639379797f;   // 495 deg
 
+        // Native flatArc GPU band (JUCE angle convention: 0 = 12 o'clock, clockwise;
+        // flatArc's mid + half-aperture map directly). A filled stroked Path would
+        // hit visage's path-fill atlas, which the RS frame's large analyser paths
+        // poison — every path fill in that frame silently drops, primitives don't.
         void strokeArc (visage::Canvas& canvas, float cx, float cy, float r, float a0, float a1, float w)
         {
-            const float sweep = a1 - a0;
-            const int steps = std::max (2, (int) std::ceil (std::abs (sweep) / (2.0f * kPi / 180.0f)));
-            visage::Path path;
-            for (int i = 0; i <= steps; ++i)
-            {
-                const float a = a0 + sweep * ((float) i / (float) steps);
-                const visage::Point p (cx + r * std::sin (a), cy - r * std::cos (a));
-                (i == 0) ? path.moveTo (p) : path.lineTo (p);
-            }
-            canvas.fill (path.stroke (w, visage::Path::Join::Round, visage::Path::EndCap::Round));
+            const float mid  = 0.5f * (a0 + a1);
+            const float half = 0.5f * std::abs (a1 - a0);
+            canvas.arc (cx - r, cy - r, 2.0f * r, w, mid, half, /*rounded*/ false);
         }
 
         // The 6 filter-type glyphs (viewBox 0 0 24 14), verbatim from NodePanel::eqGlyph.
@@ -175,33 +172,37 @@ namespace rs_ui
         canvas.setColor (visage::Color (theme_.base.palette.text));
         canvas.text (k.label, boldFont (10.0f), visage::Font::kCenter, a.x, a.y, a.w, labelH);
 
+        // Small donut + needle (design reference: NodePanel minis in salmon).
+        const auto& p = theme_.base.palette;
+        const std::uint32_t accent = theme_.rs.orange; // salmon #ff9472
         const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
-        const float radius = std::min (a.w, dialH) * 0.5f - 3.0f;
+        const float R = std::min (a.w, dialH) * 0.5f - 3.0f;
         const float cx = a.x + a.w * 0.5f, cy = dialTop + dialH * 0.5f;
-        const float lineW = std::max (2.5f, radius * 0.30f);
-        const float arcR = radius - lineW * 0.5f;
+        const float band = std::max (2.5f, R * 0.30f);
+        const float arcR = R - band * 0.5f;
         const float norm = factory_params::convertTo0to1 (k.range, model_.store().value (k.paramIndex));
         const float toAng = kArcStart + std::clamp (norm, 0.0f, 1.0f) * (kArcEnd - kArcStart);
+        constexpr float kTwoPi = 6.28318530718f;
 
-        canvas.setColor (visage::Color (theme_.base.palette.accentDim));
-        strokeArc (canvas, cx, cy, arcR, kArcStart, kArcEnd, lineW);
-        if (norm > 0.0f)
-        {
-            canvas.setColor (visage::Color (theme_.rs.orange));
-            strokeArc (canvas, cx, cy, arcR, kArcStart, toAng, lineW);
-        }
-        // face + pointer
-        const float bodyR = radius - lineW * 1.1f;
-        canvas.setColor (visage::Brush::vertical (visage::Color (0xffffffff), visage::Color (theme_.rs.plotBottom)));
+        canvas.setColor (visage::Color (accent));
+        strokeArc (canvas, cx, cy, arcR, kArcStart, toAng, band);
+        canvas.setColor (visage::Color (p.accentDim));
+        strokeArc (canvas, cx, cy, arcR, toAng, kArcEnd, band);
+        canvas.setColor (visage::Color (p.panelLo));
+        strokeArc (canvas, cx, cy, arcR, kArcEnd, kArcStart + kTwoPi, band);
+
+        const float bodyR = std::max (2.0f, R - band);
+        canvas.setColor (visage::Brush::radial (visage::Color (0xffffffff), visage::Color (p.panelLo),
+                                                visage::Point (cx, cy - bodyR * 0.28f), bodyR * 1.15f, bodyR * 1.15f));
         canvas.circle (cx - bodyR, cy - bodyR, bodyR * 2.0f);
-        canvas.setColor (visage::Color (theme_.base.palette.track));
-        canvas.ring (cx - bodyR, cy - bodyR, bodyR * 2.0f, 1.0f);
-        const float pr = bodyR * 0.85f;
-        canvas.setColor (visage::Color (theme_.rs.orange));
-        canvas.segment (cx, cy, cx + pr * std::sin (toAng), cy - pr * std::cos (toAng), 2.0f, true);
+        canvas.setColor (visage::Color (p.track));
+        canvas.ring (cx - R, cy - R, 2.0f * R, 1.0f);
+        const float len = bodyR * 0.9f;
+        canvas.setColor (visage::Color (accent));
+        canvas.segment (cx, cy, cx + len * std::sin (toAng), cy - len * std::cos (toAng), 2.5f, true);
 
-        // value
-        canvas.setColor (visage::Color (theme_.base.palette.accent));
+        // value (accent)
+        canvas.setColor (visage::Color (accent));
         canvas.text (valueText (k), boldFont (11.0f), visage::Font::kCenter, a.x, a.y + a.h - valueH, a.w, valueH);
     }
 
@@ -228,7 +229,7 @@ namespace rs_ui
         // ON badge
         {
             const bool on = model_.nodeOn (nodeId_);
-            canvas.setColor (visage::Color (on ? theme_.rs.teal : theme_.rs.footerBg));
+            canvas.setColor (visage::Color (on ? theme_.base.palette.positive : theme_.rs.footerBg));
             canvas.roundedRectangle (onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h, theme_.rs.radiusBadge);
             if (! on)
             {
@@ -241,9 +242,9 @@ namespace rs_ui
 
         // Listen badge
         {
-            canvas.setColor (visage::Color (listenOn_ ? theme_.rs.teal : theme_.rs.footerBg));
+            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg));
             canvas.roundedRectangle (listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h, theme_.rs.radiusBadge);
-            canvas.setColor (visage::Color (listenOn_ ? theme_.rs.teal : theme_.base.palette.track));
+            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
             canvas.roundedRectangleBorder (listenBadge_.x + 0.5f, listenBadge_.y + 0.5f, listenBadge_.w - 1.0f, listenBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
             const float dotD = 7.0f, dotX = listenBadge_.x + 8.0f, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
             canvas.setColor (visage::Color (listenOn_ ? 0xffffffff : theme_.base.palette.textSecondary));
@@ -270,7 +271,7 @@ namespace rs_ui
         {
             const Rect& b = choiceBtns_[(std::size_t) i];
             const bool active = (i == sel);
-            canvas.setColor (visage::Color (active ? theme_.rs.orange : theme_.rs.footerBg));
+            canvas.setColor (visage::Color (active ? theme_.base.palette.accent : theme_.rs.footerBg));
             canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f);
             if (! active)
             {

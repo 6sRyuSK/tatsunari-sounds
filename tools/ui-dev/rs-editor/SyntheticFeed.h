@@ -52,7 +52,20 @@ public:
 
     float displaySmoothMs() const noexcept { return smoothMs_.load (std::memory_order_relaxed); }
 
-    void setFrozen (bool frozen) noexcept { frozen_ = frozen; }
+    // Freeze holds a DETERMINISTIC frame that reflects the live Depth: on freeze we
+    // re-read Depth and regenerate at a fixed phase, so a frozen screenshot is stable
+    // AND the teal reduction curtain tracks the Depth param (which the animated path
+    // only picks up via the ChangeSweeper on the next advance()).
+    void setFrozen (bool frozen)
+    {
+        frozen_ = frozen;
+        if (frozen_)
+        {
+            redScale_ = store_.value (depthIdx_) / 100.0f;
+            phase_ = 0.35;
+            regenerate();
+        }
+    }
 
     // Advance one animation frame (unless frozen). Regenerates the three spectra.
     void advance()
@@ -85,12 +98,19 @@ private:
             const float lf = std::log10 (std::max (20.0f, f));
             const float base = -30.0f - 9.0f * std::fabs (lf - 2.845f); // hump ~700 Hz
 
+            // Sharp resonance peaks for the PRE spectrum.
             const float pk = bump (f, f1, 24.0f, 0.12f)
                            + bump (f, f2, 20.0f, 0.11f)
                            + bump (f, f3, 16.0f, 0.10f);
+            // Broader, deeper reduction "curtains" around those resonances, scaled
+            // by Depth — so the teal curtain hangs prominently and the POST spectrum
+            // dips into notches (like the design reference).
+            const float redBumps = bump (f, f1, 1.0f, 0.30f)
+                                  + bump (f, f2, 1.0f, 0.26f)
+                                  + bump (f, f3, 1.0f, 0.24f);
 
             const float pre = std::clamp (base + pk, -90.0f, 6.0f);
-            const float redAmt = std::clamp (-redScale_ * pk * 0.85f, -30.0f, 0.0f);
+            const float redAmt = std::clamp (-redScale_ * redBumps * 42.0f, -48.0f, 0.0f);
             const float post = std::clamp (pre + redAmt, -90.0f, 6.0f);
 
             pre_[(std::size_t) k].store (pre, std::memory_order_relaxed);

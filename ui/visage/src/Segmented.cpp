@@ -54,9 +54,26 @@ namespace factory_ui_visage
                                          segW - 2.0f * sg.pillInset, h - 2.0f * sg.pillInset,
                                          sg.pillCornerRadius);
             }
-            canvas.setColor (visage::Color (active ? p.panel : p.textDim));
-            canvas.text (labels[static_cast<std::size_t> (i)], boldFont (theme_.font.labelBold),
-                         visage::Font::kCenter, cx, y, segW, h);
+            const std::string& label = labels[static_cast<std::size_t> (i)];
+            const std::uint32_t fg = active ? p.panel : p.textDim;
+            if (i < static_cast<int> (glyphs_.size()))
+            {
+                // Leading glyph + label, centred as a group (approx label width).
+                const float gs = 14.0f;
+                const float textW = 7.0f * static_cast<float> (label.size());
+                const float groupW = gs + 5.0f + textW;
+                const float gx = cx + (segW - groupW) * 0.5f;
+                canvas.setColor (visage::Color (fg));
+                icons::paintGlyph (canvas, glyphs_[static_cast<std::size_t> (i)], gx, y + (h - gs) * 0.5f, gs, gs);
+                canvas.setColor (visage::Color (fg));
+                canvas.text (label, boldFont (theme_.font.labelBold), visage::Font::kLeft,
+                             gx + gs + 5.0f, y, cx + segW - (gx + gs + 5.0f), h);
+            }
+            else
+            {
+                canvas.setColor (visage::Color (fg));
+                canvas.text (label, boldFont (theme_.font.labelBold), visage::Font::kCenter, cx, y, segW, h);
+            }
         }
     }
 
