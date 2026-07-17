@@ -230,7 +230,12 @@ def main():
     with Server(("127.0.0.1", args.port), Handler) as httpd:
         print("serving %s at http://127.0.0.1:%d (overlay: %s)"
               % (args.web_dir, args.port, args.src_dir), flush=True)
-        httpd.serve_forever()
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            # Clean Ctrl-C for the dev.sh loop (no traceback); the `with` block
+            # still closes the listening socket on the way out.
+            print("\nstopping dev server", flush=True)
 
 
 if __name__ == "__main__":

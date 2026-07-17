@@ -24,7 +24,40 @@ tools/ui-dev/
   playwright/         drive.js (reusable driver) + smoke.js (gallery) + rs.spec.js (rs-editor)
   CMakeLists.txt      STANDALONE project; add_subdirectory(../../ui/visage); targets: gallery, rs-editor
   CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs — both build gallery + rs-editor
+  setup.sh / dev.sh   one-command bootstrap + daily loop (macOS/Linux); *.ps1 = Windows (UNTESTED)
 ```
+
+## Quick start (one command)
+
+First run — bootstrap the toolchain. This installs the **pinned emsdk 6.0.3** into
+`tools/ui-dev/.emsdk` and checks the host build tools (it never installs system
+packages: a missing tool prints the exact `brew` / `apt-get` line and exits):
+
+```bash
+./tools/ui-dev/setup.sh                 # add --with-playwright for the headless-verify deps
+```
+
+Then the daily loop — activate emsdk, configure (first run only), build, and serve
+with live rebuild + browser auto-reload:
+
+```bash
+./tools/ui-dev/dev.sh                   # rs-editor       -> http://127.0.0.1:8081
+./tools/ui-dev/dev.sh --gallery         # widget gallery  -> http://127.0.0.1:8080
+./tools/ui-dev/dev.sh --rel             # -O2 preset (small wasm, slower link)
+./tools/ui-dev/dev.sh --no-serve        # configure + build only, no server
+```
+
+`dev.sh` runs `setup.sh` for you when `.emsdk` is missing, so a bare
+`./tools/ui-dev/dev.sh` on a fresh checkout is enough. **Ctrl-C** stops the server
+cleanly. Both scripts are self-contained bash (macOS + Linux), work from any cwd,
+and pass the sandbox override vars (`FACTORY_FREETYPE_MIRROR_DIR`,
+`FETCHCONTENT_SOURCE_DIR_VISAGE`) through to the CMake configure **only when set**,
+so the same script works in-container and on a normal machine. Everything below is
+what these two scripts automate.
+
+**Windows:** `setup.ps1` / `dev.ps1` mirror the bash scripts (winget/choco hints,
+emsdk via `emsdk.bat`) but are **UNTESTED** — authored on Linux; verify on a real
+Windows box before relying on them.
 
 ## rs-editor (Phase P3) — the resonance-suppressor editor
 
@@ -36,6 +69,9 @@ pre/post/reduction spectra; the reduction curtain deepens with the Depth param;
 freezable) and mock preset / A-B models. The editor + its RS theme overlay live in
 `plugins/resonance-suppressor/ui/`; only the app shell (`main` + `RsBridge` +
 `SyntheticFeed` + `Mocks`) is here.
+
+`./tools/ui-dev/dev.sh` performs exactly the build + serve below (rs-editor on
+:8081 with the RS theme overlay); the manual form is:
 
 ```bash
 cmake --build --preset dev            # builds gallery + rs-editor -> build/dev/{web,web-rs}
@@ -70,6 +106,9 @@ report where visage actually delivered the last click, for coordinate calibratio
 
 ## Prerequisites (pinned — see docs/migration/s1-wasm-loop.md)
 
+`setup.sh` installs the emsdk pin for you (into `tools/ui-dev/.emsdk`); this table
+is the reference for every pinned version the harness depends on.
+
 | Tool | Pin | Where |
 |---|---|---|
 | emsdk / emscripten | **6.0.3** | `git clone https://github.com/emscripten-core/emsdk && ./emsdk install 6.0.3 && ./emsdk activate 6.0.3 && source ./emsdk_env.sh` |
@@ -86,9 +125,15 @@ have to think about them:
   `FETCHCONTENT_SOURCE_DIR_FREETYPE`. Leave it empty on machines that can reach
   `gitlab.freedesktop.org` directly.
 
-## Configure + build
+## Under the hood — the manual loop (what `dev.sh` automates)
 
-With `emsdk_env.sh` sourced (`$EMSDK` set), presets do the rest:
+Everything in this section is run for you by `setup.sh` + `dev.sh` above; reach for
+it when you want to drive a single step by hand or understand what the scripts do.
+
+### Configure + build
+
+With `emsdk_env.sh` sourced (`$EMSDK` set — `dev.sh` sources
+`.emsdk/emsdk_env.sh`), presets do the rest:
 
 ```bash
 cd tools/ui-dev
@@ -110,7 +155,7 @@ cmake --build build/dev --target gallery
 big wasm (~30 MB, irrelevant locally) — the daily loop. `rel` = Release/`-O2`:
 small wasm (~4–5 MB), slower link — for publish/CI.
 
-## Serve + edit
+### Serve + edit
 
 ```bash
 python3 dev_server.py --web-dir build/dev/web            # plain serve
