@@ -118,6 +118,15 @@ private:
     std::atomic<bool> firRedesignPending { false };
     double firLastHz[4] { 130.0, 700.0, 2200.0, 7500.0 };
 
+    // Serialises the two NON-audio-thread engine (re)configuration paths:
+    // prepareToPlay's engine.prepare() (reallocates the linear-phase FIR buffers)
+    // and handleAsyncUpdate's engine.redesignFir() (writes those buffers). A host may
+    // call prepareToPlay off the message thread while a redesign is in flight (JUCE's
+    // AU wrapper does — issue #117), so without this they race and corrupt the heap.
+    // processBlock never takes this lock (it reads the FIR lock-free), so real-time
+    // safety is unaffected.
+    juce::CriticalSection engineConfigLock;
+
     double currentSampleRate = 44100.0;
 
     // scratch (sized in prepareToPlay; no audio-thread allocation)
