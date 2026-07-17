@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <title>Factory UI · Visage Gallery</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #f3ece8; }
+    .wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    /* The canvas drawing-buffer size is set by the app (show(640,440)); keep the
+       CSS size 1:1 with the buffer so headless screenshots are pixel-exact. */
+    canvas.emscripten { display: block; border: 0; background: transparent;
+                        opacity: 0; transition: opacity 0.2s ease; }
+    #status { position: fixed; top: 8px; left: 10px;
+              font: 12px system-ui, sans-serif; color: #8a746c; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  </div>
+  <div id="status"></div>
+
+  <script>
+    var canvas = document.getElementById('canvas');
+    var statusElement = document.getElementById('status');
+    var Module = {
+      print:    function () { console.log(Array.prototype.join.call(arguments, ' ')); },
+      printErr: function () { console.warn(Array.prototype.join.call(arguments, ' ')); },
+      canvas: (function () {
+        canvas.addEventListener('webglcontextlost', function (e) { e.preventDefault(); }, false);
+        return canvas;
+      })(),
+      setStatus: function (text) {
+        if (statusElement) statusElement.innerHTML = text || '';
+        if (!text) { canvas.style.opacity = 1; window.__galleryReady = true; }
+      },
+      // Fires exactly when the wasm runtime is initialised — the ONLY point at
+      // which it is safe to call exported functions. Calling them earlier trips
+      // an -sASSERTIONS abort that permanently halts the module (and main()), so
+      // the harness + Playwright driver both gate their ccalls on this flag.
+      onRuntimeInitialized: function () { window.__runtimeReady = true; },
+      totalDependencies: 0,
+      monitorRunDependencies: function () {}
+    };
+    window.onerror = function () { if (Module.setStatus) Module.setStatus('Exception — see console'); };
+  </script>
+  {{{ SCRIPT }}}
+  <!-- Served from source by dev_server.py, so it (theme polling, live reload,
+       the bridge wrappers) can be edited without rebuilding the wasm. -->
+  <script src="harness.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "palette": {
+    "background": "#fffdf6f2",
+    "backgroundLo": "#fffbeae2",
+    "panel": "#ffffffff",
+    "panelLo": "#fffff4ee",
+    "track": "#fff2ddd4",
+    "accent": "#ffff7a6b",
+    "accentDim": "#ffffd6cd",
+    "text": "#ff6b5750",
+    "textDim": "#ffb9a39b",
+    "shadow": "#33d6a89a",
+    "bandColours": ["#ffff6f91", "#ffff9472", "#ffffba6b", "#ff7fd1ae", "#ff79b8ef", "#ffb79be8"]
+  },
+  "knob": {
+    "boundsInset": 6,
+    "lineWidthRatio": 0.18,
+    "glowWidthFactor": 1.9,
+    "glowAlpha": 0.25,
+    "bodyInsetFactor": 1.7,
+    "shadowBlurFactor": 0.5,
+    "shadowOffset": [0, 2],
+    "pointerDotFactor": 0.55,
+    "pointerPosFactor": 0.62,
+    "arcStart": 3.769911184307752,
+    "arcEnd": 8.796459430051420
+  },
+  "toggle": {
+    "height": 20,
+    "widthFactor": 1.7,
+    "knobInset": 4,
+    "cornerRadiusFactor": 0.5,
+    "textGap": 8
+  },
+  "card": {
+    "cornerRadius": 10,
+    "outlineWidth": 1.2,
+    "shadowBlur": 16,
+    "shadowOffset": [0, 5]
+  },
+  "font": {
+    "label": 13,
+    "labelBold": 13,
+    "title": 20,
+    "callout": 14
+  }
+}
