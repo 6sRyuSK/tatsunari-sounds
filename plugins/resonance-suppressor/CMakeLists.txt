@@ -39,6 +39,7 @@ target_link_libraries(ResonanceSuppressor
     factory_core
     factory_ui
     factory_presets
+    factory_params
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags
@@ -80,6 +81,7 @@ target_link_libraries(resonance_suppressor_preset_test
     factory_core
     factory_ui
     factory_presets
+    factory_params
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags

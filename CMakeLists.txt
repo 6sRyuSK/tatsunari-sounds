@@ -41,11 +41,23 @@ add_library(factory_presets INTERFACE)
 target_include_directories(factory_presets INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/presets/include)
 target_compile_features(factory_presets INTERFACE cxx_std_20)
 
+# --- Shared parameter model (header-only) ---
+# ParamDesc/Range/Text/ParamStore/UndoStack are JUCE-free; only juce/ApvtsAdapter.h
+# rides the JUCE parameter API (same split as factory_presets).
+add_library(factory_params INTERFACE)
+target_include_directories(factory_params INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/params/include)
+target_compile_features(factory_params INTERFACE cxx_std_20)
+
 enable_testing()
 
 # --- Direct per-primitive tests for the shared factory_core DSP primitives ---
 # (links only factory_core, headless; one CTest case per standard sample rate).
 add_subdirectory(core/tests)
+
+# --- Unit tests for the shared factory_params model ---
+# (links ONLY factory_params, headless — proving the headers are JUCE-free; a
+# single CTest case, nothing here is sample-rate dependent).
+add_subdirectory(params/tests)
 
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---
 # FACTORY_PLUGINS narrows the build to a subset of slugs (comma- or
