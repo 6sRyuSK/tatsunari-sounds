@@ -33,7 +33,11 @@ int runRsEditor()
 
     app.addChild (editor);
     editor.setBounds (0.0f, 0.0f, (float) kDesignW, (float) kDesignH);
-    editor.curve().onTick = [] { feed.advance(); };
+    // The analyser's per-frame tick advances the synthetic feed AND pumps the
+    // editor's gesture queue (drains gesture-ends into undo). With the editor no
+    // longer self-redrawing every frame (dirty-region, A3), this curve tick is the
+    // live animation + undo-capture loop; only the analyser region repaints.
+    editor.curve().onTick = [&] { editor.pumpGestures(); feed.advance(); };
     rs_harness::setBridgeTarget (&editor, &feed, &app);
 
     app.setTitle ("Resonance TatSuppressor · Visage");

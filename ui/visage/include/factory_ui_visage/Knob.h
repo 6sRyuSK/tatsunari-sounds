@@ -4,6 +4,8 @@
 #include "factory_params/ParamStore.h"
 #include "factory_params/Range.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -25,6 +27,25 @@
 //
 namespace factory_ui_visage
 {
+    // Value-ring / needle angle (radians) for a normalised position, in the dial
+    // convention 0 = 12 o'clock growing clockwise. The sweep endpoints come from
+    // the theme's KnobMetrics (RS: 225° start, 270° clockwise), so this is the
+    // SINGLE source of truth every knob (the shared Knob AND the NodePanel
+    // mini-knobs) maps value -> angle through — see RsNodePanel::drawMiniKnob.
+    inline float knobAngleForNorm (const KnobMetrics& m, float norm)
+    {
+        norm = std::clamp (norm, 0.0f, 1.0f);
+        return m.arcStart + norm * (m.arcEnd - m.arcStart);
+    }
+
+    // Needle tip for a dial centred at (cx, cy) with the given bar length and
+    // angle (same convention as knobAngleForNorm). Shared so the needle geometry
+    // can never drift between the shared Knob and the mini-knobs.
+    inline visage::Point knobNeedleTip (float cx, float cy, float length, float angle)
+    {
+        return { cx + length * std::sin (angle), cy - length * std::cos (angle) };
+    }
+
     class Knob : public visage::Frame
     {
     public:

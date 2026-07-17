@@ -90,25 +90,40 @@ namespace rs_ui
         float cutHandleSel  = 18.0f;
         float nodeHitRadius = 14.0f; // nodeAt() grab radius
 
-        // ---- analyser style (design reference 2026-07-17 — supersedes the ported
-        // kV201Style). The reduction "curtain" hangs from the plot TOP in teal
-        // (palette.positive); the PRE and POST spectra are both thin SOLID coral
-        // lines (POST returns to the kV201Style solid-line role); the combined
-        // reduction PROFILE is a dashed muted-coral line running through the node
-        // dots; and each active node adds a subtle pale bump fill near the baseline.
+        // ---- analyser style (v2.1.0 == AnalyzerStyle.h kV201Style, the shipped
+        // JUCE look; transcribed from SuppressionCurveComponent.h's draw methods).
+        //   * reduction "curtain" = AreaFromZero: hangs from the 0 dB gridline (NOT
+        //     the plot top) in teal (palette.positive) — fill 0.28 under a 0.8 / 1px
+        //     stroke, clamped only by the −60 dB floor (curtainClampFrac 1.0);
+        //   * PRE (input) = a vertical-gradient FILLED area (0.22→0.02) to the plot
+        //     bottom in muted taupe (#b9a39b) — no line;
+        //   * POST (output) = a thin SOLID coral line (1.4 px, 0.85 alpha);
+        //   * combined reduction PROFILE = a SOLID coral line (2.2 px) with a soft
+        //     glow (0.22 / 5 px) running through the node dots — NOT dashed;
+        //   * each active node draws its own translucent fill (0.12) + stroke (0.7)
+        //     UNDER the combined glow (PerNodePlusCombined).
         // A human still signs off these values via theme-rs.json.
-        float curtainFillAlpha    = 0.34f;      // teal reduction curtain (from the top)
-        float curtainClampFrac    = 0.5f;       // max curtain depth (fraction of plot height)
-        std::uint32_t preColour   = 0xffff7a6b; // PRE (input) — solid coral line
-        float preLineWidth        = 2.0f;
-        std::uint32_t postColour  = 0xffff7a6b; // POST (output) — thin SOLID coral (kV201Style)
+        // Reduction curtain (AreaFromZero, teal == palette.positive).
+        float curtainFillAlpha    = 0.28f;      // kV201Style deltaFillAlpha
+        float curtainStrokeAlpha  = 0.8f;       // kV201Style deltaStrokeAlpha
+        float curtainStrokeWidth  = 1.0f;       // kV201Style deltaStrokeWidth
+        // PRE (input) — filled area vertical gradient to the plot bottom, no line.
+        std::uint32_t preColour   = 0xffb9a39b; // textMuted (kV201Style inputColour)
+        float preFillTopAlpha     = 0.22f;      // kV201Style inputFillTopAlpha
+        float preFillBotAlpha     = 0.02f;      // kV201Style inputFillBotAlpha
+        // POST (output) — thin solid coral line.
+        std::uint32_t postColour  = 0xffff7a6b; // accent (kV201Style postColour)
         float postLineWidth       = 1.4f;       // kV201Style postLineWidth
         float postLineAlpha       = 0.85f;      // kV201Style postLineAlpha
-        std::uint32_t profileColour = 0xffe08a7f; // combined profile — dashed muted coral
-        float profileLineWidth    = 1.5f;
-        float profileDashOn       = 5.0f;       // combined-profile dash pattern (on / off px)
-        float profileDashOff      = 4.0f;
-        float perNodeFillAlpha    = 0.12f;      // subtle per-node bump fill (near the baseline)
+        // Combined reduction profile — SOLID coral + soft glow, through the dots.
+        std::uint32_t profileColour = 0xffff7a6b; // accent (kV201Style combinedColour)
+        float profileGlowAlpha    = 0.22f;      // kV201Style combinedGlowAlpha
+        float profileGlowWidth    = 5.0f;       // kV201Style combinedGlowWidth
+        float profileStrokeWidth  = 2.2f;       // kV201Style combinedStrokeWidth
+        float profileStrokeAlpha  = 1.0f;       // kV201Style combinedStrokeAlpha
+        // Per-node curves under the combined profile (PerNodePlusCombined).
+        float perNodeFillAlpha    = 0.12f;      // kV201Style perNodeFillAlpha
+        float perNodeStrokeAlpha  = 0.7f;       // kV201Style perNodeStrokeAlpha
         float displaySmoothMs     = 50.0f;      // -> RsFeed::setDisplaySmoothMs
 
         static RsExtras defaults() { return RsExtras {}; }

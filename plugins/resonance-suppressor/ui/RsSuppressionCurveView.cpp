@@ -2,12 +2,13 @@
 
 #include "factory_ui_visage/Fonts.h"
 
+#include <visage_graphics/canvas.h>
 #include <visage_graphics/path.h>
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <string>
+#include <vector>
 
 namespace rs_ui
 {
@@ -37,45 +38,90 @@ namespace rs_ui
             return buf;
         }
 
-        // Stroke a polyline as connected flat GPU segments. visage's path-fill
-        // atlas silently drops every path fill in a frame that also submits a
-        // large plot-spanning path (which the analyser traces are), so the PRE
-        // line / per-node outlines are drawn from primitives instead of
-        // canvas.fill(path.stroke(...)).
-        void strokePolyline (visage::Canvas& canvas, const std::vector<visage::Point>& pts, float width)
+        // -------- A3: downsampled trace primitives (fast in software raster) ----
+        // The analyser used to emit THOUSANDS of per-PIXEL fill(rect)/segment
+        // primitives per frame (the path-atlas workaround), which capped the dev
+        // (-O0) build at ~3 fps. Two things fix that here:
+        //   (1) sample every trace at a COARSE column step (kStepPx below) so the
+        //       primitive COUNT — the -O0 submission bottleneck — drops several-
+        //       fold with no visible loss (the curves read the same at ~4-6 px);
+        //   (2) draw from primitives (rounded segments for lines, edge-to-edge
+        //       vertical bars for fills) so nothing touches the path-fill atlas
+        //       (immune to the "large plot-spanning path poisons every path fill"
+        //       bug) AND the software rasteriser only shades the thin covered band.
+        // NB: visage's GraphLine (canvas.graphLine/graphFill) was evaluated per the
+        // brief but REJECTED — see the report. It is one draw per trace, but each
+        // is a FULL-PLOT quad whose per-pixel fragment shader (a 20-sample distance
+        // loop) is coverage-bound; under headless SwiftShader (a software
+        // rasteriser — the CI gate + the dev harness) that measured ~2.3x SLOWER
+        // than these primitives, regardless of data resolution. On real GPU
+        // hardware GraphLine would win; the software raster path these primitives
+        // take is the one that has to be fast for the dev loop + the headless gate.
+        //
+        // Column count for a plot span at ~kStepPx spacing (>= 2 points). Tuned so
+        // the analyser reads the same but the primitive count (the -O0 submission
+        // bottleneck) is a fraction of the old per-pixel counts.
+        constexpr float kStepSpectrumPx = 4.0f; // spectra keep resonance detail
+        constexpr float kStepProfilePx  = 7.0f; // profile/per-node curves are smooth
+
+        int columnCount (float widthPx, float stepPx)
         {
-            for (std::size_t i = 1; i < pts.size(); ++i)
-                canvas.segment (pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, width, /*rounded*/ true);
+            return std::max (2, (int) std::round (widthPx / std::max (1.0f, stepPx)) + 1);
         }
 
-        // Stroke a polyline as a dash pattern (on/off px) — visage has no dashed
-        // stroke, so we walk the path and emit rounded segments for the "on" runs.
-        void strokeDashedPolyline (visage::Canvas& canvas, const std::vector<visage::Point>& pts,
-                                   float width, float on, float off)
+        std::vector<float>& scratchColumns()
         {
-            if (pts.size() < 2 || on <= 0.0f)
-                return;
-            bool penDown = true;
-            float used = 0.0f; // distance into the current on/off run
-            for (std::size_t i = 1; i < pts.size(); ++i)
+            static thread_local std::vector<float> buf; // GUI-thread only
+            return buf;
+        }
+
+        // Stroke a per-column screen-y trace (spanning [x0, x0+w]) as connected
+        // rounded segments — one primitive per column step.
+        void strokeColumns (visage::Canvas& canvas, float x0, float w,
+                            const std::vector<float>& screenY, float width)
+        {
+            const int n = (int) screenY.size();
+            if (n < 2 || w <= 0.0f) return;
+            const float dx = w / (float) (n - 1);
+            for (int i = 1; i < n; ++i)
+                canvas.segment (x0 + (float) (i - 1) * dx, screenY[(std::size_t) (i - 1)],
+                                x0 + (float) i * dx, screenY[(std::size_t) i], width, /*rounded*/ true);
+        }
+
+        // Same, but SKIP floored runs (columns at/below floorY) — a low/high cut
+        // rolled to the plot floor shouldn't stroke a flat line out to the edge
+        // (mirrors SuppressionCurveComponent's combined-curve floor trim).
+        void strokeColumnsTrimFloor (visage::Canvas& canvas, float x0, float w,
+                                     const std::vector<float>& screenY, float width, float floorY)
+        {
+            const int n = (int) screenY.size();
+            if (n < 2 || w <= 0.0f) return;
+            const float dx = w / (float) (n - 1);
+            for (int i = 1; i < n; ++i)
             {
-                const visage::Point a = pts[i - 1], b = pts[i];
-                const float segLen = std::sqrt ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
-                float t = 0.0f;
-                while (t < segLen)
-                {
-                    const float runLen = penDown ? on : off;
-                    const float step = std::min (runLen - used, segLen - t);
-                    if (penDown && step > 0.0f)
-                    {
-                        const float u0 = t / segLen, u1 = (t + step) / segLen;
-                        canvas.segment (a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0,
-                                        a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1, width, true);
-                    }
-                    t += step;
-                    used += step;
-                    if (used >= runLen - 0.001f) { penDown = ! penDown; used = 0.0f; }
-                }
+                const float ya = screenY[(std::size_t) (i - 1)], yb = screenY[(std::size_t) i];
+                if (ya >= floorY - 0.5f && yb >= floorY - 0.5f) continue; // whole segment on the floor
+                canvas.segment (x0 + (float) (i - 1) * dx, ya, x0 + (float) i * dx, yb, width, true);
+            }
+        }
+
+        // Fill between a per-column trace and a horizontal baseline (screen-y) as
+        // edge-to-edge vertical bars — trivial per-pixel cost, only the covered
+        // band is shaded. The caller sets the brush (solid or a plot-anchored
+        // vertical gradient) first.
+        void fillColumns (visage::Canvas& canvas, float x0, float w,
+                          const std::vector<float>& screenY, float baselineY)
+        {
+            const int n = (int) screenY.size();
+            if (n < 2 || w <= 0.0f) return;
+            const float dx = w / (float) (n - 1);
+            for (int i = 0; i < n; ++i)
+            {
+                const float y   = screenY[(std::size_t) i];
+                const float top = std::min (y, baselineY);
+                const float hgt = std::abs (baselineY - y);
+                if (hgt > 0.5f)
+                    canvas.fill (x0 + (float) i * dx - 0.5f * dx, top, dx + 1.0f, hgt); // slight overlap hides seams
             }
         }
     } // namespace
@@ -244,7 +290,8 @@ namespace rs_ui
             canvas.setColor (visage::Color (fl.strong ? theme_.base.palette.track : theme_.rs.borderLight));
             canvas.segment (x, plot_.y, x, plot_.y + plot_.h, 1.0f, false);
             canvas.setColor (visage::Color (fl.strong ? theme_.base.palette.textDim : theme_.rs.textFaint));
-            canvas.text (fl.s, regularFont (10.0f), visage::Font::kCenter, x - 18.0f, plot_.y - 13.0f, 36.0f, 12.0f);
+            // v2.1.0 grid labels are weight 600 (-> bold in the JUCE mapping).
+            canvas.text (fl.s, boldFont (10.0f), visage::Font::kCenter, x - 18.0f, plot_.y - 13.0f, 36.0f, 12.0f);
         }
         for (float db = 0.0f; db >= -60.0f; db -= 12.0f)
         {
@@ -254,164 +301,156 @@ namespace rs_ui
         }
     }
 
-    void RsSuppressionCurveView::drawAnalyzer (visage::Canvas& canvas)
+    // Resample a per-bin dB array onto `cols` evenly-spaced plot COLUMNS (the
+    // non-uniform log-frequency axis means bins aren't evenly spaced in x), with
+    // linear interpolation between bins, returning screen-y per column.
+    void RsSuppressionCurveView::sampleSpectrumColumns (const std::vector<float>& bins,
+                                                        int cols, std::vector<float>& out) const
     {
         const int n = 2 * (snapBins_ - 1);
-        if (n <= 0) return;
-
-        auto build = [&] (const std::vector<float>& data, std::vector<visage::Point>& out)
+        out.resize ((std::size_t) cols);
+        for (int i = 0; i < cols; ++i)
         {
-            out.clear();
-            for (int k = 1; k < snapBins_; ++k)
-            {
-                const float f = (float) ((double) k * snapSr_ / n);
-                if (f < 20.0f) continue;
-                if (f > 20000.0f) break;
-                out.push_back (visage::Point (freqToX (f), dbToY (data[(std::size_t) k])));
-            }
-        };
-
-        std::vector<visage::Point> pts;
-
-        // PRE (input): a solid coral line (design reference).
-        if (analyzerMode_ != AnalyzerMode::Post)
-        {
-            build (snapPre_, pts);
-            if (pts.size() >= 2)
-            {
-                canvas.setColor (visage::Color (theme_.rs.preColour));
-                strokePolyline (canvas, pts, theme_.rs.preLineWidth);
-            }
-        }
-        // POST (output): a thin SOLID coral line (kV201Style role — the dashed
-        // line is the combined reduction profile, drawn in drawProfile).
-        if (analyzerMode_ != AnalyzerMode::Pre)
-        {
-            build (snapPost_, pts);
-            if (pts.size() >= 2)
-            {
-                canvas.setColor (visage::Color (theme_.rs.postColour).withAlpha (theme_.rs.postLineAlpha));
-                strokePolyline (canvas, pts, theme_.rs.postLineWidth);
-            }
+            const float x  = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
+            const float f  = xToFreq (x);
+            const float kf = f * (float) n / (float) snapSr_;
+            const int   k0 = std::clamp ((int) std::floor (kf), 1, snapBins_ - 2);
+            const float t  = std::clamp (kf - (float) k0, 0.0f, 1.0f);
+            const float db = bins[(std::size_t) k0] * (1.0f - t) + bins[(std::size_t) (k0 + 1)] * t;
+            out[(std::size_t) i] = dbToY (db);
         }
     }
 
+    // PRE = FilledArea (kV201Style): a vertical-gradient fill (muted taupe #b9a39b,
+    // 0.22 at the plot top -> 0.02 at the foot) hanging to the plot bottom, NO
+    // line. POST = a thin SOLID coral line (accent, 1.4 px, 0.85 alpha). Both from
+    // downsampled primitives (A3): the PRE gradient is anchored to the PLOT band
+    // (matching factory_ui::fillSpectrumArea) so the alpha at any y is the same
+    // regardless of the trace height.
+    void RsSuppressionCurveView::drawAnalyzer (visage::Canvas& canvas)
+    {
+        if (snapBins_ < 2 || plot_.w < 2.0f || plot_.h <= 0.0f) return;
+        const int cols = columnCount (plot_.w, kStepSpectrumPx);
+        std::vector<float>& colY = scratchColumns();
+
+        if (analyzerMode_ != AnalyzerMode::Post)
+        {
+            sampleSpectrumColumns (snapPre_, cols, colY);
+            canvas.setColor (visage::Brush::linear (
+                visage::Color (theme_.rs.preColour).withAlpha (theme_.rs.preFillTopAlpha),
+                visage::Color (theme_.rs.preColour).withAlpha (theme_.rs.preFillBotAlpha),
+                visage::Point (plot_.x, plot_.y), visage::Point (plot_.x, plot_.y + plot_.h)));
+            fillColumns (canvas, plot_.x, plot_.w, colY, plot_.y + plot_.h); // to the plot bottom
+        }
+        if (analyzerMode_ != AnalyzerMode::Pre)
+        {
+            sampleSpectrumColumns (snapPost_, cols, colY);
+            canvas.setColor (visage::Color (theme_.rs.postColour).withAlpha (theme_.rs.postLineAlpha));
+            strokeColumns (canvas, plot_.x, plot_.w, colY, theme_.rs.postLineWidth);
+        }
+    }
+
+    // Reduction "curtain" = AreaFromZero (kV201Style): it hangs from the 0 dB
+    // gridline down to dbToY(reduction) — NOT from the plot top — in teal
+    // (palette.positive), fill 0.28 under a 0.8 / 1px stroke, clamped only by the
+    // −60 dB floor. Downsampled bars + a stroked lower edge (A3).
     void RsSuppressionCurveView::drawReduction (visage::Canvas& canvas)
     {
         const int n = 2 * (snapBins_ - 1);
-        if (n <= 0) return;
-        // The curtain hangs from the plot's TOP edge (design reference), its depth
-        // proportional to the reduction, clamped to curtainClampFrac of the plot.
-        const float top   = plot_.y;
-        const float maxY  = plot_.y + theme_.rs.curtainClampFrac * plot_.h;
-        const float scale = plot_.h / 96.0f; // -96 dB spans the plot height
+        if (n <= 0 || plot_.w < 2.0f || plot_.h <= 0.0f) return;
 
-        // Visage's polygon triangulator chokes on the near-degenerate curtain
-        // contour (most bins sit exactly on the top edge, only a few dip deep),
-        // so instead of one filled path we emit one filled rect per plot pixel
-        // column, each hanging from the top down to that column's deepest
-        // reduction. Columns are 1px wide and pixel-aligned edge-to-edge, so the
-        // 0.34 alpha never double-covers (no seams) — and rects always rasterise.
-        canvas.setColor (visage::Color (theme_.base.palette.positive)
-                             .withAlpha (theme_.rs.curtainFillAlpha));
-        int   curCol   = std::numeric_limits<int>::min();
-        float curDepth = 0.0f;
-        auto flush = [&]
+        const float zeroY = dbToY (0.0f);
+        const int   cols  = columnCount (plot_.w, kStepSpectrumPx);
+        std::vector<float>& colY = scratchColumns();
+        colY.resize ((std::size_t) cols);
+        for (int i = 0; i < cols; ++i)
         {
-            if (curCol != std::numeric_limits<int>::min() && curDepth > 0.25f)
-                canvas.fill ((float) curCol, top, 1.0f, curDepth);
-        };
-        for (int k = 1; k < snapBins_; ++k)
-        {
-            const float f = (float) ((double) k * snapSr_ / n);
-            if (f < 20.0f) continue;
-            if (f > 20000.0f) break;
-            const float red   = std::clamp (snapRed_[(std::size_t) k], -60.0f, 0.0f);
-            const float depth = std::min (top + (-red) * scale, maxY) - top;
-            const int   col   = (int) std::floor (freqToX (f));
-            if (col != curCol) { flush(); curCol = col; curDepth = depth; }
-            else               { curDepth = std::max (curDepth, depth); }
+            const float x   = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
+            const float f   = xToFreq (x);
+            const float kf  = f * (float) n / (float) snapSr_;
+            const int   k0  = std::clamp ((int) std::floor (kf), 1, snapBins_ - 2);
+            const float t   = std::clamp (kf - (float) k0, 0.0f, 1.0f);
+            const float red = std::clamp (snapRed_[(std::size_t) k0] * (1.0f - t) + snapRed_[(std::size_t) (k0 + 1)] * t,
+                                          -60.0f, 0.0f);
+            colY[(std::size_t) i] = dbToY (red); // red <= 0 -> at/below the 0 dB line
         }
-        flush();
+
+        canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (theme_.rs.curtainFillAlpha));
+        fillColumns (canvas, plot_.x, plot_.w, colY, zeroY); // from the 0 dB line down
+        if (theme_.rs.curtainStrokeAlpha > 0.0f && theme_.rs.curtainStrokeWidth > 0.0f)
+        {
+            canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (theme_.rs.curtainStrokeAlpha));
+            strokeColumns (canvas, plot_.x, plot_.w, colY, theme_.rs.curtainStrokeWidth);
+        }
     }
 
-    // The reduction-profile face (design reference 2026-07-17). Geometry is the
+    // The reduction-profile face (kV201Style PerNodePlusCombined). Geometry is the
     // shipped SuppressionCurveComponent's: the sens baseline sits at sensToY(0) —
     // the plot's vertical MIDDLE — and the ±30 dB sens range spans the full plot
-    // height (plot.h/60 px per dB), so bumps stay subdued and never balloon to the
-    // top. Two layers, back to front:
-    //   (1) each active band's own contribution as a SUBTLE pale fill hugging the
-    //       baseline (rs.analyzer.perNodeFillAlpha), and
-    //   (2) the COMBINED profile — factory_core::reductionProfileDbAt over ALL
-    //       nodes (the same shape the audio path runs) — as a dashed muted-coral
-    //       line that passes through the node dots (whose y is sensToY(sens), so a
-    //       band's dot rides its own peak on the curve).
-    // Both are drawn from primitives (tiled fill rects / SEGMENT dash pieces): a
-    // plot-wide filled or stroked path would poison the frame's path atlas and
-    // silently drop every path fill (see strokePolyline / strokeDashedPolyline).
+    // height, evaluated with factory_core::reductionProfileDbAt (the SAME shape the
+    // audio path runs) so a band's dot rides its own peak on the curve. Two layers,
+    // back to front:
+    //   (1) each ACTIVE node's own contribution — a translucent FILL (0.12) from
+    //       the baseline plus a coloured STROKE (0.7) — bands in their band hue,
+    //       cuts dimmed; then
+    //   (2) the COMBINED profile over ALL nodes as a SOLID coral line (2.2 px,
+    //       alpha 1) with a soft glow under it (0.22 / 5 px), floor-trimmed so a
+    //       cut rolled to the plot floor doesn't stroke a flat edge.
+    // All from downsampled primitives (A3) — no plot-wide path fills.
     void RsSuppressionCurveView::drawProfile (visage::Canvas& canvas)
     {
-        const auto  nodes = model_.buildNodes();
-        const int   steps = std::max (2, (int) plot_.w);
-        const float y0    = sensToY (0.0f); // nominal (0 dB) baseline = plot middle
+        if (plot_.w < 2.0f || plot_.h <= 0.0f) return;
+        const auto  nodes  = model_.buildNodes();
+        const float y0     = sensToY (0.0f);          // nominal (0 dB) baseline = plot middle
+        const float floorY = plot_.y + plot_.h;
 
-        // (1) Per-node contribution fills — subtle, from the baseline to each
-        // active band's own bump, as tiled edge-to-edge bars.
-        if (theme_.rs.perNodeFillAlpha > 0.0f)
+        // reductionProfileDbAt is heavier than a bin lookup and the curves are
+        // smooth, so sample coarser than the spectra.
+        const int cols = columnCount (plot_.w, kStepProfilePx);
+        auto sampleProfile = [&] (const factory_core::ReductionNodes& cfg, std::vector<float>& out)
+        {
+            out.resize ((std::size_t) cols);
+            for (int i = 0; i < cols; ++i)
+            {
+                const float x = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
+                out[(std::size_t) i] = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), cfg));
+            }
+        };
+
+        std::vector<float> curveY; // reused across nodes (keeps capacity)
+
+        // (1) Per-node fill + stroke (bands + cuts that are ON), under the combined.
+        if (theme_.rs.perNodeFillAlpha > 0.0f || theme_.rs.perNodeStrokeAlpha > 0.0f)
         {
             for (int id = 0; id < RsProfileModel::kNumNodes; ++id)
             {
-                if (RsProfileModel::isCut (id) || ! model_.nodeOn (id)) continue;
-                const auto single = RsProfileModel::singleNode (nodes, id);
-                canvas.setColor (visage::Color (bandColour (id)).withAlpha (theme_.rs.perNodeFillAlpha));
-                float prevX = plot_.x;
-                float prevY = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (plot_.x), single));
-                for (int i = 1; i <= steps; ++i)
+                if (! model_.nodeOn (id)) continue;
+                const std::uint32_t col = RsProfileModel::isCut (id) ? theme_.base.palette.textDim
+                                                                     : bandColour (id);
+                sampleProfile (RsProfileModel::singleNode (nodes, id), curveY);
+                if (theme_.rs.perNodeFillAlpha > 0.0f)
                 {
-                    const float x = plot_.x + (float) i * plot_.w / steps;
-                    const float y = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), single));
-                    const float top = std::min (prevY, y0);
-                    const float hgt = std::abs (y0 - prevY);
-                    if (hgt > 0.5f)
-                        canvas.fill (prevX, top, std::max (1.0f, x - prevX), hgt);
-                    prevX = x; prevY = y;
+                    canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeFillAlpha));
+                    fillColumns (canvas, plot_.x, plot_.w, curveY, y0); // from the baseline
+                }
+                if (theme_.rs.perNodeStrokeAlpha > 0.0f)
+                {
+                    canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeStrokeAlpha));
+                    strokeColumns (canvas, plot_.x, plot_.w, curveY, 1.0f);
                 }
             }
         }
 
-        // (2) The combined profile as a dashed line through the dots. Trim runs
-        // that sit on the plot floor (a low/high cut rolled fully off) into their
-        // own sub-polylines so we never dash a flat line along the bottom edge —
-        // mirrors SuppressionCurveComponent's floor trim.
-        const float floorY = plot_.y + plot_.h;
-        std::vector<std::vector<visage::Point>> subpaths;
-        std::vector<visage::Point> cur;
-        bool penDown = false, haveAnchor = false;
-        visage::Point anchor;
-        auto flushCur = [&] { if (cur.size() >= 2) subpaths.push_back (cur); cur.clear(); };
-        for (int i = 0; i <= steps; ++i)
+        // (2) Combined reduction curve: soft glow under a crisp SOLID stroke,
+        //     floor-trimmed.
+        sampleProfile (nodes, curveY);
+        if (theme_.rs.profileGlowAlpha > 0.0f && theme_.rs.profileGlowWidth > 0.0f)
         {
-            const float x = plot_.x + (float) i * plot_.w / steps;
-            const float y = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), nodes));
-            if (y >= floorY - 0.5f)                 // on the floor: hold the pen
-            {
-                if (penDown) { cur.push_back (visage::Point (x, y)); flushCur(); penDown = false; }
-                anchor = visage::Point (x, y); haveAnchor = true;
-            }
-            else if (! penDown)                     // lifting off the floor
-            {
-                if (haveAnchor) cur.push_back (anchor);
-                cur.push_back (visage::Point (x, y));
-                penDown = true; haveAnchor = false;
-            }
-            else cur.push_back (visage::Point (x, y));
+            canvas.setColor (visage::Color (theme_.rs.profileColour).withAlpha (theme_.rs.profileGlowAlpha));
+            strokeColumnsTrimFloor (canvas, plot_.x, plot_.w, curveY, theme_.rs.profileGlowWidth, floorY);
         }
-        flushCur();
-
-        canvas.setColor (visage::Color (theme_.rs.profileColour));
-        for (const auto& sp : subpaths)
-            strokeDashedPolyline (canvas, sp, theme_.rs.profileLineWidth,
-                                  theme_.rs.profileDashOn, theme_.rs.profileDashOff);
+        canvas.setColor (visage::Color (theme_.rs.profileColour).withAlpha (theme_.rs.profileStrokeAlpha));
+        strokeColumnsTrimFloor (canvas, plot_.x, plot_.w, curveY, theme_.rs.profileStrokeWidth, floorY);
     }
 
     void RsSuppressionCurveView::drawNodes (visage::Canvas& canvas)
@@ -423,7 +462,9 @@ namespace rs_ui
             if (! RsProfileModel::isCut (id) && ! on) continue; // off bands hidden
             const float a = on ? 1.0f : 0.3f;
             const visage::Point p = nodePos (id);
-            const bool selected = (id == selectedNode_) || (id == hoverNode_);
+            // v2.1.0 grows a node handle only when SELECTED (hover drives the
+            // tooltip, not the handle size — see SuppressionCurveComponent::drawNodes).
+            const bool selected = (id == selectedNode_);
 
             if (RsProfileModel::isCut (id))
             {

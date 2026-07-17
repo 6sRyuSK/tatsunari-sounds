@@ -58,19 +58,23 @@
       "hitRadius": 14
     },
     "analyzer": {
-      "_signoff": "PENDING — design reference 2026-07-17 (supersedes AnalyzerStyle.h kV201Style). Teal curtain hangs from the plot top; PRE + POST = thin solid coral lines (POST solid per kV201Style); the combined reduction PROFILE is a dashed muted-coral line through the node dots; per-node = subtle pale bump fills near the baseline.",
-      "curtainFillAlpha": 0.34,
-      "curtainClampFrac": 0.5,
-      "preColour": "#ffff7a6b",
-      "preLineWidth": 2.0,
+      "_signoff": "PENDING — v2.1.0 (AnalyzerStyle.h kV201Style, transcribed from SuppressionCurveComponent.h). Teal curtain hangs from the 0 dB gridline (AreaFromZero) with a 0.8/1px stroke; PRE = muted-taupe filled area (0.22->0.02), no line; POST = thin solid coral line; combined reduction PROFILE = SOLID coral (2.2px) + soft glow (0.22/5px) through the node dots; per-node = translucent fill (0.12) + stroke (0.7) under the glow.",
+      "curtainFillAlpha": 0.28,
+      "curtainStrokeAlpha": 0.8,
+      "curtainStrokeWidth": 1.0,
+      "preColour": "#ffb9a39b",
+      "preFillTopAlpha": 0.22,
+      "preFillBotAlpha": 0.02,
       "postColour": "#ffff7a6b",
       "postLineWidth": 1.4,
       "postLineAlpha": 0.85,
-      "profileColour": "#ffe08a7f",
-      "profileLineWidth": 1.5,
-      "profileDashOn": 5.0,
-      "profileDashOff": 4.0,
+      "profileColour": "#ffff7a6b",
+      "profileGlowAlpha": 0.22,
+      "profileGlowWidth": 5.0,
+      "profileStrokeWidth": 2.2,
+      "profileStrokeAlpha": 1.0,
       "perNodeFillAlpha": 0.12,
+      "perNodeStrokeAlpha": 0.7,
       "displaySmoothMs": 50.0
     }
   }

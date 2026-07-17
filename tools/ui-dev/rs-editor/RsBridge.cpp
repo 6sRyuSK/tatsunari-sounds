@@ -33,7 +33,7 @@ namespace
     rs_ui::RsEditor* g_editor = nullptr;
     SyntheticRsFeed* g_feed = nullptr;
     visage::ApplicationWindow* g_app = nullptr;
-    std::string g_list, g_error, g_rect, g_plot;
+    std::string g_list, g_error, g_rect, g_plot, g_mini;
 
     std::string jsonEscape (const std::string& s)
     {
@@ -234,6 +234,25 @@ extern "C"
         if (g_editor == nullptr) return 0.0;
         rs_ui::RsProfileModel model (g_editor->store());
         return (double) factory_core::reductionProfileDbAt (freqHz, model.buildNodes());
+    }
+
+    // Needle centre + tip (window px) of the open node panel's mini-knob
+    // (0=FREQ, 1=SENS, 2=WIDTH). The driver derives the needle-tip ANGLE from
+    // this and checks it against an independent oracle (A2 needle-angle assert).
+    KEEPALIVE const char* rs_mini_knob_tip (int which)
+    {
+        g_mini = "null";
+        if (g_editor != nullptr)
+        {
+            float cx = 0, cy = 0, tx = 0, ty = 0;
+            if (g_editor->miniKnobTipInWindow (which, cx, cy, tx, ty))
+            {
+                std::ostringstream o;
+                o << "{\"cx\":" << cx << ",\"cy\":" << cy << ",\"tx\":" << tx << ",\"ty\":" << ty << "}";
+                g_mini = o.str();
+            }
+        }
+        return g_mini.c_str();
     }
 
     KEEPALIVE const char* rs_plot_rect()

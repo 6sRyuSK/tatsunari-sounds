@@ -392,10 +392,15 @@ namespace rs_ui
 
     void RsEditor::draw (visage::Canvas& canvas)
     {
-        pumpGestures();
-
+        // Dirty-region (A3): the editor chrome is STATIC — it repaints only on a
+        // real change (resize / theme / node select / undo / A-B / preset, each of
+        // which calls redrawAll()), NOT every frame. The live analyser animation
+        // AND the per-frame gesture pump now ride the CURVE's own redraw loop
+        // (curve().onTick, wired by the harness/shell), so per tick only the
+        // analyser region repaints — the whole-editor repaint (a full-window
+        // gradient fill + all chrome, every frame) that used to gate the frame
+        // rate is gone.
         const float w = width(), h = height();
-        // warm-white background gradient
         canvas.setColor (visage::Brush::vertical (visage::Color (rsTheme_.base.palette.background),
                                                   visage::Color (rsTheme_.base.palette.backgroundLo)));
         canvas.fill (0.0f, 0.0f, w, h);
@@ -403,9 +408,6 @@ namespace rs_ui
         drawFooterChrome (canvas);
         drawHeaderChrome (canvas);
         drawBrand (canvas);
-
-        if (! frozen_)
-            redraw(); // steady tick so gestures drain into undo during live use
     }
 
     void RsEditor::drawBrand (visage::Canvas& canvas)
@@ -493,6 +495,12 @@ namespace rs_ui
     bool RsEditor::nodeCentreInWindow (int id, float& x, float& y) const
     {
         return curve_ && curve_->nodeCentreInWindow (id, x, y);
+    }
+
+    bool RsEditor::miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const
+    {
+        return nodePanel_ && nodePanel_->isVisible()
+               && nodePanel_->miniKnobTipInWindow (which, cx, cy, tx, ty);
     }
 
     bool RsEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const

@@ -89,9 +89,12 @@ namespace factory_ui_visage
         canvas.text (caption_, boldFont (theme_.font.caption), visage::Font::kLeft,
                      L.caption.x, 0.0f, L.caption.w, h);
 
+        // Value readout, spaces stripped for the demo's tight "100%" / "-24.0dB"
+        // look (v2.1.0 RsLinkSlider uses a no-space suffix for the same effect).
+        std::string valueText = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        valueText.erase (std::remove (valueText.begin(), valueText.end(), ' '), valueText.end());
         canvas.setColor (visage::Color (p.accent));
-        canvas.text (factory_params::formatValue (desc, store_.value (index_), decimals_),
-                     boldFont (theme_.font.callout), visage::Font::kRight, L.value.x, 0.0f, L.value.w, h);
+        canvas.text (valueText, boldFont (theme_.font.callout), visage::Font::kRight, L.value.x, 0.0f, L.value.w, h);
 
         // Track + coral fill.
         const float trackY = L.track.y + (h - m.trackHeight) * 0.5f;

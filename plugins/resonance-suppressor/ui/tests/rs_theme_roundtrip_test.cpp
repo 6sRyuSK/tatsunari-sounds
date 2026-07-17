@@ -1,11 +1,14 @@
 // Host-side (no visage / no JUCE) unit check for the RS theme's analyser roles —
 // the RS analog of ui/visage/tests/theme_roundtrip_test.cpp. It guards the
-// "corrected roles" (design reference 2026-07-17): PRE + POST are thin SOLID
-// coral lines, the combined reduction PROFILE is a dashed muted-coral line, and
-// per-node fills are subtle. The compiled RsExtras::defaults() is the source of
-// truth (RsSuppressionCurveView reads it); theme-rs.json's rs.analyzer object is
-// the human-review mirror and must stay in sync — this test asserts both, and
-// that the OLD (mislabelled) keys are gone.
+// v2.1.0 look (AnalyzerStyle.h kV201Style, the shipped JUCE editor): the reduction
+// curtain is AreaFromZero teal (fill 0.28 / stroke 0.8 / 1px), PRE is a muted-taupe
+// FILLED area (0.22->0.02, no line), POST is a thin SOLID coral line, the combined
+// reduction PROFILE is a SOLID coral line (2.2px) + glow (0.22/5px), and each node
+// adds a translucent fill (0.12) + stroke (0.7). The compiled RsExtras::defaults()
+// is the source of truth (RsSuppressionCurveView reads it); theme-rs.json's
+// rs.analyzer object is the human-review mirror and must stay in sync — this test
+// asserts both, and that the OLD demo-look keys (dashed profile / from-top curtain)
+// are gone.
 //
 //   c++ -std=c++17 -I ../.. -I ../../../../ui/visage/include \
 //       -I ../../../../params/include -I ../../../../core/include \
@@ -52,22 +55,26 @@ int main(int argc, char** argv)
     using rs_ui::RsExtras;
     const RsExtras rs = RsExtras::defaults();
 
-    // 1) Compiled defaults carry the corrected analyser roles.
-    check("preColour is solid coral",      rs.preColour == 0xffff7a6bu, hex(rs.preColour));
-    check("preLineWidth == 2.0",           rs.preLineWidth == 2.0f);
+    // 1) Compiled defaults carry the v2.1.0 (kV201Style) analyser roles.
+    check("curtainFillAlpha == 0.28 (kV201 deltaFillAlpha)",   rs.curtainFillAlpha == 0.28f);
+    check("curtainStrokeAlpha == 0.8 (kV201 deltaStrokeAlpha)", rs.curtainStrokeAlpha == 0.8f);
+    check("curtainStrokeWidth == 1.0 (kV201 deltaStrokeWidth)", rs.curtainStrokeWidth == 1.0f);
+    check("preColour is muted taupe #b9a39b",  rs.preColour == 0xffb9a39bu, hex(rs.preColour));
+    check("preFillTopAlpha == 0.22",           rs.preFillTopAlpha == 0.22f);
+    check("preFillBotAlpha == 0.02",           rs.preFillBotAlpha == 0.02f);
     check("postColour is solid coral (kV201)", rs.postColour == 0xffff7a6bu, hex(rs.postColour));
-    check("postLineWidth == 1.4 (kV201)",  rs.postLineWidth == 1.4f);
-    check("postLineAlpha == 0.85 (kV201)", rs.postLineAlpha == 0.85f);
-    check("profileColour is muted coral",  rs.profileColour == 0xffe08a7fu, hex(rs.profileColour));
-    check("profileLineWidth == 1.5",       rs.profileLineWidth == 1.5f);
-    check("profileDashOn == 5.0",          rs.profileDashOn == 5.0f);
-    check("profileDashOff == 4.0",         rs.profileDashOff == 4.0f);
-    check("perNodeFillAlpha == 0.12",      rs.perNodeFillAlpha == 0.12f);
-    check("curtainFillAlpha == 0.34",      rs.curtainFillAlpha == 0.34f);
-    check("curtainClampFrac == 0.5",       rs.curtainClampFrac == 0.5f);
+    check("postLineWidth == 1.4 (kV201)",      rs.postLineWidth == 1.4f);
+    check("postLineAlpha == 0.85 (kV201)",     rs.postLineAlpha == 0.85f);
+    check("profileColour is accent coral (kV201)", rs.profileColour == 0xffff7a6bu, hex(rs.profileColour));
+    check("profileGlowAlpha == 0.22",          rs.profileGlowAlpha == 0.22f);
+    check("profileGlowWidth == 5.0",           rs.profileGlowWidth == 5.0f);
+    check("profileStrokeWidth == 2.2",         rs.profileStrokeWidth == 2.2f);
+    check("profileStrokeAlpha == 1.0",         rs.profileStrokeAlpha == 1.0f);
+    check("perNodeFillAlpha == 0.12",          rs.perNodeFillAlpha == 0.12f);
+    check("perNodeStrokeAlpha == 0.7",         rs.perNodeStrokeAlpha == 0.7f);
 
     // 2) theme-rs.json parses (shared-schema parts) AND its rs.analyzer mirror
-    //    matches the compiled defaults, with the old mislabelled keys removed.
+    //    matches the compiled defaults, with the old demo-look keys removed.
     const std::string path = argc > 1 ? argv[1] : "../theme-rs.json";
     std::string doc;
     if (FILE* f = std::fopen(path.c_str(), "rb"))
@@ -85,18 +92,23 @@ int main(int argc, char** argv)
         // the JSON's values match the compiled defaults, not that the file round-
         // trips through the strict shared parser (it intentionally carries top-level
         // "_comment" documentation the shared schema doesn't recognise).
+        check("json curtainFillAlpha == 0.28", valueOf(doc, "curtainFillAlpha") == "0.28", valueOf(doc, "curtainFillAlpha"));
+        check("json curtainStrokeAlpha == 0.8", valueOf(doc, "curtainStrokeAlpha") == "0.8", valueOf(doc, "curtainStrokeAlpha"));
+        check("json preColour == #ffb9a39b",   valueOf(doc, "preColour") == "#ffb9a39b", valueOf(doc, "preColour"));
+        check("json preFillTopAlpha == 0.22",   valueOf(doc, "preFillTopAlpha") == "0.22", valueOf(doc, "preFillTopAlpha"));
         check("json postColour == #ffff7a6b",  valueOf(doc, "postColour") == "#ffff7a6b", valueOf(doc, "postColour"));
-        check("json postLineWidth == 1.4",      valueOf(doc, "postLineWidth") == "1.4", valueOf(doc, "postLineWidth"));
-        check("json postLineAlpha == 0.85",     valueOf(doc, "postLineAlpha") == "0.85", valueOf(doc, "postLineAlpha"));
-        check("json profileColour == #ffe08a7f", valueOf(doc, "profileColour") == "#ffe08a7f", valueOf(doc, "profileColour"));
-        check("json profileDashOn == 5.0",      valueOf(doc, "profileDashOn") == "5.0", valueOf(doc, "profileDashOn"));
-        check("json profileDashOff == 4.0",     valueOf(doc, "profileDashOff") == "4.0", valueOf(doc, "profileDashOff"));
-        check("json perNodeFillAlpha == 0.12",  valueOf(doc, "perNodeFillAlpha") == "0.12", valueOf(doc, "perNodeFillAlpha"));
+        check("json profileColour == #ffff7a6b", valueOf(doc, "profileColour") == "#ffff7a6b", valueOf(doc, "profileColour"));
+        check("json profileGlowWidth == 5.0",   valueOf(doc, "profileGlowWidth") == "5.0", valueOf(doc, "profileGlowWidth"));
+        check("json profileStrokeWidth == 2.2", valueOf(doc, "profileStrokeWidth") == "2.2", valueOf(doc, "profileStrokeWidth"));
+        check("json perNodeStrokeAlpha == 0.7", valueOf(doc, "perNodeStrokeAlpha") == "0.7", valueOf(doc, "perNodeStrokeAlpha"));
 
-        // Old mislabelled roles must be gone (POST no longer dashed; no per-node stroke).
-        check("json drops postDashOn",       valueOf(doc, "postDashOn").empty());
-        check("json drops postDashOff",      valueOf(doc, "postDashOff").empty());
-        check("json drops perNodeStrokeAlpha", valueOf(doc, "perNodeStrokeAlpha").empty());
+        // Old demo-look keys must be GONE: dashed profile, from-top curtain clamp,
+        // separate PRE/profile line widths.
+        check("json drops profileDashOn",   valueOf(doc, "profileDashOn").empty(), valueOf(doc, "profileDashOn"));
+        check("json drops profileDashOff",  valueOf(doc, "profileDashOff").empty(), valueOf(doc, "profileDashOff"));
+        check("json drops curtainClampFrac", valueOf(doc, "curtainClampFrac").empty(), valueOf(doc, "curtainClampFrac"));
+        check("json drops preLineWidth",    valueOf(doc, "preLineWidth").empty(), valueOf(doc, "preLineWidth"));
+        check("json drops profileLineWidth", valueOf(doc, "profileLineWidth").empty(), valueOf(doc, "profileLineWidth"));
     }
 
     std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "ALL PASSED" : "FAILURES",

@@ -24,7 +24,7 @@
 //   * FREQ [+ SENS + WIDTH] compact mini-knobs (SENS/WIDTH bands only) in the
 //     right column.
 // Everything is drawn + hit-tested in this one frame (the badges/buttons are the
-// same hand-painted idiom as the JUCE original's bespoke juce::Button subclasses).
+// same hand-painted idiom as the shipped editor's bespoke Button subclasses).
 // Edits ride the ParamStore gesture path; Listen writes RsFeed::setListenNode.
 // GUI-thread only.
 //
@@ -51,6 +51,12 @@ namespace rs_ui
         // Re-sync the Listen toggle to the feed's live solo target.
         void refreshListen();
 
+        // Needle centre + tip (WINDOW px) of a mini-knob (0 = FREQ, 1 = SENS,
+        // 2 = WIDTH), computed through the SAME shared value->angle->tip helpers
+        // the draw path uses — the Playwright driver asserts a known value's
+        // needle-tip angle against an independent oracle (A2). False if hidden.
+        bool miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const;
+
         void draw (visage::Canvas& canvas) override;
         void resized() override;
         void mouseDown (const visage::MouseEvent& e) override;
@@ -71,6 +77,12 @@ namespace rs_ui
             bool visible = false;
             factory_params::RangeSpec range;
         };
+
+        // Shared mini-knob dial geometry (centre / radii / needle length + angle),
+        // so drawMiniKnob() and miniKnobTipInWindow() can never disagree on where
+        // the needle points.
+        struct MiniDial { float cx, cy, R, band, arcR, bodyR, len, toAng; };
+        MiniDial miniKnobDial (const MiniKnob& k) const;
 
         void computeLayout();
         void drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k);

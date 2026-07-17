@@ -1,6 +1,7 @@
 #include "RsNodePanel.h"
 
 #include "factory_ui_visage/Fonts.h"
+#include "factory_ui_visage/Knob.h" // shared knobAngleForNorm / knobNeedleTip (A2)
 #include "factory_params/Text.h"
 
 #include <algorithm>
@@ -15,9 +16,9 @@ namespace rs_ui
 
     namespace
     {
-        constexpr float kPi = 3.14159265358979323846f;
-        constexpr float kArcStart = 3.926990817f;  // 225 deg
-        constexpr float kArcEnd   = 8.639379797f;   // 495 deg
+        // (The mini-knob sweep endpoints now come from the shared KnobMetrics —
+        // theme_.base.knob.arcStart/arcEnd — via fuv::knobAngleForNorm, so the
+        // 225°/495° constants that used to live here are gone; A2.)
 
         // Native flatArc GPU band (JUCE angle convention: 0 = 12 o'clock, clockwise;
         // flatArc's mid + half-aperture map directly). A filled stroked Path would
@@ -163,6 +164,42 @@ namespace rs_ui
         return factory_params::formatValue (model_.store().desc (k.paramIndex), v, k.decimals);
     }
 
+    // Shared mini-knob dial geometry. value -> normalised -> ring/needle angle
+    // goes through the SHARED knob helper + the SHARED KnobMetrics sweep
+    // (fuv::knobAngleForNorm, theme_.base.knob), so a mini-knob points at exactly
+    // the same angle the footer Knob would for the same normalised value — ONE
+    // implementation, no duplicated 225°/495° constants (A2).
+    RsNodePanel::MiniDial RsNodePanel::miniKnobDial (const MiniKnob& k) const
+    {
+        const Rect& a = k.area;
+        const float labelH = 13.0f, valueH = 13.0f;
+        const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
+        const auto& km = theme_.base.knob;
+        MiniDial d;
+        d.R     = std::min (a.w, dialH) * 0.5f - 3.0f;
+        d.cx    = a.x + a.w * 0.5f;
+        d.cy    = dialTop + dialH * 0.5f;
+        d.band  = std::max (2.5f, d.R * 0.30f);
+        d.arcR  = d.R - d.band * 0.5f;
+        d.bodyR = std::max (2.0f, d.R - d.band);
+        d.len   = d.bodyR * km.needleLengthRatio;
+        const float norm = factory_params::convertTo0to1 (k.range, model_.store().value (k.paramIndex));
+        d.toAng = fuv::knobAngleForNorm (km, norm);
+        return d;
+    }
+
+    bool RsNodePanel::miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const
+    {
+        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
+        const MiniDial d = miniKnobDial (*ks[which]);
+        const visage::Point tip = fuv::knobNeedleTip (d.cx, d.cy, d.len, d.toAng);
+        const visage::Point o = positionInWindow();
+        cx = o.x + d.cx; cy = o.y + d.cy;
+        tx = o.x + tip.x; ty = o.y + tip.y;
+        return true;
+    }
+
     void RsNodePanel::drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k)
     {
         if (! k.visible) return;
@@ -173,33 +210,27 @@ namespace rs_ui
         canvas.text (k.label, boldFont (10.0f), visage::Font::kCenter, a.x, a.y, a.w, labelH);
 
         // Small donut + needle (design reference: NodePanel minis in salmon).
-        const auto& p = theme_.base.palette;
+        const auto& p  = theme_.base.palette;
+        const auto& km = theme_.base.knob;
         const std::uint32_t accent = theme_.rs.orange; // salmon #ff9472
-        const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
-        const float R = std::min (a.w, dialH) * 0.5f - 3.0f;
-        const float cx = a.x + a.w * 0.5f, cy = dialTop + dialH * 0.5f;
-        const float band = std::max (2.5f, R * 0.30f);
-        const float arcR = R - band * 0.5f;
-        const float norm = factory_params::convertTo0to1 (k.range, model_.store().value (k.paramIndex));
-        const float toAng = kArcStart + std::clamp (norm, 0.0f, 1.0f) * (kArcEnd - kArcStart);
+        const MiniDial d = miniKnobDial (k);
         constexpr float kTwoPi = 6.28318530718f;
 
         canvas.setColor (visage::Color (accent));
-        strokeArc (canvas, cx, cy, arcR, kArcStart, toAng, band);
+        strokeArc (canvas, d.cx, d.cy, d.arcR, km.arcStart, d.toAng, d.band);
         canvas.setColor (visage::Color (p.accentDim));
-        strokeArc (canvas, cx, cy, arcR, toAng, kArcEnd, band);
+        strokeArc (canvas, d.cx, d.cy, d.arcR, d.toAng, km.arcEnd, d.band);
         canvas.setColor (visage::Color (p.panelLo));
-        strokeArc (canvas, cx, cy, arcR, kArcEnd, kArcStart + kTwoPi, band);
+        strokeArc (canvas, d.cx, d.cy, d.arcR, km.arcEnd, km.arcStart + kTwoPi, d.band);
 
-        const float bodyR = std::max (2.0f, R - band);
         canvas.setColor (visage::Brush::radial (visage::Color (0xffffffff), visage::Color (p.panelLo),
-                                                visage::Point (cx, cy - bodyR * 0.28f), bodyR * 1.15f, bodyR * 1.15f));
-        canvas.circle (cx - bodyR, cy - bodyR, bodyR * 2.0f);
+                                                visage::Point (d.cx, d.cy - d.bodyR * 0.28f), d.bodyR * 1.15f, d.bodyR * 1.15f));
+        canvas.circle (d.cx - d.bodyR, d.cy - d.bodyR, d.bodyR * 2.0f);
         canvas.setColor (visage::Color (p.track));
-        canvas.ring (cx - R, cy - R, 2.0f * R, 1.0f);
-        const float len = bodyR * 0.9f;
+        canvas.ring (d.cx - d.R, d.cy - d.R, 2.0f * d.R, 1.0f);
+        const visage::Point tip = fuv::knobNeedleTip (d.cx, d.cy, d.len, d.toAng);
         canvas.setColor (visage::Color (accent));
-        canvas.segment (cx, cy, cx + len * std::sin (toAng), cy - len * std::cos (toAng), 2.5f, true);
+        canvas.segment (d.cx, d.cy, tip.x, tip.y, 2.5f, true);
 
         // value (accent)
         canvas.setColor (visage::Color (accent));

@@ -91,6 +91,9 @@ namespace rs_ui
         // --- layers ------------------------------------------------------------
         void computeLayout();
         void snapshotFeed();
+        // Resample a per-bin dB array onto `cols` evenly-spaced plot columns
+        // (screen-y out), for the downsampled-primitive spectra (A3).
+        void sampleSpectrumColumns (const std::vector<float>& bins, int cols, std::vector<float>& out) const;
         void drawPlotCard (visage::Canvas&);
         void drawGrid (visage::Canvas&);
         void drawAnalyzer (visage::Canvas&);

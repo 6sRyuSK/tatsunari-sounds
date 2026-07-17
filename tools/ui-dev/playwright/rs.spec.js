@@ -15,6 +15,8 @@
 //  10. resize renders at the min (940x657) and max (1320x922) layout sizes
 //  11. node-on-curve: an isolated band's dot rides the combined profile curve
 //  12. knob three-zone donut: the ring reads accent / accentDim / panelLo
+//  13. mini-knob needle angle: the SENS mini-knob points at its value's angle
+//      (shared value->angle mapping, ~+33 deg from top for 7.40 dB / [-30,30])
 // and captures rs-default.png / rs-busy.png / rs-min.png / rs-max.png / rs-knob-depth.png.
 //
 // Exit code 0 iff every assert passes.
@@ -294,6 +296,25 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     check("knob ring zones read accent / accentDim / panelLo",
       dA <= 30 && dD <= 30 && dZ <= 30,
       "accent " + JSON.stringify(accent) + " d" + dA + " | dim " + JSON.stringify(dim) + " d" + dD + " | dead " + JSON.stringify(dead) + " d" + dZ);
+  }
+
+  // --- 13. mini-knob needle angle (A2) -------------------------------------
+  // Open a band's NodePanel, set b0_sens to a known value, read the SENS mini-
+  // knob's needle centre+tip, and check the tip ANGLE (deg clockwise from 12
+  // o'clock) matches the INDEPENDENT oracle knobAngleForNorm = 225 + norm*270
+  // (the shipped v2.1.0 sweep), mapped to +/- from top. SENS 7.40 dB on [-30,30]
+  // -> norm 0.6233 -> ~+33.3 deg. This locks the mini-knob to the shared Knob's
+  // value->angle mapping (one implementation) so the needle can't drift again.
+  {
+    await page.evaluate(() => { window.rs.selectNode(2); window.ui.set("b0_sens", 7.4); window.ui.freeze(true); });
+    await wait(page, 120);
+    const tip = await page.evaluate(() => window.rs.miniKnobTip(1)); // 1 = SENS
+    const norm = (7.4 + 30) / 60;
+    const expectedDeg = norm * 270 - 135;                        // deg clockwise from top (== +33.3)
+    const measuredDeg = tip ? Math.atan2(tip.tx - tip.cx, tip.cy - tip.ty) * 180 / Math.PI : NaN;
+    check("mini-knob SENS needle points at the value's angle (~+33 deg from top)",
+      !!tip && Math.abs(measuredDeg - expectedDeg) <= 2.0 && Math.abs(expectedDeg - 33.3) < 1.0,
+      "measured=" + (tip ? measuredDeg.toFixed(1) : "null") + " expected=" + expectedDeg.toFixed(1));
   }
 
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));

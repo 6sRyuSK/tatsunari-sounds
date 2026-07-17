@@ -96,12 +96,12 @@ namespace factory_ui_visage
         const float band = R * m.lineWidthRatio;   // donut ring thickness
         const float arcR = R - band * 0.5f;         // ring centreline
         const float pos = currentNorm();
-        const float toAngle = m.arcStart + pos * (m.arcEnd - m.arcStart);
+        const float toAngle = knobAngleForNorm (m, pos);
 
-        // Outer drop shadow behind the whole knob (taupe .16, 0 4px 10px).
-        canvas.setColor (visage::Color (0x296b5750));
-        canvas.roundedRectangleShadow (cx - R + m.shadowOffsetX, cy - R + m.shadowOffsetY,
-                                       2.0f * R, 2.0f * R, R, m.shadowBlurFactor);
+        // NB: no outer drop shadow behind the whole knob — v2.1.0's RsLookAndFeel
+        // knob has none (the pale taupe ring it composited over the #fff4ee card
+        // read as an unwanted #e7dbd5 halo). Only the inner body shadow (below)
+        // is kept, matching v2.1.0's face treatment.
 
         // Full 360° flat donut in three solid zones of identical thickness `band`:
         //   (a) accent (per-knob colour) from the sweep start (−135°) to the value,
@@ -131,16 +131,20 @@ namespace factory_ui_visage
 
         // Needle: a rounded bar from the centre outward, in the knob's accent.
         const float len = bodyR * m.needleLengthRatio;
+        const visage::Point tip = knobNeedleTip (cx, cy, len, toAngle);
         canvas.setColor (visage::Color (accent));
-        canvas.segment (cx, cy, cx + len * std::sin (toAngle), cy - len * std::cos (toAngle), m.needleWidthPx, true);
+        canvas.segment (cx, cy, tip.x, tip.y, m.needleWidthPx, true);
 
         // Name above (muted, bold), value below (accent, bold).
         canvas.setColor (visage::Color (p.textSecondary));
         canvas.text (nameOverride_.empty() ? desc.name : nameOverride_,
                      boldFont (theme_.font.label), visage::Font::kCenter, 0.0f, 0.0f, width(), textH);
+        // Value readout, spaces stripped for the demo's tight "62%" / "120ms" look
+        // (v2.1.0 RsKnob does the same: getTextFromValue(...).removeCharacters(" ")).
+        std::string valueText = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        valueText.erase (std::remove (valueText.begin(), valueText.end(), ' '), valueText.end());
         canvas.setColor (visage::Color (accent));
-        canvas.text (factory_params::formatValue (desc, store_.value (index_), decimals_),
-                     boldFont (theme_.font.label), visage::Font::kCenter, 0.0f, height() - textH, width(), textH);
+        canvas.text (valueText, boldFont (theme_.font.label), visage::Font::kCenter, 0.0f, height() - textH, width(), textH);
     }
 
     void Knob::mouseDown (const visage::MouseEvent& e)

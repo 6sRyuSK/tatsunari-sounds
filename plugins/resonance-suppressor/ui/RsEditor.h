@@ -95,6 +95,9 @@ namespace rs_ui
         // ("preset" / "curve" / "ab" / "undo" / "redo" / "copy" / "bypass").
         bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
         bool nodeCentreInWindow (int id, float& x, float& y) const;
+        // Needle centre + tip (window px) of an OPEN node panel's mini-knob
+        // (0=FREQ, 1=SENS, 2=WIDTH) — the A2 needle-angle assert hook.
+        bool miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const;
         bool plotRectInWindow (float& x, float& y, float& w, float& h) const;
         void plotRectInWindowLocal (float& x, float& y, float& w, float& h) const; // editor-frame-local
 

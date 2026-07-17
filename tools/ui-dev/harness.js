@@ -64,7 +64,8 @@
     dropdownRowY:function (i)     { return cc('rs_dropdown_row_y', 'number', ['number'], [i]); },
     plotRect:    function ()      { var s = cc('rs_plot_rect', 'string', [], []); try { return JSON.parse(s); } catch (e) { return null; } },
     setSize:     function (w, h)  { cc('rs_set_size', null, ['number', 'number'], [w, h]); },
-    profileDbAt: function (hz)    { return cc('rs_profile_db_at', 'number', ['number'], [hz]); }
+    profileDbAt: function (hz)    { return cc('rs_profile_db_at', 'number', ['number'], [hz]); },
+    miniKnobTip: function (which) { var s = cc('rs_mini_knob_tip', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } }
   };
 
   // ---- dev nicety 1: theme.json hot reload ----------------------------------
