@@ -19,7 +19,21 @@
     lastError:   function ()      { return cc('ui_last_error', 'string', [], []); },
     accent:      function ()      { return cc('ui_get_accent', 'number', [], []) >>> 0; },
     widgetX:     function (id)    { return cc('ui_widget_x', 'number', ['string'], [id]); },
-    widgetY:     function (id)    { return cc('ui_widget_y', 'number', ['string'], [id]); }
+    widgetY:     function (id)    { return cc('ui_widget_y', 'number', ['string'], [id]); },
+
+    // --- P2b ---
+    // Rect (window px) of a control by param id or special name ("preset" /
+    // "spectrum" / "valueSetting"); null if unknown.
+    widgetRect:  function (key)   { var s = cc('ui_widget_rect', 'string', ['string'], [key]); try { return JSON.parse(s); } catch (e) { return null; } },
+    setFont:     function (name)  { return cc('ui_set_font', 'number', ['string'], [name]) === 1; },
+    font:        function ()      { return cc('ui_font', 'string', [], []); },
+    feedSpectrum:function (phase) { cc('ui_feed_spectrum', null, ['number'], [phase]); },
+    openDropdown:function (which) { return cc('ui_open_dropdown', 'number', ['number'], [which]) === 1; },
+    dropdownOpen:function ()      { return cc('ui_dropdown_open', 'number', [], []) === 1; },
+    dropdownCount:function ()     { return cc('ui_dropdown_item_count', 'number', [], []); },
+    dropdownX:   function (i)     { return cc('ui_dropdown_x', 'number', ['number'], [i]); },
+    dropdownRowY:function (i)     { return cc('ui_dropdown_row_y', 'number', ['number'], [i]); },
+    presetIndex: function ()      { return cc('ui_preset_index', 'number', [], []); }
   };
 
   // ---- dev nicety 1: theme.json hot reload ----------------------------------

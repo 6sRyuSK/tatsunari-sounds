@@ -62,6 +62,15 @@ add_library(factory_ui_visage STATIC
   src/Chrome.cpp
   src/Knob.cpp
   src/PillToggle.cpp
+  # --- Phase P2b widget set ---
+  src/Dropdown.cpp
+  src/PresetSelectorView.cpp
+  src/Segmented.cpp
+  src/IconButton.cpp
+  src/ValueSetting.cpp
+  src/LinkSlider.cpp
+  src/SpectrumModel.cpp
+  src/SpectrumView.cpp
 )
 
 target_compile_features(factory_ui_visage PUBLIC cxx_std_17)
@@ -90,4 +99,17 @@ if(NOT EMSCRIPTEN)
   )
   target_include_directories(factory_ui_visage_theme_test PRIVATE include)
   target_compile_features(factory_ui_visage_theme_test PRIVATE cxx_std_17)
+
+  # SpectrumModel is visage-free AND JUCE-free (pure maths + factory_core::FFT),
+  # so its spec/oracle check compiles with a plain host compiler like the theme
+  # test — only SpectrumModel.cpp is built (no visage), plus the core headers.
+  add_executable(factory_ui_visage_spectrum_test
+    tests/spectrum_model_test.cpp
+    src/SpectrumModel.cpp
+  )
+  target_include_directories(factory_ui_visage_spectrum_test PRIVATE
+    include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+  )
+  target_compile_features(factory_ui_visage_spectrum_test PRIVATE cxx_std_17)
 endif()

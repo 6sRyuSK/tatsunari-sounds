@@ -33,6 +33,7 @@ namespace factory_ui_visage
         std::uint32_t accent       = 0xffff7a6b; // coral
         std::uint32_t accentDim    = 0xffffd6cd; // pale coral
         std::uint32_t text         = 0xff6b5750; // soft cocoa
+        std::uint32_t textSecondary= 0xff8f7a72; // caption mid-tone (labels on cards)
         std::uint32_t textDim      = 0xffb9a39b; // muted
         std::uint32_t shadow       = 0x33d6a89a; // warm soft shadow
 
@@ -95,15 +96,83 @@ namespace factory_ui_visage
         float labelBold = 13.0f;
         float title     = 20.0f;
         float callout   = 14.0f;
+        float caption   = 11.0f; // small all-caps captions on cards (P2b widgets)
+    };
+
+    // Segmented-strip geometry (reference: rs::RsSegmented). A rounded track with
+    // an accent "pill" on the active segment.
+    struct SegmentedMetrics
+    {
+        float height           = 28.0f; // control height cap
+        float cornerRadius     = 9.0f;  // track corner (rs radius::badge)
+        float pillInset        = 3.0f;  // active-pill inset inside a cell (rs reduced(3))
+        float pillCornerRadius = 7.0f;  // active-pill corner (rs radius::badge - 2)
+    };
+
+    // Overlay dropdown list geometry (our own popup; visage has no combo).
+    struct DropdownMetrics
+    {
+        float rowHeight      = 26.0f;
+        float cornerRadius   = 10.0f;
+        float paddingX       = 10.0f;
+        float paddingY       = 6.0f;
+        float separatorInset = 10.0f;
+        float shadowBlur     = 16.0f;
+        float shadowOffsetY  = 6.0f;
+    };
+
+    // Square glyph button geometry (reference: rs::RsIconButton).
+    struct IconButtonMetrics
+    {
+        float cornerRadius     = 9.0f;
+        float glyphInsetFactor = 0.28f; // glyph area = bounds.reduced(height * this)
+    };
+
+    // Label+value row that opens a dropdown (reference: rs::RsValueSetting).
+    struct ValueSettingMetrics
+    {
+        float cornerRadius = 9.0f;
+        float paddingX     = 9.0f;
+        float iconSize     = 16.0f;
+    };
+
+    // Compact horizontal slider (reference: rs::RsLinkSlider).
+    struct LinkSliderMetrics
+    {
+        float cornerRadius   = 9.0f;
+        float paddingX       = 9.0f;
+        float trackHeight    = 7.0f;
+        float trackCorner    = 3.5f;
+        float captionColumn  = 76.0f;
+        float valueColumn    = 52.0f;
+        float glyphSize      = 16.0f;
+    };
+
+    // Spectrum-analyser display geometry + range (reference: SpectrumDisplay.h).
+    struct SpectrumMetrics
+    {
+        float cornerRadius    = 12.0f;
+        float topDb           = 0.0f;    // dB at the plot's top edge
+        float bottomDb        = -100.0f; // dB at the plot's foot
+        float traceWidth      = 2.0f;    // smoothed-trace stroke
+        float peakWidth       = 1.4f;    // peak-hold stroke
+        float fillTopAlpha    = 0.33f;   // area-fill alpha at the top
+        float fillBottomAlpha = 0.02f;   // area-fill alpha at the foot
     };
 
     struct Theme
     {
-        Palette       palette;
-        KnobMetrics   knob;
-        ToggleMetrics toggle;
-        CardMetrics   card;
-        FontSizes     font;
+        Palette             palette;
+        KnobMetrics         knob;
+        ToggleMetrics       toggle;
+        CardMetrics         card;
+        FontSizes           font;
+        SegmentedMetrics    segmented;
+        DropdownMetrics     dropdown;
+        IconButtonMetrics   iconButton;
+        ValueSettingMetrics valueSetting;
+        LinkSliderMetrics   linkSlider;
+        SpectrumMetrics     spectrum;
 
         // Compiled-in fallback carrying the values above verbatim.
         static Theme defaults();

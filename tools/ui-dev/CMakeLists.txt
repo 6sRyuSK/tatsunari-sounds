@@ -36,7 +36,7 @@ if(EMSCRIPTEN)
     -sGL_ENABLE_GET_PROC_ADDRESS
     -sALLOW_MEMORY_GROWTH
     --bind
-    "-sEXPORTED_FUNCTIONS=['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y']"
+    "-sEXPORTED_FUNCTIONS=['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y','_ui_widget_rect','_ui_set_font','_ui_font','_ui_feed_spectrum','_ui_open_dropdown','_ui_dropdown_open','_ui_dropdown_item_count','_ui_dropdown_x','_ui_dropdown_row_y','_ui_preset_index','_ui_last_mouse_x','_ui_last_mouse_y']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
   )
 

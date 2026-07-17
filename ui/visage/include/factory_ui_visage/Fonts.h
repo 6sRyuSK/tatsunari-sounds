@@ -5,23 +5,48 @@
 //
 // factory_ui_visage::Fonts — the design-system typeface.
 //
-// PROVISIONAL default typeface: **Quicksand** (Regular + Bold), SIL Open Font
-// License 1.1. Quicksand is a geometric-rounded sans that matches the factory's
-// warm, rounded "kawaii" look; the two weights are static instances (wght=400 /
-// wght=700) of the Google Fonts variable font, embedded at build time from
-// ui/visage/fonts/ (see ui/visage/fonts/OFL.txt for the licence).
+// DEFAULT typeface: **Quicksand** (Regular + Bold), SIL Open Font License 1.1.
+// Quicksand is a geometric-rounded sans that matches the factory's warm, rounded
+// "kawaii" look; the two weights are static instances (wght=400 / wght=700) of
+// the Google Fonts variable font, embedded at build time from ui/visage/fonts/.
 //
-// This is a PLACEHOLDER: the final typeface is an explicit human taste decision
-// (Phase P2b+). Swapping it is a ONE-PLACE change:
-//   1. drop the new .ttf files into ui/visage/fonts/
-//   2. point FACTORY_UI_VISAGE_FONTS in ui/visage/CMakeLists.txt at them
-//   3. update the two symbol names in src/Fonts.cpp
-// Nothing else in the widget code references a concrete font.
+// FONT-FAMILY SWITCH (Phase P2b taste comparison). The final typeface is an
+// explicit human taste decision, so the library embeds THREE candidate families
+// and picks between them at RUNTIME via a single global selector:
+//   * Quicksand            — the current default (unchanged until a human picks)
+//   * Nunito               — OFL, static 400/700
+//   * M PLUS Rounded 1c    — OFL, Latin subset 400/700 (the full CJK face is huge)
+// See ui/visage/fonts/*-OFL.txt for the licences. `regularFont`/`boldFont` return
+// the ACTIVE family's face, so a `setFontFamily(...)` call followed by a redraw
+// re-types the whole UI with no rebuild. The default stays Quicksand; nothing in
+// the widget code names a concrete face — it all goes through here.
+//
+// Adding/removing a candidate is a one-place change: drop the .ttf into
+// ui/visage/fonts/ (the CMake glob embeds it) and extend the switch in Fonts.cpp.
 //
 namespace factory_ui_visage
 {
-    // A visage::Font at the given pixel size. `sizePx` is a logical size; the
-    // canvas applies the DPI scale when the font is drawn via canvas.text().
+    enum class FontFamily
+    {
+        Quicksand, // default
+        Nunito,
+        MPlus
+    };
+
+    // The active family (default Quicksand). UI-thread only.
+    void       setFontFamily (FontFamily family);
+    FontFamily fontFamily();
+
+    // Set by lowercase name ("quicksand" | "nunito" | "mplus"). Returns false for
+    // an unknown name (the active family is left unchanged) so callers/bridges can
+    // report a bad value instead of silently doing nothing.
+    bool setFontFamilyByName (const char* name);
+
+    // The active family's short name ("quicksand" | "nunito" | "mplus").
+    const char* fontFamilyName();
+
+    // A visage::Font at the given pixel size, in the ACTIVE family. `sizePx` is a
+    // logical size; the canvas applies the DPI scale when drawn via canvas.text().
     visage::Font regularFont (float sizePx);
     visage::Font boldFont (float sizePx);
 }

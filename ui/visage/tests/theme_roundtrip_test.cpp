@@ -67,6 +67,16 @@ int main(int argc, char** argv)
     check("card.cornerRadius==10", fileTheme.card.cornerRadius == 10.0f);
     check("font.title==20",        fileTheme.font.title == 20.0f);
 
+    // 4b) Spot-check the P2b widget metrics + the caption mid-tone colour.
+    check("palette.textSecondary", p.textSecondary == 0xff8f7a72u, hex(p.textSecondary));
+    check("font.caption==11",              fileTheme.font.caption == 11.0f);
+    check("segmented.cornerRadius==9",     fileTheme.segmented.cornerRadius == 9.0f);
+    check("dropdown.rowHeight==26",        fileTheme.dropdown.rowHeight == 26.0f);
+    check("iconButton.glyphInsetFactor",   fileTheme.iconButton.glyphInsetFactor > 0.279f && fileTheme.iconButton.glyphInsetFactor < 0.281f);
+    check("linkSlider.valueColumn==52",    fileTheme.linkSlider.valueColumn == 52.0f);
+    check("spectrum.bottomDb==-100",       fileTheme.spectrum.bottomDb == -100.0f);
+    check("spectrum.topDb==0",             fileTheme.spectrum.topDb == 0.0f);
+
     // 5) Malformed input HARD-FAILS with a message (no exceptions on tryParse).
     Theme dummy;
     check("reject truncated JSON",  !Theme::tryParse("{", dummy, err), err);
@@ -74,8 +84,12 @@ int main(int argc, char** argv)
     check("reject wrong type",      !Theme::tryParse("{\"knob\":{\"glowAlpha\":\"x\"}}", dummy, err), err);
     check("reject unknown key",     !Theme::tryParse("{\"palette\":{\"nope\":\"#ffffffff\"}}", dummy, err), err);
     check("reject non-object root", !Theme::tryParse("[1,2,3]", dummy, err), err);
+    check("reject unknown key in new section",
+          !Theme::tryParse("{\"spectrum\":{\"nope\":1}}", dummy, err), err);
     check("accept partial override (accent only)",
           Theme::tryParse("{\"palette\":{\"accent\":\"#ff112233\"}}", dummy, err) && dummy.palette.accent == 0xff112233u);
+    check("accept partial override (spectrum.bottomDb)",
+          Theme::tryParse("{\"spectrum\":{\"bottomDb\":-96}}", dummy, err) && dummy.spectrum.bottomDb == -96.0f);
 
     std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "ALL PASSED" : "FAILURES",
                 g_failures, g_failures == 1 ? "" : "s");

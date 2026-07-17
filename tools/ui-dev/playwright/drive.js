@@ -56,6 +56,46 @@ function notBlank(stats) {
   return stats.distinctColors >= 8 && stats.lumaStdDev >= 8;
 }
 
+// Stats over a sub-rectangle of a PNG buffer (window px == canvas buffer px here).
+function analyzeRegion(buf, rect) {
+  const png = PNG.sync.read(buf);
+  const { width, height, data } = png;
+  const x0 = Math.max(0, Math.floor(rect.x)), y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(width, Math.ceil(rect.x + rect.w)), y1 = Math.min(height, Math.ceil(rect.y + rect.h));
+  const buckets = new Set();
+  let n = 0, sum = 0, sumSq = 0;
+  for (let y = y0; y < y1; y += 2) {
+    for (let x = x0; x < x1; x += 2) {
+      const i = (y * width + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      buckets.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      n++; sum += luma; sumSq += luma * luma;
+    }
+  }
+  const mean = sum / Math.max(1, n);
+  const variance = sumSq / Math.max(1, n) - mean * mean;
+  return { sampledPixels: n, distinctColors: buckets.size,
+           lumaMean: +mean.toFixed(2), lumaStdDev: +Math.sqrt(Math.max(0, variance)).toFixed(2) };
+}
+
+// Mean absolute per-channel pixel difference between two PNG buffers over a rect.
+function regionMeanAbsDiff(bufA, bufB, rect) {
+  const a = PNG.sync.read(bufA), b = PNG.sync.read(bufB);
+  const width = Math.min(a.width, b.width), height = Math.min(a.height, b.height);
+  const x0 = Math.max(0, Math.floor(rect.x)), y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(width, Math.ceil(rect.x + rect.w)), y1 = Math.min(height, Math.ceil(rect.y + rect.h));
+  let sum = 0, n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * width + x) * 4;
+      sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+      n += 3;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
 async function launch(viewport) {
   const browser = await chromium.launch({
     executablePath: CHROME,
@@ -115,7 +155,7 @@ async function probeWebGL(page) {
   });
 }
 
-module.exports = { CHROME, FLAGS, analyzePNG, notBlank, launch, waitReady, probeWebGL };
+module.exports = { CHROME, FLAGS, analyzePNG, notBlank, analyzeRegion, regionMeanAbsDiff, launch, waitReady, probeWebGL };
 
 // Standalone use: `node drive.js <url> <out.png>` — load + non-blank check.
 if (require.main === module) {

@@ -337,7 +337,9 @@ namespace factory_ui_visage
         // Start from the compiled-in defaults; override every present key.
         Theme t = Theme::defaults();
 
-        if (! checkNoUnknownKeys (root, { "palette", "knob", "toggle", "card", "font" }, "theme", error))
+        if (! checkNoUnknownKeys (root, { "palette", "knob", "toggle", "card", "font",
+                                          "segmented", "dropdown", "iconButton", "valueSetting",
+                                          "linkSlider", "spectrum" }, "theme", error))
             return false;
 
         if (const JsonValue* p = root.find ("palette"))
@@ -345,8 +347,8 @@ namespace factory_ui_visage
             if (p->type != JsonValue::Type::Object)
                 return (error = "'palette' must be an object"), false;
             if (! checkNoUnknownKeys (*p, { "background", "backgroundLo", "panel", "panelLo", "track",
-                                            "accent", "accentDim", "text", "textDim", "shadow",
-                                            "bandColours" }, "palette", error))
+                                            "accent", "accentDim", "text", "textSecondary", "textDim",
+                                            "shadow", "bandColours" }, "palette", error))
                 return false;
 
             const auto col = [&] (const char* key, std::uint32_t& dst) -> bool
@@ -362,8 +364,9 @@ namespace factory_ui_visage
             if (! col ("track",        t.palette.track))        return false;
             if (! col ("accent",       t.palette.accent))       return false;
             if (! col ("accentDim",    t.palette.accentDim))    return false;
-            if (! col ("text",         t.palette.text))         return false;
-            if (! col ("textDim",      t.palette.textDim))      return false;
+            if (! col ("text",         t.palette.text))          return false;
+            if (! col ("textSecondary",t.palette.textSecondary)) return false;
+            if (! col ("textDim",      t.palette.textDim))       return false;
             if (! col ("shadow",       t.palette.shadow))       return false;
 
             if (const JsonValue* bc = p->find ("bandColours"))
@@ -455,7 +458,7 @@ namespace factory_ui_visage
         {
             if (f->type != JsonValue::Type::Object)
                 return (error = "'font' must be an object"), false;
-            if (! checkNoUnknownKeys (*f, { "label", "labelBold", "title", "callout" }, "font", error))
+            if (! checkNoUnknownKeys (*f, { "label", "labelBold", "title", "callout", "caption" }, "font", error))
                 return false;
 
             const auto n = [&] (const char* key, float& dst) -> bool
@@ -468,6 +471,125 @@ namespace factory_ui_visage
             if (! n ("labelBold", t.font.labelBold)) return false;
             if (! n ("title",     t.font.title))     return false;
             if (! n ("callout",   t.font.callout))   return false;
+            if (! n ("caption",   t.font.caption))   return false;
+        }
+
+        if (const JsonValue* s = root.find ("segmented"))
+        {
+            if (s->type != JsonValue::Type::Object)
+                return (error = "'segmented' must be an object"), false;
+            if (! checkNoUnknownKeys (*s, { "height", "cornerRadius", "pillInset",
+                                            "pillCornerRadius" }, "segmented", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = s->find (key))
+                    return asNumber (*v, dst, std::string ("segmented.") + key, error);
+                return true;
+            };
+            if (! n ("height",           t.segmented.height))           return false;
+            if (! n ("cornerRadius",     t.segmented.cornerRadius))     return false;
+            if (! n ("pillInset",        t.segmented.pillInset))        return false;
+            if (! n ("pillCornerRadius", t.segmented.pillCornerRadius)) return false;
+        }
+
+        if (const JsonValue* d = root.find ("dropdown"))
+        {
+            if (d->type != JsonValue::Type::Object)
+                return (error = "'dropdown' must be an object"), false;
+            if (! checkNoUnknownKeys (*d, { "rowHeight", "cornerRadius", "paddingX", "paddingY",
+                                            "separatorInset", "shadowBlur", "shadowOffsetY" }, "dropdown", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = d->find (key))
+                    return asNumber (*v, dst, std::string ("dropdown.") + key, error);
+                return true;
+            };
+            if (! n ("rowHeight",      t.dropdown.rowHeight))      return false;
+            if (! n ("cornerRadius",   t.dropdown.cornerRadius))   return false;
+            if (! n ("paddingX",       t.dropdown.paddingX))       return false;
+            if (! n ("paddingY",       t.dropdown.paddingY))       return false;
+            if (! n ("separatorInset", t.dropdown.separatorInset)) return false;
+            if (! n ("shadowBlur",     t.dropdown.shadowBlur))     return false;
+            if (! n ("shadowOffsetY",  t.dropdown.shadowOffsetY))  return false;
+        }
+
+        if (const JsonValue* b = root.find ("iconButton"))
+        {
+            if (b->type != JsonValue::Type::Object)
+                return (error = "'iconButton' must be an object"), false;
+            if (! checkNoUnknownKeys (*b, { "cornerRadius", "glyphInsetFactor" }, "iconButton", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = b->find (key))
+                    return asNumber (*v, dst, std::string ("iconButton.") + key, error);
+                return true;
+            };
+            if (! n ("cornerRadius",     t.iconButton.cornerRadius))     return false;
+            if (! n ("glyphInsetFactor", t.iconButton.glyphInsetFactor)) return false;
+        }
+
+        if (const JsonValue* vs = root.find ("valueSetting"))
+        {
+            if (vs->type != JsonValue::Type::Object)
+                return (error = "'valueSetting' must be an object"), false;
+            if (! checkNoUnknownKeys (*vs, { "cornerRadius", "paddingX", "iconSize" }, "valueSetting", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = vs->find (key))
+                    return asNumber (*v, dst, std::string ("valueSetting.") + key, error);
+                return true;
+            };
+            if (! n ("cornerRadius", t.valueSetting.cornerRadius)) return false;
+            if (! n ("paddingX",     t.valueSetting.paddingX))     return false;
+            if (! n ("iconSize",     t.valueSetting.iconSize))     return false;
+        }
+
+        if (const JsonValue* ls = root.find ("linkSlider"))
+        {
+            if (ls->type != JsonValue::Type::Object)
+                return (error = "'linkSlider' must be an object"), false;
+            if (! checkNoUnknownKeys (*ls, { "cornerRadius", "paddingX", "trackHeight", "trackCorner",
+                                             "captionColumn", "valueColumn", "glyphSize" }, "linkSlider", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = ls->find (key))
+                    return asNumber (*v, dst, std::string ("linkSlider.") + key, error);
+                return true;
+            };
+            if (! n ("cornerRadius",  t.linkSlider.cornerRadius))  return false;
+            if (! n ("paddingX",      t.linkSlider.paddingX))      return false;
+            if (! n ("trackHeight",   t.linkSlider.trackHeight))   return false;
+            if (! n ("trackCorner",   t.linkSlider.trackCorner))   return false;
+            if (! n ("captionColumn", t.linkSlider.captionColumn)) return false;
+            if (! n ("valueColumn",   t.linkSlider.valueColumn))   return false;
+            if (! n ("glyphSize",     t.linkSlider.glyphSize))     return false;
+        }
+
+        if (const JsonValue* sp = root.find ("spectrum"))
+        {
+            if (sp->type != JsonValue::Type::Object)
+                return (error = "'spectrum' must be an object"), false;
+            if (! checkNoUnknownKeys (*sp, { "cornerRadius", "topDb", "bottomDb", "traceWidth",
+                                             "peakWidth", "fillTopAlpha", "fillBottomAlpha" }, "spectrum", error))
+                return false;
+            const auto n = [&] (const char* key, float& dst) -> bool
+            {
+                if (const JsonValue* v = sp->find (key))
+                    return asNumber (*v, dst, std::string ("spectrum.") + key, error);
+                return true;
+            };
+            if (! n ("cornerRadius",    t.spectrum.cornerRadius))    return false;
+            if (! n ("topDb",           t.spectrum.topDb))           return false;
+            if (! n ("bottomDb",        t.spectrum.bottomDb))        return false;
+            if (! n ("traceWidth",      t.spectrum.traceWidth))      return false;
+            if (! n ("peakWidth",       t.spectrum.peakWidth))       return false;
+            if (! n ("fillTopAlpha",    t.spectrum.fillTopAlpha))    return false;
+            if (! n ("fillBottomAlpha", t.spectrum.fillBottomAlpha)) return false;
         }
 
         out = t;
@@ -505,8 +627,9 @@ namespace factory_ui_visage
         o << "    \"track\": "        << colour (palette.track)        << ",\n";
         o << "    \"accent\": "       << colour (palette.accent)       << ",\n";
         o << "    \"accentDim\": "    << colour (palette.accentDim)    << ",\n";
-        o << "    \"text\": "         << colour (palette.text)         << ",\n";
-        o << "    \"textDim\": "      << colour (palette.textDim)      << ",\n";
+        o << "    \"text\": "          << colour (palette.text)          << ",\n";
+        o << "    \"textSecondary\": " << colour (palette.textSecondary) << ",\n";
+        o << "    \"textDim\": "        << colour (palette.textDim)       << ",\n";
         o << "    \"shadow\": "       << colour (palette.shadow)       << ",\n";
         o << "    \"bandColours\": [";
         for (std::size_t i = 0; i < palette.bandColours.size(); ++i)
@@ -543,7 +666,50 @@ namespace factory_ui_visage
         o << "    \"label\": "     << num (font.label)     << ",\n";
         o << "    \"labelBold\": " << num (font.labelBold) << ",\n";
         o << "    \"title\": "     << num (font.title)     << ",\n";
-        o << "    \"callout\": "   << num (font.callout)   << "\n  }\n";
+        o << "    \"callout\": "   << num (font.callout)   << ",\n";
+        o << "    \"caption\": "   << num (font.caption)   << "\n  },\n";
+
+        o << "  \"segmented\": {\n";
+        o << "    \"height\": "           << num (segmented.height)           << ",\n";
+        o << "    \"cornerRadius\": "     << num (segmented.cornerRadius)     << ",\n";
+        o << "    \"pillInset\": "        << num (segmented.pillInset)        << ",\n";
+        o << "    \"pillCornerRadius\": " << num (segmented.pillCornerRadius) << "\n  },\n";
+
+        o << "  \"dropdown\": {\n";
+        o << "    \"rowHeight\": "      << num (dropdown.rowHeight)      << ",\n";
+        o << "    \"cornerRadius\": "   << num (dropdown.cornerRadius)   << ",\n";
+        o << "    \"paddingX\": "       << num (dropdown.paddingX)       << ",\n";
+        o << "    \"paddingY\": "       << num (dropdown.paddingY)       << ",\n";
+        o << "    \"separatorInset\": " << num (dropdown.separatorInset) << ",\n";
+        o << "    \"shadowBlur\": "     << num (dropdown.shadowBlur)     << ",\n";
+        o << "    \"shadowOffsetY\": "  << num (dropdown.shadowOffsetY)  << "\n  },\n";
+
+        o << "  \"iconButton\": {\n";
+        o << "    \"cornerRadius\": "     << num (iconButton.cornerRadius)     << ",\n";
+        o << "    \"glyphInsetFactor\": " << num (iconButton.glyphInsetFactor) << "\n  },\n";
+
+        o << "  \"valueSetting\": {\n";
+        o << "    \"cornerRadius\": " << num (valueSetting.cornerRadius) << ",\n";
+        o << "    \"paddingX\": "     << num (valueSetting.paddingX)     << ",\n";
+        o << "    \"iconSize\": "     << num (valueSetting.iconSize)     << "\n  },\n";
+
+        o << "  \"linkSlider\": {\n";
+        o << "    \"cornerRadius\": "  << num (linkSlider.cornerRadius)  << ",\n";
+        o << "    \"paddingX\": "      << num (linkSlider.paddingX)      << ",\n";
+        o << "    \"trackHeight\": "   << num (linkSlider.trackHeight)   << ",\n";
+        o << "    \"trackCorner\": "   << num (linkSlider.trackCorner)   << ",\n";
+        o << "    \"captionColumn\": " << num (linkSlider.captionColumn) << ",\n";
+        o << "    \"valueColumn\": "   << num (linkSlider.valueColumn)   << ",\n";
+        o << "    \"glyphSize\": "     << num (linkSlider.glyphSize)     << "\n  },\n";
+
+        o << "  \"spectrum\": {\n";
+        o << "    \"cornerRadius\": "    << num (spectrum.cornerRadius)    << ",\n";
+        o << "    \"topDb\": "           << num (spectrum.topDb)           << ",\n";
+        o << "    \"bottomDb\": "        << num (spectrum.bottomDb)        << ",\n";
+        o << "    \"traceWidth\": "      << num (spectrum.traceWidth)      << ",\n";
+        o << "    \"peakWidth\": "       << num (spectrum.peakWidth)       << ",\n";
+        o << "    \"fillTopAlpha\": "    << num (spectrum.fillTopAlpha)    << ",\n";
+        o << "    \"fillBottomAlpha\": " << num (spectrum.fillBottomAlpha) << "\n  }\n";
         o << "}\n";
         return o.str();
     }
@@ -558,6 +724,7 @@ namespace factory_ui_visage
             && palette.accent == o.palette.accent
             && palette.accentDim == o.palette.accentDim
             && palette.text == o.palette.text
+            && palette.textSecondary == o.palette.textSecondary
             && palette.textDim == o.palette.textDim
             && palette.shadow == o.palette.shadow
             && palette.bandColours == o.palette.bandColours
@@ -586,6 +753,37 @@ namespace factory_ui_visage
             && font.label == o.font.label
             && font.labelBold == o.font.labelBold
             && font.title == o.font.title
-            && font.callout == o.font.callout;
+            && font.callout == o.font.callout
+            && font.caption == o.font.caption
+            && segmented.height == o.segmented.height
+            && segmented.cornerRadius == o.segmented.cornerRadius
+            && segmented.pillInset == o.segmented.pillInset
+            && segmented.pillCornerRadius == o.segmented.pillCornerRadius
+            && dropdown.rowHeight == o.dropdown.rowHeight
+            && dropdown.cornerRadius == o.dropdown.cornerRadius
+            && dropdown.paddingX == o.dropdown.paddingX
+            && dropdown.paddingY == o.dropdown.paddingY
+            && dropdown.separatorInset == o.dropdown.separatorInset
+            && dropdown.shadowBlur == o.dropdown.shadowBlur
+            && dropdown.shadowOffsetY == o.dropdown.shadowOffsetY
+            && iconButton.cornerRadius == o.iconButton.cornerRadius
+            && iconButton.glyphInsetFactor == o.iconButton.glyphInsetFactor
+            && valueSetting.cornerRadius == o.valueSetting.cornerRadius
+            && valueSetting.paddingX == o.valueSetting.paddingX
+            && valueSetting.iconSize == o.valueSetting.iconSize
+            && linkSlider.cornerRadius == o.linkSlider.cornerRadius
+            && linkSlider.paddingX == o.linkSlider.paddingX
+            && linkSlider.trackHeight == o.linkSlider.trackHeight
+            && linkSlider.trackCorner == o.linkSlider.trackCorner
+            && linkSlider.captionColumn == o.linkSlider.captionColumn
+            && linkSlider.valueColumn == o.linkSlider.valueColumn
+            && linkSlider.glyphSize == o.linkSlider.glyphSize
+            && spectrum.cornerRadius == o.spectrum.cornerRadius
+            && spectrum.topDb == o.spectrum.topDb
+            && spectrum.bottomDb == o.spectrum.bottomDb
+            && spectrum.traceWidth == o.spectrum.traceWidth
+            && spectrum.peakWidth == o.spectrum.peakWidth
+            && spectrum.fillTopAlpha == o.spectrum.fillTopAlpha
+            && spectrum.fillBottomAlpha == o.spectrum.fillBottomAlpha;
     }
 }
