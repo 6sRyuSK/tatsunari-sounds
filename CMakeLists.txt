@@ -83,3 +83,22 @@ foreach(_dir ${_plugin_dirs})
     add_subdirectory(${_dir})
   endif()
 endforeach()
+
+# --- CLAP coexistence (Phase P4, chunk 3a) — OPT-IN, OFF by default ----------
+# When OFF (the default, and what ci.yml configures), NOTHING CLAP is fetched or
+# built: no clap / clap-wrapper / vst3sdk FetchContent, no shell/ target. The
+# shipping JUCE VST3/AU gate is therefore completely unaffected. Only when the
+# operator passes -DFACTORY_RS_CLAP=ON (clap.yml) is the CLAP shell assembled —
+# a parallel build alongside the untouched JUCE processor. add_subdirectory(shell)
+# performs the pinned SDK FetchContent (see shell/cmake/FactoryClapPlugin.cmake).
+option(FACTORY_RS_CLAP "Build the RS CLAP shell (coexistence; fetches CLAP SDKs)" OFF)
+if(FACTORY_RS_CLAP)
+  # The impl + clap-wrapper's own static libs (base-sdk-vst3, the per-target VST3
+  # wrapper glue) are linked into MODULE (shared) libraries, so they must be PIC.
+  # Set it here — the root scope — so BOTH add_subdirectory()s below (and the
+  # clap-wrapper targets they create) inherit it; the JUCE targets above are
+  # already defined and unaffected.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  add_subdirectory(shell)
+  add_subdirectory(plugins/resonance-suppressor/shell)
+endif()
