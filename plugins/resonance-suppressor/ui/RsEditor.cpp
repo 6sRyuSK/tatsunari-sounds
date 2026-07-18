@@ -29,18 +29,28 @@ namespace rs_ui
             { "release", "REL",    rsTheme_.rs.amber, 2 },
             { "tilt",    "TILT",   rsTheme_.rs.mint,  0 },
         };
+        int ki = 0;
         for (const KnobDef& d : kdefs)
         {
             auto knob = std::make_unique<fuv::Knob> (store_, idx (d.id), base, d.decimals);
             knob->setNameOverride (d.label);
             if (d.accent != 0) knob->setAccentColour (d.accent);
+            // Match the shipped JUCE RsKnob proportions (round-3 fixes 2 + 7): the
+            // first two (DEPTH / DETAIL) are the big knobs, the rest (ATK/REL/TILT)
+            // are the minis. big = name-row 16 / value-row 17, fonts 12 / 13; small =
+            // rows 14 / 14, fonts 10 / 11; both fill the cell (0 dial inset) so the
+            // dial diameters equal the JUCE ones and the minis stop reading too small.
+            if (ki < 2) knob->setDialProfile (16.0f, 17.0f, 12.0f, 13.0f, 0.0f);
+            else        knob->setDialProfile (14.0f, 14.0f, 10.0f, 11.0f, 0.0f);
             addChild (knob.get());
             knobs_.push_back (std::move (knob));
+            ++ki;
         }
 
         // --- MODE + settings -------------------------------------------------
         modeSeg_ = std::make_unique<fuv::Segmented> (store_, idx ("mode"), base);
         modeSeg_->setGlyphs ({ fuv::icons::modeSoft(), fuv::icons::modeHard() }); // Soft bell / Hard square
+        modeSeg_->setLabelFontPx (12.0f); // JUCE RsSegmented text is 12 px (round-3 fix 2)
         addChild (modeSeg_.get());
 
         qualitySet_ = std::make_unique<fuv::ValueSetting> (store_, idx ("quality"), base, fuv::icons::quality(), "QUALITY");
@@ -56,6 +66,13 @@ namespace rs_ui
         linkAmt_ = std::make_unique<fuv::LinkSlider> (store_, idx ("linkAmt"), base, "STEREO LINK", fuv::icons::link(), 0);
         mix_     = std::make_unique<fuv::LinkSlider> (store_, idx ("mix"), base, "MIX", 0);
         out_     = std::make_unique<fuv::LinkSlider> (store_, idx ("out"), base, "OUT", 1);
+        // Caption-column widths per the JUCE RsLinkSlider (round-3 fix 3): STEREO
+        // LINK 86, MIX / OUT 34. The shared 76 px theme default was too wide for the
+        // short MIX / OUT captions, eating into their track (the user's "narrower
+        // than the original" report); 34 restores the JUCE track width.
+        linkAmt_->setCaptionColumnPx (86.0f);
+        mix_->setCaptionColumnPx (34.0f);
+        out_->setCaptionColumnPx (34.0f);
         addChild (linkAmt_.get()); addChild (mix_.get()); addChild (out_.get());
 
         // --- pill cells ------------------------------------------------------
@@ -78,6 +95,7 @@ namespace rs_ui
         copyBtn_ = std::make_unique<fuv::IconButton> (base, fuv::icons::copy(), fuv::IconButton::Mode::momentary);
         copyBtn_->onClick = [this] { copyAb(); };
         addChild (undoBtn_.get()); addChild (redoBtn_.get()); addChild (copyBtn_.get());
+        updateAbUi(); // put the copy button in directional "A->B" mode, synced to the slot (fix 4)
 
         // --- preset selector -------------------------------------------------
         preset_ = std::make_unique<fuv::PresetSelectorView> (base);
@@ -205,7 +223,16 @@ namespace rs_ui
     void RsEditor::setAbSlot (int slot)
     {
         ab_.setActiveSlot (slot);
+        updateAbUi();       // flip the copy arrow to reflect the new active slot (fix 4)
         onStateReplaced();
+    }
+
+    void RsEditor::updateAbUi()
+    {
+        // Directional copy affordance: A active => "A->B" (arrow right); B active =>
+        // "B->A" (arrow left). Letters are fixed; only the arrow flips — matching the
+        // shipped JUCE RsIconButton directional Copy button (round-3 fix 4).
+        if (copyBtn_) copyBtn_->setDirection (ab_.activeSlot() != 0);
     }
 
     void RsEditor::copyAb() { ab_.copyActiveToOther(); redrawAll(); }

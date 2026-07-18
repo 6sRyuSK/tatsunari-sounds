@@ -27,6 +27,14 @@ namespace factory_ui_visage
         void setToggleState (bool on);
         bool toggleState() const { return on_; }
 
+        // Directional A/B copy affordance (round-3 fix 4): instead of a glyph, draw
+        // fixed "A" (left) / "B" (right) letters in the accent with an arrow between
+        // them; only the arrow flips to show the copy direction. reversed=false =>
+        // "A->B" (arrow points right), reversed=true => "B->A" (arrow points left).
+        // Matches the shipped JUCE RsIconButton directional mode. Calling this puts
+        // the button in directional mode; setGlyph() switches it back to a glyph.
+        void setDirection (bool reversed) { directional_ = true; reversedDir_ = reversed; redraw(); }
+
         // Dim the glyph (a disabled affordance, e.g. Undo/Redo with nothing to
         // undo). Purely visual — the owner still gates the action in onClick.
         void setDimmed (bool dim);
@@ -49,5 +57,7 @@ namespace factory_ui_visage
         bool hover_ = false;
         bool down_ = false;
         bool dimmed_ = false;
+        bool directional_ = false; // draw A->B letters instead of a glyph (fix 4)
+        bool reversedDir_ = false; // false = A->B, true = B->A
     };
 }

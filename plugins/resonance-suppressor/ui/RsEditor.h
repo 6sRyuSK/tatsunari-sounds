@@ -98,6 +98,11 @@ namespace rs_ui
         // Needle centre + tip (window px) of an OPEN node panel's mini-knob
         // (0=FREQ, 1=SENS, 2=WIDTH) — the A2 needle-angle assert hook.
         bool miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const;
+        // Mini-knob ring geometry (window px) for the arc-vs-needle assert (fix 6).
+        bool miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const
+        { return nodePanel_ && nodePanel_->isVisible() && nodePanel_->miniKnobDialInWindow (which, cx, cy, arcR); }
+        // Active Pre/Post/Both segment (0/1/2) for the per-segment assert (fix 8).
+        int  analyzerModeSegment() const { return curve_ ? curve_->analyzerModeSegment() : 2; }
         bool plotRectInWindow (float& x, float& y, float& w, float& h) const;
         void plotRectInWindowLocal (float& x, float& y, float& w, float& h) const; // editor-frame-local
 
@@ -114,6 +119,7 @@ namespace rs_ui
         void   commitUndo();
         void   applyHistory (const std::vector<float>& snap);
         void   onStateReplaced();      // clear undo + refresh after preset / A-B load
+        void   updateAbUi();           // sync the directional copy button to the active slot (fix 4)
         void   refreshUndoButtons();
         void   selectNode (int id);    // curve -> panel
         void   rebuildPresetMenu();

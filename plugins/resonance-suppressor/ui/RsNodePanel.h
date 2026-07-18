@@ -57,6 +57,12 @@ namespace rs_ui
         // needle-tip angle against an independent oracle (A2). False if hidden.
         bool miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const;
 
+        // Mini-knob value-ring geometry in WINDOW px (centre + ring centreline
+        // radius) — the driver pixel-samples the ring at the needle angle to assert
+        // the accent arc END lines up with the needle (catches an arc-vs-needle
+        // angular divergence like the old 90°-off mini arc; round-3 fix 6).
+        bool miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const;
+
         void draw (visage::Canvas& canvas) override;
         void resized() override;
         void mouseDown (const visage::MouseEvent& e) override;

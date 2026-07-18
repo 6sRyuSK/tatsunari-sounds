@@ -105,24 +105,31 @@ namespace rs_ui
             }
         }
 
-        // Fill between a per-column trace and a horizontal baseline (screen-y) as
-        // edge-to-edge vertical bars — trivial per-pixel cost, only the covered
-        // band is shaded. The caller sets the brush (solid or a plot-anchored
-        // vertical gradient) first.
-        void fillColumns (visage::Canvas& canvas, float x0, float w,
-                          const std::vector<float>& screenY, float baselineY)
+        // Fill the region between a per-column trace and a horizontal baseline
+        // (screen-y) as a SINGLE closed path — the exact idiom the shipped JUCE
+        // editor (g.fillPath(area)) and the gallery SpectrumView both use, so the
+        // fill is one continuous shape with ONE coverage per pixel: no internal
+        // edges, therefore no seams. The previous version drew one translucent
+        // vertical BAR per column with a ~1px overlap; because the fill is
+        // translucent, each overlap composited twice and read as a darker vertical
+        // stripe — the comb/hatch the user reported (round-3 fix 1). (A triangle-
+        // strip was tried too, but visage anti-aliases every triangle edge
+        // independently, so the shared per-column edges still left ~1px seams.) The
+        // caller sets the brush (solid or a plot-anchored vertical gradient) first;
+        // it applies across the whole shape, matching factory_ui::fillSpectrumArea.
+        void fillAreaToBaseline (visage::Canvas& canvas, float x0, float w,
+                                 const std::vector<float>& screenY, float baselineY)
         {
             const int n = (int) screenY.size();
             if (n < 2 || w <= 0.0f) return;
             const float dx = w / (float) (n - 1);
+            visage::Path area;
+            area.moveTo (x0, baselineY);
             for (int i = 0; i < n; ++i)
-            {
-                const float y   = screenY[(std::size_t) i];
-                const float top = std::min (y, baselineY);
-                const float hgt = std::abs (baselineY - y);
-                if (hgt > 0.5f)
-                    canvas.fill (x0 + (float) i * dx - 0.5f * dx, top, dx + 1.0f, hgt); // slight overlap hides seams
-            }
+                area.lineTo (x0 + (float) i * dx, screenY[(std::size_t) i]);
+            area.lineTo (x0 + (float) (n - 1) * dx, baselineY);
+            area.close();
+            canvas.fill (area);
         }
     } // namespace
 
@@ -340,7 +347,7 @@ namespace rs_ui
                 visage::Color (theme_.rs.preColour).withAlpha (theme_.rs.preFillTopAlpha),
                 visage::Color (theme_.rs.preColour).withAlpha (theme_.rs.preFillBotAlpha),
                 visage::Point (plot_.x, plot_.y), visage::Point (plot_.x, plot_.y + plot_.h)));
-            fillColumns (canvas, plot_.x, plot_.w, colY, plot_.y + plot_.h); // to the plot bottom
+            fillAreaToBaseline (canvas, plot_.x, plot_.w, colY, plot_.y + plot_.h); // to the plot bottom
         }
         if (analyzerMode_ != AnalyzerMode::Pre)
         {
@@ -376,7 +383,7 @@ namespace rs_ui
         }
 
         canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (theme_.rs.curtainFillAlpha));
-        fillColumns (canvas, plot_.x, plot_.w, colY, zeroY); // from the 0 dB line down
+        fillAreaToBaseline (canvas, plot_.x, plot_.w, colY, zeroY); // from the 0 dB line down
         if (theme_.rs.curtainStrokeAlpha > 0.0f && theme_.rs.curtainStrokeWidth > 0.0f)
         {
             canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (theme_.rs.curtainStrokeAlpha));
@@ -431,7 +438,7 @@ namespace rs_ui
                 if (theme_.rs.perNodeFillAlpha > 0.0f)
                 {
                     canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeFillAlpha));
-                    fillColumns (canvas, plot_.x, plot_.w, curveY, y0); // from the baseline
+                    fillAreaToBaseline (canvas, plot_.x, plot_.w, curveY, y0); // from the baseline
                 }
                 if (theme_.rs.perNodeStrokeAlpha > 0.0f)
                 {
@@ -535,6 +542,13 @@ namespace rs_ui
                     canvas.setColor (visage::Color (theme_.base.palette.accent));
                     canvas.roundedRectangle (sx + 1.0f, modeChip_.y + 4.0f, segW - 2.0f, modeChip_.h - 8.0f, theme_.rs.radiusBadge - 2.0f);
                 }
+                else if (i == hoverModeSeg_)
+                {
+                    // Per-segment hover feedback (fix 8): a faint accent wash on the
+                    // hovered, non-active segment.
+                    canvas.setColor (visage::Color (theme_.base.palette.accent).withAlpha (0.14f));
+                    canvas.roundedRectangle (sx + 1.0f, modeChip_.y + 4.0f, segW - 2.0f, modeChip_.h - 8.0f, theme_.rs.radiusBadge - 2.0f);
+                }
                 canvas.setColor (visage::Color (active ? 0xffffffff : theme_.base.palette.textDim));
                 canvas.text (names[i], boldFont (9.5f), visage::Font::kCenter, sx, modeChip_.y, segW, modeChip_.h);
             }
@@ -629,6 +643,20 @@ namespace rs_ui
         model_.store().endGesture (paramIndex);
     }
 
+    // Which Pre/Post/Both segment a frame-local point is over (-1 if outside). The
+    // segment geometry mirrors drawHeaderControls: 3 equal segments inside a 3px
+    // inset. True per-segment hit-testing so a click lands on the segment under the
+    // cursor instead of cycling the mode (round-3 fix 8).
+    int RsSuppressionCurveView::modeSegAt (visage::Point pos) const
+    {
+        if (pos.x < modeChip_.x || pos.x >= modeChip_.x + modeChip_.w
+            || pos.y < modeChip_.y || pos.y >= modeChip_.y + modeChip_.h)
+            return -1;
+        const float segW = (modeChip_.w - 6.0f) / 3.0f;
+        const int seg = (int) std::floor ((pos.x - (modeChip_.x + 3.0f)) / std::max (1.0f, segW));
+        return std::clamp (seg, 0, 2);
+    }
+
     void RsSuppressionCurveView::mouseDown (const visage::MouseEvent& e)
     {
         const visage::Point pos = e.position;
@@ -636,12 +664,15 @@ namespace rs_ui
         // header chips
         auto inRect = [] (const Rect& r, const visage::Point& p)
         { return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h; };
-        if (inRect (modeChip_, pos))
+
+        // Pre/Post/Both: a TRUE 3-way segmented selector — the clicked segment
+        // becomes the mode (was: click anywhere cycles). (round-3 fix 8)
+        const int seg = modeSegAt (pos);
+        if (seg >= 0)
         {
-            analyzerMode_ = (analyzerMode_ == AnalyzerMode::Both) ? AnalyzerMode::Pre
-                          : (analyzerMode_ == AnalyzerMode::Pre)  ? AnalyzerMode::Post
-                                                                  : AnalyzerMode::Both;
-            redraw(); return;
+            const AnalyzerMode modes[] = { AnalyzerMode::Pre, AnalyzerMode::Post, AnalyzerMode::Both };
+            if (analyzerMode_ != modes[seg]) { analyzerMode_ = modes[seg]; redraw(); }
+            return;
         }
         if (inRect (freezeChip_, pos)) { setFrozen (! frozen_); return; }
 
@@ -657,6 +688,22 @@ namespace rs_ui
         }
         selectedNode_ = hit;
         if (onSelectNode) onSelectNode (hit);
+
+        // Alt-click a node resets the params its DRAG controls — freq (+ sens for
+        // bands) — to their ParamStore defaults; width / type / enabled are left
+        // untouched (round-3 fix 5). No drag begins.
+        if (e.isAltDown())
+        {
+            auto& store = model_.store();
+            setParamGestured (model_.idxFreq (hit), store.desc (model_.idxFreq (hit)).defaultValue);
+            if (! RsProfileModel::isCut (hit))
+                setParamGestured (model_.idxSens (hit), store.desc (model_.idxSens (hit)).defaultValue);
+            if (onNodeEdited) onNodeEdited (hit);
+            if (onGestureEnd) onGestureEnd();
+            redraw();
+            return;
+        }
+
         dragging_ = hit;
         dragAnchor_ = pos;
         dragVirtual_ = nodePos (hit);
@@ -704,11 +751,14 @@ namespace rs_ui
     {
         const int h = nodeAt (e.position);
         if (h != hoverNode_) { hoverNode_ = h; redraw(); }
+        const int ms = modeSegAt (e.position); // per-segment hover feedback (fix 8)
+        if (ms != hoverModeSeg_) { hoverModeSeg_ = ms; redraw(); }
     }
 
     void RsSuppressionCurveView::mouseExit (const visage::MouseEvent&)
     {
         if (hoverNode_ >= 0) { hoverNode_ = -1; redraw(); }
+        if (hoverModeSeg_ >= 0) { hoverModeSeg_ = -1; redraw(); }
     }
 
     bool RsSuppressionCurveView::mouseWheel (const visage::MouseEvent& e)

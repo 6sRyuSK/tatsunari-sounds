@@ -39,9 +39,10 @@ namespace factory_ui_visage
             x += m.glyphSize + 6.0f;
             remaining -= m.glyphSize + 6.0f;
         }
-        L.caption = { x, y, m.captionColumn, h };
-        x += m.captionColumn;
-        remaining -= m.captionColumn;
+        const float captionW = captionColumnPx_ > 0.0f ? captionColumnPx_ : m.captionColumn;
+        L.caption = { x, y, captionW, h };
+        x += captionW;
+        remaining -= captionW;
 
         // Value column on the right; 6 px gap before the track.
         L.value = { m.paddingX + innerW - m.valueColumn, y, m.valueColumn, h };
@@ -111,10 +112,11 @@ namespace factory_ui_visage
 
     void LinkSlider::mouseDown (const visage::MouseEvent& e)
     {
-        // Double-click restores the default. A single click is repeat count 1 in
-        // visage (double-click is 2), so this must be >= 2 — otherwise every press
-        // resets instead of dragging.
-        if (e.repeatClickCount() >= 2)
+        // Alt-click OR double-click restores the default (round-3 fix 5: alt-click
+        // reset on MIX/OUT/STEREO LINK too). A single click is repeat count 1 in
+        // visage (double-click is 2), so the double-click threshold must be >= 2 —
+        // otherwise every press resets instead of dragging.
+        if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             store_.beginGesture (index_);
             store_.setFromUi (index_, store_.desc (index_).defaultValue);

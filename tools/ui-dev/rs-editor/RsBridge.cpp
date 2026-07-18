@@ -33,7 +33,7 @@ namespace
     rs_ui::RsEditor* g_editor = nullptr;
     SyntheticRsFeed* g_feed = nullptr;
     visage::ApplicationWindow* g_app = nullptr;
-    std::string g_list, g_error, g_rect, g_plot, g_mini;
+    std::string g_list, g_error, g_rect, g_plot, g_mini, g_dial;
 
     std::string jsonEscape (const std::string& s)
     {
@@ -254,6 +254,29 @@ extern "C"
         }
         return g_mini.c_str();
     }
+
+    // Mini-knob value-ring geometry (window px): centre + centreline radius. The
+    // driver samples ring pixels at the needle angle to assert the accent arc END
+    // lines up with the needle — catching an arc-vs-needle divergence (fix 6).
+    KEEPALIVE const char* rs_mini_knob_dial (int which)
+    {
+        g_dial = "null";
+        if (g_editor != nullptr)
+        {
+            float cx = 0, cy = 0, arcR = 0;
+            if (g_editor->miniKnobDialInWindow (which, cx, cy, arcR))
+            {
+                std::ostringstream o;
+                o << "{\"cx\":" << cx << ",\"cy\":" << cy << ",\"arcR\":" << arcR << "}";
+                g_dial = o.str();
+            }
+        }
+        return g_dial.c_str();
+    }
+
+    // Active Pre/Post/Both mode as a visual segment index (0=Pre,1=Post,2=Both) —
+    // the driver clicks a segment and asserts this equals its index (fix 8).
+    KEEPALIVE int rs_analyzer_mode_segment() { return g_editor ? g_editor->analyzerModeSegment() : 2; }
 
     KEEPALIVE const char* rs_plot_rect()
     {

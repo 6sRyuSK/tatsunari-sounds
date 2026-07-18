@@ -17,19 +17,12 @@ namespace rs_ui
     namespace
     {
         // (The mini-knob sweep endpoints now come from the shared KnobMetrics —
-        // theme_.base.knob.arcStart/arcEnd — via fuv::knobAngleForNorm, so the
-        // 225°/495° constants that used to live here are gone; A2.)
-
-        // Native flatArc GPU band (JUCE angle convention: 0 = 12 o'clock, clockwise;
-        // flatArc's mid + half-aperture map directly). A filled stroked Path would
-        // hit visage's path-fill atlas, which the RS frame's large analyser paths
-        // poison — every path fill in that frame silently drops, primitives don't.
-        void strokeArc (visage::Canvas& canvas, float cx, float cy, float r, float a0, float a1, float w)
-        {
-            const float mid  = 0.5f * (a0 + a1);
-            const float half = 0.5f * std::abs (a1 - a0);
-            canvas.arc (cx - r, cy - r, 2.0f * r, w, mid, half, /*rounded*/ false);
-        }
+        // theme_.base.knob.arcStart/arcEnd — via fuv::knobAngleForNorm, and the value
+        // ring itself is drawn with the SHARED fuv::fillArcBand (Knob.h), the SAME
+        // tiled-flatArc path the footer Knob uses. The old local strokeArc drew a
+        // single canvas.arc that skipped fillArcBand's −90° screen offset, so the
+        // ring landed 90° off from the needle at every value — the round-3 fix 6
+        // needle/arc mismatch. Using the shared helper makes needle ≡ arc end.)
 
         // The 6 filter-type glyphs (viewBox 0 0 24 14), verbatim from NodePanel::eqGlyph.
         visage::Path eqGlyph (int type)
@@ -172,11 +165,14 @@ namespace rs_ui
     RsNodePanel::MiniDial RsNodePanel::miniKnobDial (const MiniKnob& k) const
     {
         const Rect& a = k.area;
-        const float labelH = 13.0f, valueH = 13.0f;
+        // Row heights + full-diameter dial match the JUCE NodePanel mini RsKnob
+        // (name 14 / value 14, dial = min(w, h-name-value)); the old 13/13 + 3px
+        // radius trim made the minis read smaller than the oracle (round-3 fix 7).
+        const float labelH = 14.0f, valueH = 14.0f;
         const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
         const auto& km = theme_.base.knob;
         MiniDial d;
-        d.R     = std::min (a.w, dialH) * 0.5f - 3.0f;
+        d.R     = std::min (a.w, dialH) * 0.5f;
         d.cx    = a.x + a.w * 0.5f;
         d.cy    = dialTop + dialH * 0.5f;
         d.band  = std::max (2.5f, d.R * 0.30f);
@@ -200,11 +196,21 @@ namespace rs_ui
         return true;
     }
 
+    bool RsNodePanel::miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const
+    {
+        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
+        const MiniDial d = miniKnobDial (*ks[which]);
+        const visage::Point o = positionInWindow();
+        cx = o.x + d.cx; cy = o.y + d.cy; arcR = d.arcR;
+        return true;
+    }
+
     void RsNodePanel::drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k)
     {
         if (! k.visible) return;
         const Rect& a = k.area;
-        const float labelH = 13.0f, valueH = 13.0f;
+        const float labelH = 14.0f, valueH = 14.0f; // match miniKnobDial + JUCE (fix 7)
         // label
         canvas.setColor (visage::Color (theme_.base.palette.text));
         canvas.text (k.label, boldFont (10.0f), visage::Font::kCenter, a.x, a.y, a.w, labelH);
@@ -216,12 +222,15 @@ namespace rs_ui
         const MiniDial d = miniKnobDial (k);
         constexpr float kTwoPi = 6.28318530718f;
 
+        // Three solid zones through the SHARED fillArcBand so the value ring's screen
+        // angle matches the needle (round-3 fix 6): accent 0->value, accentDim
+        // remainder, panelLo dead zone.
         canvas.setColor (visage::Color (accent));
-        strokeArc (canvas, d.cx, d.cy, d.arcR, km.arcStart, d.toAng, d.band);
+        fuv::fillArcBand (canvas, d.cx, d.cy, d.arcR, km.arcStart, d.toAng, d.band);
         canvas.setColor (visage::Color (p.accentDim));
-        strokeArc (canvas, d.cx, d.cy, d.arcR, d.toAng, km.arcEnd, d.band);
+        fuv::fillArcBand (canvas, d.cx, d.cy, d.arcR, d.toAng, km.arcEnd, d.band);
         canvas.setColor (visage::Color (p.panelLo));
-        strokeArc (canvas, d.cx, d.cy, d.arcR, km.arcEnd, km.arcStart + kTwoPi, d.band);
+        fuv::fillArcBand (canvas, d.cx, d.cy, d.arcR, km.arcEnd, km.arcStart + kTwoPi, d.band);
 
         canvas.setColor (visage::Brush::radial (visage::Color (0xffffffff), visage::Color (p.panelLo),
                                                 visage::Point (d.cx, d.cy - d.bodyR * 0.28f), d.bodyR * 1.15f, d.bodyR * 1.15f));
@@ -384,6 +393,19 @@ namespace rs_ui
         for (int i = 0; i < 3; ++i)
             if (ks[i]->visible && ks[i]->area.contains (pos))
             {
+                // Alt-click (or double-click) resets this mini-knob to its parameter
+                // default, matching the footer knobs (round-3 fix 5); no drag begins.
+                if (e.isAltDown() || e.repeatClickCount() >= 2)
+                {
+                    const float def = model_.store().desc (ks[i]->paramIndex).defaultValue;
+                    model_.store().beginGesture (ks[i]->paramIndex);
+                    model_.store().setFromUi (ks[i]->paramIndex, def);
+                    model_.store().endGesture (ks[i]->paramIndex);
+                    if (onNodeEdited) onNodeEdited (nodeId_);
+                    if (onGestureEnd) onGestureEnd();
+                    redraw();
+                    return;
+                }
                 dragKnob_ = i;
                 dragNorm_ = factory_params::convertTo0to1 (ks[i]->range, model_.store().value (ks[i]->paramIndex));
                 dragLast_ = pos;

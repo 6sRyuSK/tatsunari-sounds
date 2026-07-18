@@ -142,6 +142,12 @@ namespace rs_ui
             // the factory-wide default, so the RS editor only overrides the card
             // radius here; theme-rs.json's top-level `card` mirrors it.
             t.base.card.cornerRadius = 16.0f;
+            // Font sizes match the shipped JUCE RS editor (round-3 fix 2): the
+            // RsValueSetting / RsLinkSlider value read-outs are 12 px, not the shared
+            // 14 px `callout` default (the caption 11 / labelBold 13 already match).
+            // reloadTheme rebuilds from these defaults, so this holds through hot
+            // reload; the gallery uses Theme::defaults() so it is unaffected.
+            t.base.font.callout = 12.0f;
             t.rs = RsExtras::defaults();
             return t;
         }

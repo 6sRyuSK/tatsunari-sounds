@@ -65,7 +65,9 @@
     plotRect:    function ()      { var s = cc('rs_plot_rect', 'string', [], []); try { return JSON.parse(s); } catch (e) { return null; } },
     setSize:     function (w, h)  { cc('rs_set_size', null, ['number', 'number'], [w, h]); },
     profileDbAt: function (hz)    { return cc('rs_profile_db_at', 'number', ['number'], [hz]); },
-    miniKnobTip: function (which) { var s = cc('rs_mini_knob_tip', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } }
+    miniKnobTip: function (which) { var s = cc('rs_mini_knob_tip', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } },
+    miniKnobDial:function (which) { var s = cc('rs_mini_knob_dial', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } },
+    analyzerModeSegment: function () { return cc('rs_analyzer_mode_segment', 'number', [], []); }
   };
 
   // ---- dev nicety 1: theme.json hot reload ----------------------------------

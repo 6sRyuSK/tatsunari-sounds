@@ -10,6 +10,7 @@
 #include <utility>
 
 #include <visage_ui/frame.h>
+#include <visage_graphics/canvas.h>
 
 //
 // factory_ui_visage::Knob — a rotary knob that reproduces the factory look
@@ -46,6 +47,49 @@ namespace factory_ui_visage
         return { cx + length * std::sin (angle), cy - length * std::cos (angle) };
     }
 
+    // Fill a flat donut band spanning [a0, a1] (a1 >= a0, radians; dial angle
+    // convention: 0 = 12 o'clock, growing clockwise — the SAME convention
+    // knobAngleForNorm / knobNeedleTip use) at centreline radius r with the given
+    // thickness, using visage's native flatArc GPU primitive (a solid,
+    // anti-aliased band — no path-fill atlas, which the RS frame's large analyser
+    // paths otherwise poison, silently dropping every path fill).
+    //
+    // SHARED so the footer Knob AND the NodePanel mini-knobs draw their value ring
+    // through ONE arc-drawing path — the mini-knobs previously drew the arc with a
+    // single canvas.arc that skipped the −90° screen-offset this applies, so the
+    // ring landed 90° off from the needle (round-3 fix 6). flatArc takes a mid
+    // angle + half-aperture; its mirrored-arc SDF (and visage's own half-aperture
+    // clamp to π) do NOT render a single wide band faithfully — a zone approaching
+    // ~180° over-covers its neighbours and narrow zones drop out — so tile the
+    // span with small sub-arcs (each well inside the SDF's clean regime); pieces of
+    // one zone share the caller's brush and a tiny angular overlap closes AA seams.
+    inline void fillArcBand (visage::Canvas& canvas, float cx, float cy, float r,
+                             float a0, float a1, float thickness)
+    {
+        constexpr float kPi    = 3.14159265358979323846f;
+        constexpr float kTwoPi = 6.28318530717958648f;
+        constexpr float kMaxSpan = 0.30f; // ~17deg per piece — flatArc is faithful here
+        constexpr float kOverlap = 0.02f; // ~1.1deg same-brush overlap (hides seams)
+        const float total = a1 - a0;
+        if (total <= 1.0e-4f)
+            return;
+        const int   pieces = std::max (1, (int) std::ceil (total / kMaxSpan));
+        const float span   = total / (float) pieces;
+        for (int i = 0; i < pieces; ++i)
+        {
+            const float s = a0 + (float) i * span;
+            const float e = std::min (a1, a0 + (float) (i + 1) * span + (i < pieces - 1 ? kOverlap : 0.0f));
+            // flatArc renders a piece at screen angle (passed + 90deg) in our dial
+            // convention, so pass (intended mid − 90deg) to land it where we want.
+            // Normalise to [-pi, pi] (sin/cos are periodic) since the raw sweep runs
+            // past 2pi for the dead zone.
+            float mid = 0.5f * (s + e) - 0.5f * kPi;
+            while (mid >  kPi) mid -= kTwoPi;
+            while (mid < -kPi) mid += kTwoPi;
+            canvas.arc (cx - r, cy - r, 2.0f * r, thickness, mid, 0.5f * (e - s), /*rounded*/ false);
+        }
+    }
+
     class Knob : public visage::Frame
     {
     public:
@@ -63,6 +107,21 @@ namespace factory_ui_visage
         // name). Lets a plugin editor use its own short/upper-case caption (e.g. the
         // RS "ATK"/"REL"/"TILT") without forking the widget. Empty = use desc.name.
         void setNameOverride (std::string name) { nameOverride_ = std::move (name); redraw(); }
+
+        // Match a specific editor's knob proportions: the top (name) and bottom
+        // (value) text-row heights in px, the name/value font sizes in px, and the
+        // dial's bounds inset in px. Any argument < 0 keeps the widget default (16 px
+        // rows, theme.font.label text, theme.knob.boundsInset), so the gallery is
+        // unaffected. The RS editor sets a "big" (Depth/Detail) vs "small"
+        // (Atk/Rel/Tilt) profile to reproduce the shipped JUCE RsKnob's exact dial
+        // diameters + per-size fonts (round-3 fixes 2 + 7).
+        void setDialProfile (float textTopPx, float textBottomPx, float nameFontPx,
+                             float valueFontPx, float dialInsetPx)
+        {
+            textTopPx_ = textTopPx; textBottomPx_ = textBottomPx;
+            nameFontPx_ = nameFontPx; valueFontPx_ = valueFontPx; dialInsetPx_ = dialInsetPx;
+            redraw();
+        }
 
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
@@ -84,6 +143,10 @@ namespace factory_ui_visage
 
         std::uint32_t accentOverride_ = 0; // 0 == use theme accent
         std::string   nameOverride_;       // empty == use desc.name
+
+        // Dial profile (round-3 fixes 2 + 7); < 0 == widget default. See setDialProfile.
+        float textTopPx_ = -1.0f, textBottomPx_ = -1.0f;
+        float nameFontPx_ = -1.0f, valueFontPx_ = -1.0f, dialInsetPx_ = -1.0f;
 
         bool dragging_ = false;
         float dragNorm_ = 0.0f;         // authoritative accumulator during a drag

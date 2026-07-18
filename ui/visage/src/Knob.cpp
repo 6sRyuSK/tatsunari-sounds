@@ -9,51 +9,10 @@
 
 namespace factory_ui_visage
 {
-    namespace
-    {
-        constexpr float kPi    = 3.14159265358979323846f;
-        constexpr float kTwoPi = 6.28318530717958648f;
-
-        // Fill a flat donut band spanning [a0, a1] (a1 >= a0, radians; dial angle
-        // convention: 0 = 12 o'clock, growing clockwise) at centreline radius r with
-        // the given thickness, using visage's native flatArc GPU primitive (a solid,
-        // anti-aliased band — no path-fill atlas, which the RS frame's large analyser
-        // paths otherwise poison, silently dropping every path fill).
-        //
-        // flatArc takes a mid angle + half-aperture; its mirrored-arc SDF (and
-        // visage's own half-aperture clamp to π) do NOT render a single wide band
-        // faithfully — a zone approaching/over ~180° (a near-full value ring, or the
-        // pale remainder at a low value) over-covers its neighbours and the narrow
-        // zones drop out, collapsing the three-zone donut. So tile the span with
-        // small sub-arcs (each well inside the SDF's clean regime); pieces of one
-        // zone share the caller's brush, and a tiny angular overlap closes AA seams.
-        void fillArcBand (visage::Canvas& canvas, float cx, float cy, float r,
-                          float a0, float a1, float thickness)
-        {
-            constexpr float kMaxSpan = 0.30f;  // ≈17° per piece — flatArc is faithful here
-            constexpr float kOverlap = 0.02f;  // ~1.1° same-brush overlap (hides seams)
-            const float total = a1 - a0;
-            if (total <= 1.0e-4f)
-                return;
-            const int   pieces = std::max (1, (int) std::ceil (total / kMaxSpan));
-            const float span   = total / (float) pieces;
-            for (int i = 0; i < pieces; ++i)
-            {
-                const float s = a0 + (float) i * span;
-                const float e = std::min (a1, a0 + (float) (i + 1) * span + (i < pieces - 1 ? kOverlap : 0.0f));
-                // flatArc renders a piece at screen angle (passed + 90°) in our dial
-                // convention (0 = 12 o'clock, growing clockwise — the same the needle
-                // uses; the +90° offset comes from visage's origin-flip on WebGL,
-                // measured empirically). So pass (intended mid − 90°) to land the
-                // piece where we want it. Normalise to [-π, π] (sin/cos are periodic)
-                // since the raw sweep runs past 2π for the dead zone.
-                float mid = 0.5f * (s + e) - 0.5f * kPi;
-                while (mid >  kPi) mid -= kTwoPi;
-                while (mid < -kPi) mid += kTwoPi;
-                canvas.arc (cx - r, cy - r, 2.0f * r, thickness, mid, 0.5f * (e - s), /*rounded*/ false);
-            }
-        }
-    } // namespace
+    // fillArcBand (the tiled flatArc donut band) now lives in Knob.h so the
+    // NodePanel mini-knobs share the SAME value-ring arc convention as this Knob
+    // (round-3 fix 6). constexpr kTwoPi kept for the dead-zone sweep below.
+    namespace { constexpr float kTwoPi = 6.28318530717958648f; }
 
     Knob::Knob (factory_params::ParamStore& store, int paramIndex, const Theme& theme, int decimals)
         : store_ (store), index_ (paramIndex), theme_ (theme), decimals_ (decimals),
@@ -82,11 +41,16 @@ namespace factory_ui_visage
         const std::uint32_t accent = accentOverride_ != 0 ? accentOverride_ : p.accent;
 
         // Layout (design reference): name row (top), dial (middle), value row (bottom).
-        const float textH = 16.0f;
-        const float dialTop = textH;
-        const float dialH = std::max (0.0f, height() - 2.0f * textH);
+        // Row heights + dial inset follow the per-instance profile when set (RS "big"
+        // vs "small" match the JUCE RsKnob; default reproduces the gallery look).
+        const float textTop = textTopPx_    >= 0.0f ? textTopPx_    : 16.0f;
+        const float textBot = textBottomPx_ >= 0.0f ? textBottomPx_ : 16.0f;
+        const float nameFontPx  = nameFontPx_  >= 0.0f ? nameFontPx_  : theme_.font.label;
+        const float valueFontPx = valueFontPx_ >= 0.0f ? valueFontPx_ : theme_.font.label;
+        const float dialTop = textTop;
+        const float dialH = std::max (0.0f, height() - textTop - textBot);
 
-        const float inset = m.boundsInset;
+        const float inset = dialInsetPx_ >= 0.0f ? dialInsetPx_ : m.boundsInset;
         const float bw = width() - 2.0f * inset;
         const float bh = dialH - 2.0f * inset;
         const float R = std::min (bw, bh) * 0.5f;
@@ -135,24 +99,27 @@ namespace factory_ui_visage
         canvas.setColor (visage::Color (accent));
         canvas.segment (cx, cy, tip.x, tip.y, m.needleWidthPx, true);
 
-        // Name above (muted, bold), value below (accent, bold).
+        // Name above (muted, bold), value below (accent, bold). Font sizes follow
+        // the profile (JUCE RsKnob: big 12/13, small 10/11); default theme.font.label.
         canvas.setColor (visage::Color (p.textSecondary));
         canvas.text (nameOverride_.empty() ? desc.name : nameOverride_,
-                     boldFont (theme_.font.label), visage::Font::kCenter, 0.0f, 0.0f, width(), textH);
+                     boldFont (nameFontPx), visage::Font::kCenter, 0.0f, 0.0f, width(), textTop);
         // Value readout, spaces stripped for the demo's tight "62%" / "120ms" look
         // (v2.1.0 RsKnob does the same: getTextFromValue(...).removeCharacters(" ")).
         std::string valueText = factory_params::formatValue (desc, store_.value (index_), decimals_);
         valueText.erase (std::remove (valueText.begin(), valueText.end(), ' '), valueText.end());
         canvas.setColor (visage::Color (accent));
-        canvas.text (valueText, boldFont (theme_.font.label), visage::Font::kCenter, 0.0f, height() - textH, width(), textH);
+        canvas.text (valueText, boldFont (valueFontPx), visage::Font::kCenter, 0.0f, height() - textBot, width(), textBot);
     }
 
     void Knob::mouseDown (const visage::MouseEvent& e)
     {
-        // Double-click restores the default value. A single click is repeat count
-        // 1 in visage (a double-click is 2), so the threshold must be >= 2 — else
-        // every press would reset instead of starting a drag.
-        if (e.repeatClickCount() >= 2)
+        // Alt-click OR double-click restores the default value (round-3 fix 5:
+        // alt-click reset on every knob, matching the JUCE editor; Shift, not Alt,
+        // is fine-drag, so resetting on alt-down never conflicts with a drag). A
+        // single click is repeat count 1 in visage (a double-click is 2), so the
+        // double-click threshold must be >= 2 — else every press would reset.
+        if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             const factory_params::ParamDesc& desc = store_.desc (index_);
             store_.beginGesture (index_);

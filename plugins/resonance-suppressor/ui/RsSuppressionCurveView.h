@@ -55,6 +55,12 @@ namespace rs_ui
         void setSelectedNode (int id); // editor -> view (keep the grown handle in sync)
         int  selectedNode() const noexcept { return selectedNode_; }
 
+        // Active Pre/Post/Both mode as a VISUAL segment index (0=Pre,1=Post,2=Both)
+        // — the Playwright driver clicks a segment and asserts this equals its index
+        // (per-segment selector, not a cycle; round-3 fix 8).
+        int  analyzerModeSegment() const noexcept
+        { return analyzerMode_ == AnalyzerMode::Pre ? 0 : analyzerMode_ == AnalyzerMode::Post ? 1 : 2; }
+
         // Freeze the analyser for deterministic capture (snapshots the current feed
         // frame and holds it; stops the redraw loop).
         void setFrozen (bool frozen);
@@ -131,7 +137,12 @@ namespace rs_ui
         visage::Point dragAnchor_, dragVirtual_;
 
         AnalyzerMode analyzerMode_ = AnalyzerMode::Both;
+        int  hoverModeSeg_ = -1; // hovered Pre/Post/Both segment (0/1/2), -1 = none (fix 8)
         bool frozen_ = false;
+
+        // Which Pre/Post/Both segment (0=Pre,1=Post,2=Both) a frame-local point is
+        // over, or -1 if outside the mode chip. True per-segment hit-testing (fix 8).
+        int  modeSegAt (visage::Point pos) const;
 
         // frozen snapshot of the feed (held image)
         std::vector<float> snapPre_, snapPost_, snapRed_;

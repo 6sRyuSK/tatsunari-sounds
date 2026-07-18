@@ -48,6 +48,16 @@ async function clickWindow(page, wx, wy) {
   await page.mouse.down(); await page.waitForTimeout(35);
   await page.mouse.up(); await page.waitForTimeout(35);
 }
+// Alt+click (Alt held across the whole press) — drives the alt-click-to-default
+// reset on knobs / nodes (fix 5). Emscripten forwards event.altKey -> kModifierAlt.
+async function altClickWindow(page, wx, wy) {
+  const p = await toPage(page, wx, wy);
+  await page.keyboard.down("Alt");
+  await page.mouse.move(p.x, p.y); await page.waitForTimeout(35);
+  await page.mouse.down(); await page.waitForTimeout(35);
+  await page.mouse.up(); await page.waitForTimeout(35);
+  await page.keyboard.up("Alt");
+}
 async function dragWindow(page, x0, y0, x1, y1) {
   const a = await toPage(page, x0, y0), b = await toPage(page, x1, y1);
   await page.mouse.move(a.x, a.y); await page.waitForTimeout(30);
@@ -283,7 +293,9 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     await wait(page, 150);
     const r = await page.evaluate(() => window.ui.widgetRect("depth"));
     const cx = r.x + r.w * 0.5, cy = r.y + r.h * 0.5;
-    const R = Math.min(r.w - 12, (r.h - 44)) * 0.5;      // dial radius (see Knob::draw)
+    // Big-knob dial radius after the round-3 fix-7 profile: name row 16 + value row
+    // 17 = 33 px reserved, 0 dial inset (fills the cell) — see Knob::draw + RsEditor.
+    const R = Math.min(r.w, (r.h - 33)) * 0.5;
     const arcR = R * 0.78;                                // inside the solid ring band (clear of the AA edges)
     const shot = await canvasShot(page);
     const accent = d.samplePixel(shot, cx - arcR, cy, 1);        // left  -> accent  #ff7a6b
@@ -316,6 +328,139 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
       !!tip && Math.abs(measuredDeg - expectedDeg) <= 2.0 && Math.abs(expectedDeg - 33.3) < 1.0,
       "measured=" + (tip ? measuredDeg.toFixed(1) : "null") + " expected=" + expectedDeg.toFixed(1));
   }
+
+  // --- 14. mini-knob value ring END lines up with the needle (fix 6) ---------
+  // The mini arc used to be drawn with a single canvas.arc that skipped the −90°
+  // screen offset the shared fillArcBand applies, so the accent ring landed 90°
+  // off from the needle. Set SENS = 0 dB (norm 0.5 -> value angle 0deg, straight
+  // up): the accent (salmon #ff9472) fill then spans the LEFT side (dial [-135,0]),
+  // and the accentDim (#ffd6cd) remainder the RIGHT side (dial [0,135]) — exactly
+  // like the big-knob three-zone assert at depth=50. Sample the ring centreline at
+  // 9 o'clock (must read the accent) and 3 o'clock (must read the paler dim); on a
+  // tiny mini-knob the thin band AA-lightens both toward the white body, so assert
+  // the RELATIVE saturation (accent-side clearly more orange: lower green + blue)
+  // rather than an absolute hue. With the old 90°-off arc the two sides swap, so
+  // this fails; with the fix the accent sits on the value side.
+  {
+    await page.evaluate(() => { window.rs.selectNode(2); window.ui.set("b0_sens", 0); window.ui.freeze(true); });
+    await wait(page, 150);
+    const dial = await page.evaluate(() => window.rs.miniKnobDial(1)); // 1 = SENS
+    const shot = await canvasShot(page);
+    const at = (deg) => ({ x: dial.cx + dial.arcR * Math.sin(deg * Math.PI / 180),
+                           y: dial.cy - dial.arcR * Math.cos(deg * Math.PI / 180) });
+    const left  = at(-90), right = at(90);
+    const acc = d.samplePixel(shot, left.x,  left.y,  1); // 9 o'clock -> accent (salmon)
+    const dim = d.samplePixel(shot, right.x, right.y, 1); // 3 o'clock -> accentDim (pale)
+    const moreOrange = acc.g <= dim.g - 12 && acc.b <= dim.b - 12; // accent side is clearly more saturated
+    const notPale    = acc.g <= 210;                                // and is actually on the coloured band
+    check("mini-knob accent ring ends at the needle angle (arc == needle, no 90deg drift)",
+      !!dial && moreOrange && notPale,
+      "accent(9h) " + JSON.stringify(acc) + " | dim(3h) " + JSON.stringify(dim));
+  }
+
+  // --- 15. Pre/Post/Both is a TRUE 3-way segmented selector (fix 8) -----------
+  // Was: clicking the chip anywhere CYCLED the mode. Now each segment is its own
+  // click target — clicking segment i selects mode i (0=Pre,1=Post,2=Both).
+  {
+    await page.evaluate(() => window.rs.selectNode(-1));
+    await wait(page, 60);
+    const cv = await page.evaluate(() => window.ui.widgetRect("curve"));
+    // mode chip is frame-local {12,12,132,22}; segment i centre = (36 + 42*i, 23).
+    const segCentre = (i) => ({ x: cv.x + 36 + 42 * i, y: cv.y + 23 });
+    const results = [];
+    let ok = true;
+    for (let i = 0; i < 3; i++) {
+      const c = segCentre(i);
+      await clickWindow(page, c.x, c.y);
+      const seg = await page.evaluate(() => window.rs.analyzerModeSegment());
+      results.push(i + "->" + seg);
+      if (seg !== i) ok = false;
+    }
+    // Re-click the already-active segment: must STAY (no cycle).
+    const c2 = segCentre(2);
+    await clickWindow(page, c2.x, c2.y);
+    const stay = await page.evaluate(() => window.rs.analyzerModeSegment());
+    check("Pre/Post/Both selects the clicked segment (not a cycle)",
+      ok && stay === 2, results.join(" ") + " restay=" + stay);
+  }
+
+  // --- 16. alt-click resets a knob to its ParamStore default (fix 5) ---------
+  {
+    await page.evaluate(() => window.rs.selectNode(-1));
+    const params = await page.evaluate(() => window.ui.list());
+    const depthDef = params.find((p) => p.id === "depth").default;
+    const target = depthDef > 50 ? depthDef - 25 : depthDef + 25;
+    await page.evaluate((v) => window.ui.set("depth", v), target);
+    const before = await page.evaluate(() => window.ui.get("depth"));
+    const r = await page.evaluate(() => window.ui.widgetRect("depth"));
+    const c = rectCentre(r);
+    await altClickWindow(page, c.x, c.y);
+    const after = await page.evaluate(() => window.ui.get("depth"));
+    check("alt-click resets a knob to its default",
+      approx(after, depthDef, 0.6) && Math.abs(before - depthDef) > 1,
+      "def=" + depthDef + " before=" + before + " after=" + after);
+  }
+
+  // --- 17. alt-click a node resets its freq + sens (not width) to defaults (fix 5)
+  {
+    const params = await page.evaluate(() => window.ui.list());
+    const fDef = params.find((p) => p.id === "b0_freq").default;
+    const sDef = params.find((p) => p.id === "b0_sens").default;
+    await page.evaluate(() => {
+      window.ui.set("b0_on", 1); window.ui.set("b0_freq", 5000);
+      window.ui.set("b0_sens", 16); window.ui.set("b0_width", 1.2);
+      window.rs.selectNode(-1); window.ui.freeze(true);
+    });
+    await wait(page, 120);
+    const wBefore = await page.evaluate(() => window.ui.get("b0_width"));
+    const pos = await page.evaluate(() => ({ x: window.rs.nodeX(2), y: window.rs.nodeY(2) }));
+    await altClickWindow(page, pos.x, pos.y);
+    const after = await page.evaluate(() => ({ f: window.ui.get("b0_freq"), s: window.ui.get("b0_sens"), w: window.ui.get("b0_width") }));
+    check("alt-click a node resets freq + sens to defaults (width untouched)",
+      approx(after.f, fDef, Math.max(1, fDef * 0.02)) && approx(after.s, sDef, 0.5) && approx(after.w, wBefore, 0.001),
+      "f " + after.f.toFixed(0) + "/" + fDef + " s " + after.s.toFixed(1) + "/" + sDef + " w " + after.w.toFixed(2) + "(was " + wBefore.toFixed(2) + ")");
+  }
+
+  // --- round-3 fidelity screenshots (for the human) --------------------------
+  // widgetRect returns WINDOW px; page.screenshot clips in PAGE px, so add the
+  // canvas's page offset (the canvas is centred in the page).
+  const canvasBox = await page.evaluate(() => {
+    const r = document.getElementById("canvas").getBoundingClientRect();
+    return { left: r.left, top: r.top };
+  });
+  const clipWin = async (wx, wy, w, h) => ({
+    x: Math.max(0, canvasBox.left + wx), y: Math.max(0, canvasBox.top + wy), width: w, height: h,
+  });
+  // (a) full editor, clean default state.
+  await page.evaluate(() => {
+    window.rs.presetLoad(0); window.rs.selectNode(-1);
+    window.rs.setSize(1069, 747); window.ui.freeze(true);
+  });
+  await wait(page, 200);
+  fs.writeFileSync(path.join(OUT, "r3-full-default.png"), await editorShot(page, 1069, 747));
+  // (d) A/B header closeup (A|B strip + directional copy button).
+  {
+    const ab = await page.evaluate(() => window.ui.widgetRect("ab"));
+    const cp = await page.evaluate(() => window.ui.widgetRect("copy"));
+    const x0 = ab.x - 14, x1 = cp.x + cp.w + 14;
+    fs.writeFileSync(path.join(OUT, "r3-abheader.png"),
+      await page.screenshot({ clip: await clipWin(x0, ab.y - 12, x1 - x0, ab.h + 24) }));
+  }
+  // (c) bottom knob-row closeup (DEPTH/DETAIL big vs ATK/REL/TILT mini).
+  {
+    const dr = await page.evaluate(() => window.ui.widgetRect("depth"));
+    const tr = await page.evaluate(() => window.ui.widgetRect("tilt"));
+    const x0 = dr.x - 10, x1 = tr.x + tr.w + 10;
+    fs.writeFileSync(path.join(OUT, "r3-knobrow.png"),
+      await page.screenshot({ clip: await clipWin(x0, dr.y - 8, x1 - x0, dr.h + 16) }));
+  }
+  // (b) node panel open on a mid band.
+  await page.evaluate(() => {
+    window.ui.set("b2_on", 1); window.ui.set("b2_sens", 10); window.rs.selectNode(4); window.ui.freeze(true);
+  });
+  await wait(page, 200);
+  fs.writeFileSync(path.join(OUT, "r3-band-open.png"), await editorShot(page, 1069, 747));
+  await page.evaluate(() => window.rs.selectNode(-1));
 
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));
 

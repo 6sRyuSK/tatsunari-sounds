@@ -42,6 +42,7 @@ namespace factory_ui_visage
         const float segW = w / static_cast<float> (n);
         const int sel = currentIndex();
         const std::vector<std::string>& labels = store_.desc (index_).choices;
+        const float labelPx = labelFontPx_ > 0.0f ? labelFontPx_ : theme_.font.labelBold;
 
         for (int i = 0; i < n; ++i)
         {
@@ -66,13 +67,13 @@ namespace factory_ui_visage
                 canvas.setColor (visage::Color (fg));
                 icons::paintGlyph (canvas, glyphs_[static_cast<std::size_t> (i)], gx, y + (h - gs) * 0.5f, gs, gs);
                 canvas.setColor (visage::Color (fg));
-                canvas.text (label, boldFont (theme_.font.labelBold), visage::Font::kLeft,
+                canvas.text (label, boldFont (labelPx), visage::Font::kLeft,
                              gx + gs + 5.0f, y, cx + segW - (gx + gs + 5.0f), h);
             }
             else
             {
                 canvas.setColor (visage::Color (fg));
-                canvas.text (label, boldFont (theme_.font.labelBold), visage::Font::kCenter, cx, y, segW, h);
+                canvas.text (label, boldFont (labelPx), visage::Font::kCenter, cx, y, segW, h);
             }
         }
     }
