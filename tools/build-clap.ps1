@@ -14,8 +14,10 @@
       cmake --build build-clap --target resonance-suppressor_all
 
   So you no longer have to hunt for the Native Tools prompt. With -Install it
-  also copies the built .clap / .vst3 into your per-user plugin folders
-  (no admin needed), ready for a DAW rescan.
+  also copies the built .clap / .vst3 into the system Common Files plugin
+  folders (C:\Program Files\Common Files\{CLAP,VST3}), self-elevating the copy
+  via a UAC prompt, ready for a DAW rescan. Add -PerUser to install into the
+  no-admin per-user location instead.
 
   This drives ONLY the flag-gated coexistence build (FACTORY_RS_CLAP). It does
   not touch the shipping JUCE VST3/AU, which never sees this path.
@@ -25,8 +27,16 @@
       Configure + build the CLAP + wrapper VST3 (GUI embedded).
 
 .EXAMPLE
-  .\tools\build-clap.ps1 -Clean -Install
-      Wipe the build dir, rebuild, then install into the per-user CLAP/VST3 dirs.
+  .\tools\build-clap.ps1 -Install
+      Build, then install into C:\Program Files\Common Files\{CLAP,VST3} (UAC prompt).
+
+.EXAMPLE
+  .\tools\build-clap.ps1 -Install -Format vst3
+      Build both, but install ONLY the wrapper VST3 into Common Files.
+
+.EXAMPLE
+  .\tools\build-clap.ps1 -Clean -Install -PerUser
+      Wipe the build dir, rebuild, then install into the per-user CLAP/VST3 dirs (no admin).
 
 .EXAMPLE
   .\tools\build-clap.ps1 -NoGui
@@ -42,8 +52,17 @@ param(
     [switch]$Clean,
     # Build the headless 3a shell (FACTORY_RS_CLAP_GUI=OFF); default embeds the editor.
     [switch]$NoGui,
-    # Copy the built .clap / .vst3 into the per-user plugin folders after building.
+    # Copy the built .clap / .vst3 into the system Common Files plugin folders
+    # (C:\Program Files\Common Files\{CLAP,VST3}) after building. Needs admin;
+    # the copy step self-elevates via a UAC prompt (the build stays unelevated).
     [switch]$Install,
+    # With -Install, use the per-user location (%LOCALAPPDATA%\Programs\Common\
+    # {CLAP,VST3}) instead of Common Files - no admin / no UAC prompt.
+    [switch]$PerUser,
+    # With -Install, restrict which formats are copied: 'all' (default), 'vst3', or 'clap'.
+    # (The build always produces both; this only filters what gets installed.)
+    [ValidateSet('all', 'vst3', 'clap')]
+    [string]$Format = 'all',
     # Override the VS installation path if vswhere cannot locate it.
     [string]$VsPath
 )
@@ -160,25 +179,71 @@ Write-Host "`n== Artifacts ==" -ForegroundColor Cyan
 if ($clap) { Write-Host "  CLAP: $($clap.FullName)" -ForegroundColor Green } else { Write-Warning "  No .clap found under $assets" }
 if ($vst3) { Write-Host "  VST3: $($vst3.FullName)" -ForegroundColor Green } else { Write-Warning "  No .vst3 found under $assets" }
 
-# --- Optional install into the per-user plugin folders (no admin needed) ------
+# --- Optional install into the plugin folders --------------------------------
+# Default: system Common Files (C:\Program Files\Common Files\{CLAP,VST3}) - the
+# standard machine-wide locations every host scans; needs admin, so the copy
+# self-elevates via UAC while the build stays unelevated. -PerUser installs into
+# the no-admin per-user location instead.
 if ($Install) {
-    Write-Host "`n== Install (per-user) ==" -ForegroundColor Cyan
-    $clapDst = Join-Path $env:LOCALAPPDATA 'Programs\Common\CLAP'
-    $vst3Dst = Join-Path $env:LOCALAPPDATA 'Programs\Common\VST3'
-    New-Item -ItemType Directory -Force -Path $clapDst, $vst3Dst | Out-Null
+    if ($PerUser) {
+        $root = Join-Path $env:LOCALAPPDATA 'Programs\Common'
+        Write-Host "`n== Install (per-user: $root) ==" -ForegroundColor Cyan
+    } else {
+        $root = $env:CommonProgramFiles           # C:\Program Files\Common Files (x64)
+        Write-Host "`n== Install (system: $root) ==" -ForegroundColor Cyan
+    }
+    $clapDst = Join-Path $root 'CLAP'
+    $vst3Dst = Join-Path $root 'VST3'
 
-    if ($clap) {
-        Copy-Item -Path $clap.FullName -Destination $clapDst -Recurse -Force
-        Write-Host "  -> $clapDst\$($clap.Name)" -ForegroundColor Green
+    # Gather (source -> destination) pairs for whatever actually built, honouring -Format.
+    $ops = New-Object System.Collections.ArrayList
+    if ($clap -and $Format -in @('all', 'clap')) { [void]$ops.Add(@{ Src = $clap.FullName; Dst = $clapDst }) }
+    if ($vst3 -and $Format -in @('all', 'vst3')) { [void]$ops.Add(@{ Src = $vst3.FullName; Dst = $vst3Dst }) }
+    Write-Host "Formats to install: $Format" -ForegroundColor DarkGray
+
+    if ($ops.Count -eq 0) {
+        Write-Warning "Nothing to install (no matching artifact for -Format $Format under $assets)."
+    } else {
+        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $isAdmin = ([Security.Principal.WindowsPrincipal]$currentUser).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+
+        if ($PerUser -or $isAdmin) {
+            # We can write directly.
+            foreach ($op in $ops) {
+                New-Item -ItemType Directory -Force -Path $op.Dst | Out-Null
+                Copy-Item -LiteralPath $op.Src -Destination $op.Dst -Recurse -Force
+                Write-Host "  -> $($op.Dst)\$(Split-Path $op.Src -Leaf)" -ForegroundColor Green
+            }
+        } else {
+            # Common Files needs admin: elevate ONLY the copy (build stays unelevated).
+            Write-Host "Administrator rights are required to write to $root." -ForegroundColor Yellow
+            Write-Host "Accept the UAC prompt to install (or re-run with -PerUser for a no-admin location)..." -ForegroundColor Yellow
+            $lines = @("`$ErrorActionPreference = 'Stop'")
+            foreach ($op in $ops) {
+                $s = $op.Src -replace "'", "''"
+                $d = $op.Dst -replace "'", "''"
+                $lines += "New-Item -ItemType Directory -Force -Path '$d' | Out-Null"
+                $lines += "Copy-Item -LiteralPath '$s' -Destination '$d' -Recurse -Force"
+            }
+            $tmp = Join-Path $env:TEMP ("factory-install-" + [guid]::NewGuid().ToString('N') + ".ps1")
+            Set-Content -LiteralPath $tmp -Value $lines -Encoding UTF8
+            try {
+                $proc = Start-Process powershell.exe -Verb RunAs -Wait -PassThru `
+                        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tmp`""
+            } catch {
+                Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+                throw "Elevation was cancelled. Re-run from an elevated PowerShell, or use -PerUser. ($($_.Exception.Message))"
+            }
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            if ($proc.ExitCode -ne 0) { throw "Elevated install failed (exit $($proc.ExitCode))." }
+            foreach ($op in $ops) {
+                Write-Host "  -> $($op.Dst)\$(Split-Path $op.Src -Leaf)" -ForegroundColor Green
+            }
+        }
+        Write-Host "Installed. Rescan plugins in your DAW to pick them up." -ForegroundColor Green
     }
-    if ($vst3) {
-        Copy-Item -Path $vst3.FullName -Destination $vst3Dst -Recurse -Force
-        Write-Host "  -> $vst3Dst\$($vst3.Name)" -ForegroundColor Green
-    }
-    Write-Host "Installed. Rescan plugins in your DAW to pick them up." -ForegroundColor Green
-    Write-Host "(These per-user paths are scanned by Reaper/Bitwig/etc. alongside Program Files.)" -ForegroundColor DarkGray
 } else {
-    Write-Host "`nTip: re-run with -Install to copy these into your per-user CLAP/VST3 folders." -ForegroundColor DarkGray
+    Write-Host "`nTip: re-run with -Install to copy these into C:\Program Files\Common Files\{CLAP,VST3} (-PerUser for a no-admin location)." -ForegroundColor DarkGray
 }
 
 Write-Host "`nDone." -ForegroundColor Green
