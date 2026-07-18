@@ -17,6 +17,9 @@
 //  12. knob three-zone donut: the ring reads accent / accentDim / panelLo
 //  13. mini-knob needle angle: the SENS mini-knob points at its value's angle
 //      (shared value->angle mapping, ~+33 deg from top for 7.40 dB / [-30,30])
+//  18. NodePanel intrinsic width: a band panel keeps its 500 px width (only x/y is
+//      clamped) at the leftmost / middle / rightmost band — no edge-clamp shrink,
+//      no TYPE-button-under-knob overlap (captures panel-left.png / panel-right.png)
 // and captures rs-default.png / rs-busy.png / rs-min.png / rs-max.png / rs-knob-depth.png.
 //
 // Exit code 0 iff every assert passes.
@@ -462,6 +465,71 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   fs.writeFileSync(path.join(OUT, "r3-band-open.png"), await editorShot(page, 1069, 747));
   await page.evaluate(() => window.rs.selectNode(-1));
 
+  // --- 18. NodePanel keeps its intrinsic width when clamped at the analyzer edge --
+  // Regression (user-reported, screenshot-confirmed): opening a BAND panel right
+  // after a CUT sized it to the cut's stale 350 px — RsEditor::selectNode reads
+  // preferredWidth() BEFORE setNode() updates isCut_ — so RsNodePanel::computeLayout
+  // reflowed into a collision: the right-anchored FREQ/SENS/WIDTH knob column slid
+  // LEFT over the (left-anchored) TYPE buttons and the "Listen" chip clipped to
+  // "Lis…". The JUCE oracle (SuppressionCurveComponent::selectNode -> positionPanel)
+  // sets the node FIRST and only then reads preferredWidth(), so the width is ALWAYS
+  // the intrinsic preferredWidth() and only x/y is placed + clamped. RsNodePanel now
+  // enforces that itself. Assert the band panel is the SAME intrinsic 500 px width at
+  // the leftmost / a middle / the rightmost band and stays fully inside the editor.
+  // Bands are node ids 2..9 (Band 1 = 2 = leftmost, Band 8 = 9 = rightmost).
+  {
+    await page.evaluate(() => { window.rs.setSize(1069, 747); window.ui.freeze(true); });
+    await wait(page, 120);
+    const editorRect = { x: 0, y: 0, w: 1069, h: 747 };
+    const openRect = async (id) => {
+      await page.evaluate((n) => window.rs.selectNode(n), id);
+      await wait(page, 90);
+      return page.evaluate(() => window.ui.widgetRect("nodePanel"));
+    };
+    // Force the reported scenario: bind a CUT first (isCut_ = true) so the FIRST band
+    // open reads the stale cut width — exactly what shrank Band 1 in the user's shot.
+    await page.evaluate(() => window.rs.selectNode(0)); await wait(page, 60); // Low Cut
+    const left = await openRect(2); // Band 1 — leftmost (previously 350 -> clipped/overlapped)
+    fs.writeFileSync(path.join(OUT, "panel-left.png"),
+      await page.screenshot({ clip: await clipWin(left.x - 8, left.y - 8, left.w + 16, left.h + 16) }));
+    const mid = await openRect(5);   // Band 4 — a middle band
+    const right = await openRect(9); // Band 8 — rightmost
+    fs.writeFileSync(path.join(OUT, "panel-right.png"),
+      await page.screenshot({ clip: await clipWin(right.x - 8, right.y - 8, right.w + 16, right.h + 16) }));
+    const inside = (r) => r && r.x >= editorRect.x - 0.5 && r.y >= editorRect.y - 0.5 &&
+                          r.x + r.w <= editorRect.x + editorRect.w + 0.5 &&
+                          r.y + r.h <= editorRect.y + editorRect.h + 0.5;
+    check("NodePanel keeps its intrinsic band width at every position (no edge-clamp shrink)",
+      !!(left && mid && right) && approx(left.w, mid.w, 0.5) && approx(mid.w, right.w, 0.5) && approx(left.w, 500, 1.0),
+      "left=" + (left && left.w) + " mid=" + (mid && mid.w) + " right=" + (right && right.w));
+    check("NodePanel stays fully inside the editor at the left / middle / right band",
+      inside(left) && inside(mid) && inside(right),
+      "L[x=" + left.x.toFixed(0) + " r=" + (left.x + left.w).toFixed(0) + "] M[x=" + mid.x.toFixed(0) +
+      " r=" + (mid.x + mid.w).toFixed(0) + "] R[x=" + right.x.toFixed(0) + " r=" + (right.x + right.w).toFixed(0) + "]");
+
+    // Reported edge case: a CUT (350) then the RIGHTMOST band DIRECTLY. The editor
+    // used to hand setBounds the cut's stale 350 for the band; because the cut panel
+    // is ALSO 350 at the same centred x, that setBounds no-ops and RsNodePanel's
+    // width-guard is skipped (bounds unchanged) — so only reading preferredWidth()
+    // AFTER setNode() (the oracle order) actually widens it. Assert the band panel is
+    // a full 500 and its right edge stays inside the editor (not just >= 0 on the left).
+    // Resizing away and back re-runs selectNode(cut) (RsEditor::resized repositions
+    // the open panel) and settles it at the cut's canonical (centred-350) bounds, so
+    // the band's stale-350 setBounds lands EXACTLY there and no-ops — the
+    // deterministic form of the reported bug (a plain setSize to the current size
+    // no-ops and would not re-lay-out).
+    await page.evaluate(() => window.rs.selectNode(1)); await wait(page, 70);       // High Cut (350)
+    await page.evaluate(() => window.rs.setSize(1000, 700)); await wait(page, 100); // real resize away...
+    await page.evaluate(() => window.rs.setSize(1069, 747)); await wait(page, 130); // ...and back -> cut settles at 350 bounds
+    const rAfterCut = await openRect(9); // Band 8 (rightmost), opened straight after a cut
+    fs.writeFileSync(path.join(OUT, "panel-right-after-cut.png"),
+      await page.screenshot({ clip: await clipWin(rAfterCut.x - 8, rAfterCut.y - 8, rAfterCut.w + 16, rAfterCut.h + 16) }));
+    check("NodePanel: cut -> rightmost band opens at full intrinsic width, fully inside the editor",
+      approx(rAfterCut.w, 500, 1.0) && inside(rAfterCut),
+      "w=" + rAfterCut.w + " x=" + rAfterCut.x.toFixed(0) + " right=" + (rAfterCut.x + rAfterCut.w).toFixed(0) + " (editor " + editorRect.w + ")");
+    await page.evaluate(() => window.rs.selectNode(-1));
+  }
+
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));
 
   await browser.close();
@@ -469,7 +537,7 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   const passed = asserts.every((a) => a.ok);
   const result = {
     url: URL, passed, webgl: webgl.renderer, timings,
-    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png", "rs-knob-depth.png"].map((f) => path.join(OUT, f)),
+    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png", "rs-knob-depth.png", "panel-left.png", "panel-right.png", "panel-right-after-cut.png"].map((f) => path.join(OUT, f)),
     asserts, jsErrorCount: jsErrors.length, httpErrorCount: httpErrors.length,
   };
   fs.writeFileSync(path.join(OUT, "rs_result.json"), JSON.stringify(result, null, 2));

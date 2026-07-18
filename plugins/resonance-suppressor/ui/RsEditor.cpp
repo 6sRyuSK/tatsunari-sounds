@@ -257,6 +257,16 @@ namespace rs_ui
         curve_->setSelectedNode (id);
         if (id >= 0)
         {
+            // Oracle order (SuppressionCurveComponent::selectNode -> positionPanel):
+            // bind the node FIRST so preferredWidth() reflects THIS node (cut 350 /
+            // band 500), THEN centre + clamp x for that width. Reading the width
+            // before setNode() used the PREVIOUSLY bound node's width — a band opened
+            // right after a cut got the cut's stale 350; and because the cut panel is
+            // also 350 at the same centred x, the follow-up setBounds no-ops (bounds
+            // unchanged), so even RsNodePanel's width-guard was skipped — reflowing
+            // the panel into the TYPE-button-under-knob overlap + "Lis…" clip the
+            // user reported.
+            nodePanel_->setNode (id);
             const int w = nodePanel_->preferredWidth();
             const int h = RsNodePanel::kHeight;
             float px, py, pw, ph;
@@ -264,7 +274,6 @@ namespace rs_ui
             float x = px + (pw - (float) w) * 0.5f;
             x = std::clamp (x, px, std::max (px, px + pw - (float) w));
             const float y = py + ph - (float) h - 6.0f;
-            nodePanel_->setNode (id);
             nodePanel_->setBounds (x, y, (float) w, (float) h);
             nodePanel_->setVisible (true);
         }

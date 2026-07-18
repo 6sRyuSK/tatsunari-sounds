@@ -92,7 +92,35 @@ namespace rs_ui
 
     void RsNodePanel::refreshListen() { listenOn_ = (feed_.getListenNode() == nodeId_); }
 
-    void RsNodePanel::resized() { computeLayout(); }
+    void RsNodePanel::resized()
+    {
+        // Intrinsic-width guard (user-reported edge-clamp overlap). The editor
+        // computes the panel's bounds in RsEditor::selectNode, but it reads
+        // preferredWidth() BEFORE calling setNode(), so the width it hands us
+        // reflects the PREVIOUSLY bound node — a band opened right after a cut is
+        // sized to the cut's 350, a cut after a band to 500. At that stale width
+        // computeLayout() reflows into a collision: the right-anchored FREQ/SENS/
+        // WIDTH knob column (knobsX = rx + rw − knobsW) slides left over the
+        // left-anchored TYPE buttons, and the "Listen" chip clips to "Lis…". The
+        // JUCE oracle (SuppressionCurveComponent::selectNode → positionPanel) sets
+        // the node FIRST and only then reads preferredWidth(), so the panel's width
+        // is ALWAYS its intrinsic preferredWidth() and only its x/y is placed and
+        // clamped. The PRIMARY fix reorders RsEditor::selectNode to that order, so we
+        // are normally handed the right width; this stays as defense-in-depth for any
+        // other caller. setNode() has run by the time we are sized (isCut_ is correct
+        // here), so enforce the intrinsic width AND re-clamp x so widening can never
+        // push the panel past its parent's right edge.
+        const float pw = (float) preferredWidth();
+        if (std::abs (width() - pw) > 0.5f)
+        {
+            float nx = x();
+            if (const visage::Frame* p = parent())
+                nx = std::clamp (nx, 0.0f, std::max (0.0f, p->width() - pw));
+            setBounds (nx, y(), pw, height()); // re-enters resized() at the intrinsic width
+            return;
+        }
+        computeLayout();
+    }
 
     void RsNodePanel::computeLayout()
     {
