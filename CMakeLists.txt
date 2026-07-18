@@ -59,6 +59,12 @@ add_subdirectory(core/tests)
 # single CTest case, nothing here is sample-rate dependent).
 add_subdirectory(params/tests)
 
+# --- Unit tests for the shared factory_presets model successors ---
+# (links ONLY factory_presets + factory_params, headless — proving the new
+# StateCodec/PresetSession/UserPresetStoreFs headers are JUCE-free; a single CTest
+# case, nothing here is sample-rate dependent).
+add_subdirectory(presets/tests)
+
 # --- Auto-include every plugins/<slug> that has a CMakeLists.txt ---
 # FACTORY_PLUGINS narrows the build to a subset of slugs (comma- or
 # semicolon-separated). Empty (the default) configures everything. CI passes
