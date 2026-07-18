@@ -295,9 +295,11 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     await page.evaluate(() => { window.ui.set("depth", 50); window.ui.freeze(true); });
     await wait(page, 150);
     const r = await page.evaluate(() => window.ui.widgetRect("depth"));
-    const cx = r.x + r.w * 0.5, cy = r.y + r.h * 0.5;
-    // Big-knob dial radius after the round-3 fix-7 profile: name row 16 + value row
-    // 17 = 33 px reserved, 0 dial inset (fills the cell) — see Knob::draw + RsEditor.
+    // Settled footer: the big dial is WIDTH-limited at 104 px inside the 104x153 cell
+    // (name row 16 + value row 17 reserved; the dial is centred in the remaining
+    // 120 px dialH with an 8 px band above/below). Radius = min(w, h-33)/2 and the
+    // dial CENTRE is textTop + dialH/2 (= 0.5 px above the cell centre).
+    const cx = r.x + r.w * 0.5, cy = r.y + 16 + (r.h - 33) * 0.5;
     const R = Math.min(r.w, (r.h - 33)) * 0.5;
     const arcR = R * 0.78;                                // inside the solid ring band (clear of the AA edges)
     const shot = await canvasShot(page);
@@ -528,6 +530,34 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
       approx(rAfterCut.w, 500, 1.0) && inside(rAfterCut),
       "w=" + rAfterCut.w + " x=" + rAfterCut.x.toFixed(0) + " right=" + (rAfterCut.x + rAfterCut.w).toFixed(0) + " (editor " + editorRect.w + ")");
     await page.evaluate(() => window.rs.selectNode(-1));
+  }
+
+  // --- 19. footer knob geometry (settled P3 layout, regression guard) ---------
+  // Pins the settled design: big DEPTH/DETAIL dial 104px, mini ATK/REL/TILT 57px
+  // (size-contrast ratio 1.8); 8px vertical label gaps on both groups; DEPTH↔DETAIL
+  // edge-to-edge 40px, ATK↔REL↔TILT edge-to-edge 20px. Derived from widgetRects —
+  // each cell is exactly the dial width, so the cell-edge gap IS the dial edge-to-
+  // edge gap, and the vertical gap = (dialH - dial)/2 with dialH = cellH - text rows
+  // (big 16+17=33, mini 14+14=28).
+  {
+    await page.evaluate(() => { window.rs.selectNode(-1); window.rs.setSize(1069, 747); window.ui.freeze(true); });
+    await wait(page, 150);
+    const g = await page.evaluate(() => ({
+      depth: window.ui.widgetRect("depth"), detail: window.ui.widgetRect("detail"),
+      atk: window.ui.widgetRect("attack"), rel: window.ui.widgetRect("release"), tilt: window.ui.widgetRect("tilt"),
+    }));
+    const bigDia = Math.min(g.depth.w, g.depth.h - 33), miniDia = Math.min(g.atk.w, g.atk.h - 28);
+    const bigVGap = ((g.depth.h - 33) - bigDia) / 2, miniVGap = ((g.atk.h - 28) - miniDia) / 2;
+    const bigEdge = g.detail.x - (g.depth.x + g.depth.w);
+    const miniEdge1 = g.rel.x - (g.atk.x + g.atk.w), miniEdge2 = g.tilt.x - (g.rel.x + g.rel.w);
+    check("footer dial sizes: big 104px / mini 57px (ratio 1.8)",
+      approx(bigDia, 104, 1.0) && approx(miniDia, 57, 1.0), "big=" + bigDia + " mini=" + miniDia);
+    check("footer 8px vertical label gaps (big + mini)",
+      approx(bigVGap, 8, 1.0) && approx(miniVGap, 8, 1.0), "bigV=" + bigVGap.toFixed(1) + " miniV=" + miniVGap.toFixed(1));
+    check("footer DEPTH<->DETAIL edge-to-edge gap 40px",
+      approx(bigEdge, 40, 1.5), "bigEdge=" + bigEdge.toFixed(1));
+    check("footer ATK/REL/TILT edge-to-edge gaps 20px",
+      approx(miniEdge1, 20, 1.5) && approx(miniEdge2, 20, 1.5), "miniEdges=" + miniEdge1.toFixed(1) + "/" + miniEdge2.toFixed(1));
   }
 
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));

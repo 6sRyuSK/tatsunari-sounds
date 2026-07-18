@@ -359,22 +359,40 @@ namespace rs_ui
         // footer inner columns
         const float fx = footerCard_.x + S (14), fy = footerCard_.y + S (14);
         const float fw = footerCard_.w - 2.0f * S (14), fh = footerCard_.h - 2.0f * S (14);
-        const float col1W = fw * 0.40f, col2W = fw * 0.20f;
-        footerDiv1_ = fx + col1W; footerDiv2_ = fx + col1W + col2W;
+        // Footer knob layout (settled design). Size-contrast ratio 1.8: big DEPTH/
+        // DETAIL dial 104 px, mini ATK/REL/TILT dial 57 px. 8 px vertical label gaps
+        // on BOTH groups — big cell = name16 + 8 + dial104 + 8 + value17 = 153, mini
+        // cell = name14 + 8 + dial57 + 8 + value14 = 101 (the gap falls out of the
+        // dial being width-limited inside the taller cell, so each dial is centred
+        // with an 8 px band above/below). Horizontal edge-to-edge dial gaps: DEPTH↔
+        // DETAIL 40, ATK↔REL↔TILT 20. Each cell is exactly the dial width so the
+        // cell-to-cell gap IS the edge-to-edge dial gap. col1/col2 are redistributed
+        // so the wider mini trio fits (col2 = trio + 12 pad, col1 = remainder);
+        // footerDiv2 / col3 (MODE) are untouched. All lengths scale with S().
+        footerDiv2_ = fx + fw * 0.60f;                          // unchanged col2/col3 boundary
+        const float bigDia = (float) S (104), miniDia = (float) S (57);
+        const float bigCellH = (float) S (153), miniCellH = (float) S (101);
+        const float bigGap = (float) S (40), miniGap = (float) S (20); // edge-to-edge dial gaps
+        const float bigPairW = 2.0f * bigDia + bigGap;
+        const float miniTrioW = 3.0f * miniDia + 2.0f * miniGap;
+        const float col2W = miniTrioW + (float) S (12);
+        const float col1W = (footerDiv2_ - fx) - col2W;
+        footerDiv1_ = fx + col1W;
+        const float chFull = fh - 2.0f * S (6);
+        const float cyBig = fy + S (6) + (chFull - bigCellH) * 0.5f;   // stacks vertically centred
+        const float cyMini = fy + S (6) + (chFull - miniCellH) * 0.5f;
 
-        // col1: 2 big knobs
+        // col1: 2 big knobs — pair centred in col1, bigGap between.
         {
-            const float cx = fx + S (8), cy = fy + S (6), cw = col1W - 2.0f * S (8), ch = fh - 2.0f * S (6);
-            const float kw = cw / 2.0f;
+            const float pairLeft = fx + (col1W - bigPairW) * 0.5f;
             for (int i = 0; i < 2; ++i)
-                knobs_[(std::size_t) i]->setBounds (cx + i * kw + S (4), cy, kw - 2.0f * S (4), ch);
+                knobs_[(std::size_t) i]->setBounds (pairLeft + (float) i * (bigDia + bigGap), cyBig, bigDia, bigCellH);
         }
-        // col2: 3 small knobs
+        // col2: 3 mini knobs — trio centred in col2, miniGap between.
         {
-            const float cx = footerDiv1_ + S (6), cy = fy + S (6), cw = col2W - 2.0f * S (6), ch = fh - 2.0f * S (6);
-            const float kw = cw / 3.0f;
+            const float trioLeft = footerDiv1_ + (col2W - miniTrioW) * 0.5f;
             for (int i = 0; i < 3; ++i)
-                knobs_[(std::size_t) (2 + i)]->setBounds (cx + i * kw + S (3), cy, kw - 2.0f * S (3), ch);
+                knobs_[(std::size_t) (2 + i)]->setBounds (trioLeft + (float) i * (miniDia + miniGap), cyMini, miniDia, miniCellH);
         }
         // col3: MODE + 5 setting rows
         {
