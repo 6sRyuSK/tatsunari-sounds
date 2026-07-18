@@ -5,7 +5,9 @@
 #include "RsProfileModel.h"
 
 #include <visage_ui/frame.h>
+#include <visage_graphics/path.h>
 
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -105,6 +107,12 @@ namespace rs_ui
         void drawAnalyzer (visage::Canvas&);
         void drawReduction (visage::Canvas&);
         void drawProfile (visage::Canvas&);
+        // The reduction-profile layer (per-node fills+strokes, combined glow+main) is
+        // STATIC between parameter edits but redrawn every animated frame. Rebuild the
+        // stroked outline geometry only when a signature (plot rect, node params,
+        // stroke widths/alphas) changes; a static frame just re-fills the cache.
+        std::uint64_t profileSignature() const;
+        void rebuildProfileCache (float y0, float floorY);
         void drawNodes (visage::Canvas&);
         void drawHeaderControls (visage::Canvas&);
         void drawTooltip (visage::Canvas&);
@@ -152,5 +160,25 @@ namespace rs_ui
         // GR peak-hold badge
         float grPeakDb_ = 0.0f;
         int   grHold_ = 0;
+
+        // --- overlap-free stroke geometry (round #5) ---------------------------
+        // Every trace is stroked as a single visage::Path (one coverage mask) instead
+        // of a chain of translucent rounded capsules, so overlapping capsule joints
+        // can no longer double-composite into the beaded "comb" the user zoomed.
+        // Reused frame-to-frame (cleared + refilled) so a stroke never allocates fresh
+        // polyline storage. animPath_ carries the per-frame POST spectrum + reduction
+        // strokes; the profile cache below holds the static reduction-profile layer.
+        visage::Path animPath_;
+        struct ProfileNodeGeom
+        {
+            int          id = -1;             // colour is re-read live from the theme
+            visage::Path fillArea;            // per-node translucent fill (closed path)
+            visage::Path strokeOutline;       // per-node 1 px stroke (pre-stroked, overlap-free)
+        };
+        std::vector<ProfileNodeGeom> nodeCache_;
+        visage::Path combinedGlowOutline_;    // wide, low-alpha glow (same path, wider stroke)
+        visage::Path combinedMainOutline_;    // crisp main line
+        std::uint64_t profileSig_ = 0;
+        bool          profileCacheValid_ = false;
     };
 }
