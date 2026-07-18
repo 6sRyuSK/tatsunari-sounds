@@ -99,6 +99,27 @@ if(FACTORY_RS_CLAP)
   # clap-wrapper targets they create) inherit it; the JUCE targets above are
   # already defined and unaffected.
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+  # Pin the MSVC C runtime for the WHOLE CLAP build tree, at the root scope, so
+  # every target shares one CRT. clap-wrapper's own CMakeLists defaults
+  # CMAKE_MSVC_RUNTIME_LIBRARY to the STATIC runtime (/MT) when it is undefined,
+  # but our make_clapfirst targets + visage/bgfx use CMake's default DYNAMIC
+  # runtime (/MD) — so the wrapper-VST3 link fails on Windows with LNK2038
+  # ('RuntimeLibrary' mismatch: MT_StaticRelease vs MD_DynamicRelease) plus a
+  # swarm of LNK2005 duplicate-symbol errors. clap-wrapper honours the variable
+  # when it is already DEFINED, so defining it here (cached, before the
+  # add_subdirectory()s that populate clap-wrapper) makes the entire tree /MD —
+  # matching the shipping JUCE VST3/AU (also /MD), so the coexistence binaries
+  # share the same CRT and the same redist assumption. (CI never caught this:
+  # clap.yml builds the CLAP shell on Linux only.) Left overridable — pass
+  # -DCMAKE_MSVC_RUNTIME_LIBRARY=... (e.g. the static variant for a redist-free,
+  # self-contained plugin) and this respects it, exactly like clap-wrapper does.
+  if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    cmake_policy(SET CMP0091 NEW)  # runtime library via MSVC_RUNTIME_LIBRARY abstraction
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        CACHE STRING "Dynamic MSVC CRT for the coexistence CLAP build (match JUCE)")
+  endif()
+
   add_subdirectory(shell)
   add_subdirectory(plugins/resonance-suppressor/shell)
 endif()
