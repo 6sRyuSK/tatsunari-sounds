@@ -20,6 +20,7 @@
 //
 #include "factory_core/testing/DspInvariants.h"
 
+#include "factory_core/Biquad.h"
 #include "factory_core/LinkwitzRiley.h"
 #include "factory_core/OnePole.h"
 #include "factory_core/DelayLine.h"
@@ -32,8 +33,14 @@
 #include <complex>
 #include <cstdio>
 #include <functional>
+#include <random>
 #include <string>
 #include <vector>
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+ #include <xmmintrin.h>
+ #define CORE_TEST_HAS_MXCSR 1
+#endif
 
 namespace fct = factory_core::testing;
 using factory_core::LinkwitzRiley;
@@ -103,6 +110,24 @@ std::vector<double> impulseResponse (const std::function<double (double)>& proce
         h[(size_t) n] = process (n == 0 ? 1.0 : 0.0);
     return h;
 }
+
+// RAII: force the CPU's hardware denormal handling OFF (FTZ + DAZ cleared) for the
+// scope, restoring the prior mode after. The denormal-flush gate below must prove
+// the DSP is subnormal-safe from PURE ARITHMETIC (the cores are FP-mode-agnostic),
+// so it has to run with hardware flushing disabled — otherwise the CPU would zero
+// the subnormals for us and the gate would pass even if the software guard were
+// removed (a false green). No-op where MXCSR isn't available; on those targets the
+// process default already has denormals enabled.
+struct ScopedDenormalsEnabled
+{
+#if defined(CORE_TEST_HAS_MXCSR)
+    unsigned int saved = _mm_getcsr();
+    ScopedDenormalsEnabled()  { _mm_setcsr (saved & ~0x8040u); } // clear FTZ(15)+DAZ(6)
+    ~ScopedDenormalsEnabled() { _mm_setcsr (saved); }
+#else
+    ScopedDenormalsEnabled() = default;
+#endif
+};
 
 // ==========================================================================
 // 1. LinkwitzRiley (LR4) — highest blast radius: used by Crossover3 & Crossover5
@@ -527,6 +552,88 @@ void testCrossover5 (double Fs)
     check (b4lo < -20.0, "Crossover5 highest band isolated below its range");
 }
 
+// ==========================================================================
+// 7. Denormal flush — a decaying feedback tail must not pin the state subnormal
+// ==========================================================================
+//
+// Root cause of the P0 "two resonance-suppressor instances in series go
+// catastrophically heavy" report (regression-policy class V): a stable IIR fed a tail
+// that decays into digital silence lets its feedback state (z1/z2) drift into the
+// subnormal range and get STUCK there — hundreds of thousands of samples where
+// every multiply is microcoded (~80x a normal op). In a series chain stage 1's
+// tail underflows into stage 2, so both stages storm at once and blow past the
+// real-time budget on any host that does not force FTZ around the callback. The
+// cores are documented FP-mode-agnostic (they must not depend on the CPU rounding
+// mode), so factory_core::Biquad now flushes subnormal state to zero with pure
+// arithmetic; this gate proves it, with hardware denormal flushing DISABLED.
+//
+// Assertions (formula-independent): after a warm-up burst then a long silence the
+// tail is (a) finite, (b) free of SUSTAINED subnormals — its settled half carries
+// none — and (c) settles to EXACT zero. A pinned state fails (b) with ~all of the
+// settled half subnormal (10^4..10^5 samples) and (c) with a ~5e-323 residue
+// (measured on the un-guarded biquad). We check (b) over the SETTLED half, not the
+// whole tail: the guard flushes the feedback STATE, so once the decay reaches the
+// subnormal boundary the state (hence the output) drops to exact zero — but a
+// single transition sample may still emit one subnormal OUTPUT on its way down
+// (harmless, non-sustained, and rate-dependent). The storm is the SUSTAINED pin,
+// which (b) over the settled half and (c) both catch. Exercises the raw Biquad (the
+// guarded primitive) and the LinkwitzRiley crossover (four cascaded biquads — the
+// exact node MultiResSuppressor's band split storms on).
+void testDenormalFlush (double Fs)
+{
+    ScopedDenormalsEnabled hwDenormalsOff; // prove the software guard, not the CPU's
+
+    const int warm = (int) (0.05 * Fs);   // 50 ms of excitation to charge the state
+    const int tail = (int) (2.0  * Fs);   // 2 s of silence — a pinned state shows for ~all of it
+    const int last = (int) (0.01 * Fs);   // final 10 ms must be bit-zero once flushed
+
+    auto residueOverLast = [last] (const std::vector<double>& y)
+    {
+        double r = 0.0;
+        for (int n = (int) y.size() - last; n < (int) y.size(); ++n)
+            r = std::max (r, std::abs (y[(size_t) n]));
+        return r;
+    };
+    // The settled half [tail/2, tail): the state has long since decayed past the
+    // subnormal boundary and been flushed, so a guarded filter emits exact zeros
+    // here while a pinned one emits sustained subnormals.
+    auto settledHalf = [] (const std::vector<double>& y)
+    {
+        return std::vector<double> (y.begin() + (long) (y.size() / 2), y.end());
+    };
+
+    // (a) raw resonant Biquad (RBJ peaking) — the primitive that carries the guard.
+    {
+        factory_core::Biquad bq;
+        bq.setCoeffs (factory_core::designPeaking (0.05 * Fs, 9.0, 3.0, Fs));
+        std::mt19937 rng (7);
+        std::uniform_real_distribution<double> u (-0.5, 0.5);
+        for (int n = 0; n < warm; ++n) bq.processSample (u (rng));
+        std::vector<double> y; y.reserve ((size_t) tail);
+        for (int n = 0; n < tail; ++n) y.push_back (bq.processSample (0.0));
+        check (fct::allFinite (y),                       "Biquad silent tail finite");
+        check (fct::noSubnormals (settledHalf (y)),      "Biquad settled tail free of sustained subnormals (no denormal storm)");
+        check (residueOverLast (y) == 0.0,               "Biquad silent tail settles to exact zero");
+    }
+
+    // (b) LinkwitzRiley crossover — four cascaded biquads, the real storm site.
+    {
+        factory_core::LinkwitzRiley lr;
+        lr.setCutoff (0.06 * Fs, Fs);
+        std::mt19937 rng (8);
+        std::uniform_real_distribution<double> u (-0.5, 0.5);
+        for (int n = 0; n < warm; ++n) { double lo, hi; lr.process (u (rng), lo, hi); }
+        std::vector<double> lows, highs; lows.reserve ((size_t) tail); highs.reserve ((size_t) tail);
+        for (int n = 0; n < tail; ++n) { double lo, hi; lr.process (0.0, lo, hi); lows.push_back (lo); highs.push_back (hi); }
+        check (fct::allFinite (lows) && fct::allFinite (highs),       "LR4 silent tail finite");
+        check (fct::noSubnormals (settledHalf (lows)) && fct::noSubnormals (settledHalf (highs)),
+               "LR4 settled tail free of sustained subnormals (no denormal storm)");
+        check (residueOverLast (lows) == 0.0 && residueOverLast (highs) == 0.0,
+               "LR4 silent tail settles to exact zero");
+    }
+    std::printf ("[Denorm Fs=%.0f] Biquad + LR4 silent tails subnormal-free, settle to exact zero\n", Fs);
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -539,6 +646,7 @@ int main (int argc, char** argv)
         testCompressor (Fs);
         testEnvelopeFollower (Fs);
         testCrossover5 (Fs);
+        testDenormalFlush (Fs);
     }
 
     if (g_failures > 0)

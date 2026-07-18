@@ -309,10 +309,33 @@
 #include <string>
 #include <vector>
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+ #include <xmmintrin.h>
+ #define RS_TEST_HAS_MXCSR 1
+#endif
+
 namespace
 {
     using cd = std::complex<double>;
     constexpr double kPi = 3.14159265358979323846;
+
+    // RAII: force the CPU's hardware denormal handling OFF (FTZ + DAZ cleared) for
+    // the scope. The chained-series denormal gate must prove the DSP is safe from
+    // PURE ARITHMETIC (the cores are FP-mode-agnostic — the host-boundary FTZ guard
+    // lives in the wrapper, not here), so it runs with hardware flushing disabled;
+    // otherwise the CPU would zero the subnormals and the gate would pass even if
+    // the software guard were removed. No-op where MXCSR isn't available (the
+    // process default there already has denormals enabled).
+    struct ScopedDenormalsEnabled
+    {
+#if defined(RS_TEST_HAS_MXCSR)
+        unsigned int saved = _mm_getcsr();
+        ScopedDenormalsEnabled()  { _mm_setcsr (saved & ~0x8040u); } // clear FTZ(15)+DAZ(6)
+        ~ScopedDenormalsEnabled() { _mm_setcsr (saved); }
+#else
+        ScopedDenormalsEnabled() = default;
+#endif
+    };
 
     int g_failures = 0;
     void fail (const std::string& m) { std::printf ("  FAIL: %s\n", m.c_str()); ++g_failures; }
@@ -4222,6 +4245,85 @@ namespace
     }
 }
 
+// P0 regression (regression-policy class V): two resonance-suppressor instances in
+// SERIES went catastrophically heavy in a real host. Root cause: the LinkwitzRiley
+// band-split biquads inside MultiResSuppressor let their feedback state decay into
+// the subnormal range and get PINNED there when the signal fades to digital
+// silence — every op then microcoded (~80x). In a chain, stage 1's tail underflows
+// into stage 2, so both storm at once and blow the real-time budget on any host
+// that does not force FTZ around the callback. The fix (factory_core::Biquad
+// flushes subnormal state to zero, pure-arithmetic) is verified here at the
+// composed-engine level, with hardware denormal flushing DISABLED so the software
+// guard alone is exercised.
+//
+// Formula-independent gate: after a music burst then a long EXACT silence, the
+// chained output must (a) stay finite, (b) stay bounded (no runaway), and (c)
+// SETTLE TO EXACT ZERO — a pinned subnormal state instead leaves a ~1e-323 residue
+// forever (measured on the un-guarded engine: residueLast10ms ~5e-323, tens of
+// thousands of subnormal samples). Runs across the standard rate matrix.
+void chainedSeriesDenormalTest (double Fs)
+{
+    std::printf ("Chained-series denormal safety @ Fs=%.0f\n", Fs);
+    ScopedDenormalsEnabled hwDenormalsOff; // prove the pure-arithmetic guard
+
+    const int order = orderFor (Fs);
+    factory_core::MultiResSuppressor stage1, stage2;
+    stage1.prepare (Fs, order);
+    stage2.prepare (Fs, order);
+    stage1.setDepth (1.0); stage2.setDepth (1.0); // active suppression (default profile = 1)
+
+    const int music = (int) (0.30 * Fs); // resonant burst charges both stages' crossovers
+    const int tail  = (int) (2.00 * Fs); // then exact silence — a pinned state shows for ~all of it
+    const int last  = (int) (0.01 * Fs); // final 10 ms must be bit-zero once drained
+    std::mt19937 rng (3);
+    std::uniform_real_distribution<double> u (-1.0, 1.0);
+
+    long long t = 0;
+    for (int n = 0; n < music; ++n)
+    {
+        double s = 0.0;
+        for (double f : { 300.0, 700.0, 1500.0, 3500.0, 7000.0 })
+            s += std::sin (2.0 * kPi * f * (double) t / Fs);
+        double l = 0.12 * s + 0.2 * u (rng), r = l;
+        ++t;
+        stage1.process (l, r);
+        stage2.process (l, r);
+    }
+
+    std::vector<double> mid, out; // stage-1 output (inter-stage) and stage-2 output over the tail
+    mid.reserve ((size_t) tail); out.reserve ((size_t) tail);
+    for (int n = 0; n < tail; ++n)
+    {
+        double l = 0.0, r = 0.0;
+        stage1.process (l, r);           // stage 1 fed EXACT silence
+        mid.push_back (std::abs (l) + std::abs (r));
+        stage2.process (l, r);           // stage 2 fed stage-1's output (the series chain)
+        out.push_back (std::abs (l) + std::abs (r));
+    }
+
+    auto residueOverLast = [last] (const std::vector<double>& y)
+    {
+        double rr = 0.0;
+        for (int n = (int) y.size() - last; n < (int) y.size(); ++n) rr = std::max (rr, y[(size_t) n]);
+        return rr;
+    };
+
+    if (! factory_core::testing::allFinite (mid) || ! factory_core::testing::allFinite (out))
+        fail ("chained series: non-finite tail at Fs=" + std::to_string (Fs));
+    if (factory_core::testing::peakAbs (out) > 4.0)
+        fail ("chained series: unbounded tail peak " + std::to_string (factory_core::testing::peakAbs (out))
+              + " at Fs=" + std::to_string (Fs));
+    const double resMid = residueOverLast (mid), resOut = residueOverLast (out);
+    if (resMid != 0.0)
+        fail ("chained series: stage-1 tail did not settle to zero (residue "
+              + std::to_string (resMid) + ", denormal pin) at Fs=" + std::to_string (Fs));
+    if (resOut != 0.0)
+        fail ("chained series: stage-2 tail did not settle to zero (residue "
+              + std::to_string (resOut) + ", denormal pin) at Fs=" + std::to_string (Fs));
+    std::printf ("  peak=%.3e  stage1 residue=%.2e  stage2 residue=%.2e (both settle to exact 0)\n",
+                 factory_core::testing::peakAbs (out), resMid, resOut);
+}
+
 int main (int argc, char** argv)
 {
     // Full standard sample-rate matrix, up to 192 kHz. A single rate may be
@@ -4261,6 +4363,7 @@ int main (int argc, char** argv)
         stereoLinkTest (Fs);
         silenceTest (Fs, 0); // Soft
         silenceTest (Fs, 1); // Hard
+        chainedSeriesDenormalTest (Fs); // P0 class V: two-in-series denormal storm
         resolutionTest (Fs);
         softLevelInvarianceTest (Fs);
         hardLevelDependenceTest (Fs);

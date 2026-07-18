@@ -43,6 +43,7 @@
 | R | 連続ステレオリンクのブレンド則（対数ドメイン補間） | resonance-suppressor Phase 3（Link Amount） | リンク量を 0-100% で連続可変にする際、per-channel ゲインとリンク基準ゲインを**線形（振幅）領域**で混ぜると、0%/100% 端点で旧 per-channel／旧 linked 経路とビット一致しなくなり（後方互換の破壊）、中間値の知覚上のリンク感も不自然になる | ブレンドは**対数（dB 相当）ドメイン**で行う: `g' = exp((1−λ)·ln(gch) + λ·ln(gM))`。λ=1 は旧 linked 経路、λ=0 は旧 per-channel 経路とビット一致（両者とも保存）、0<λ<1 は各チャンネル**独立のバリスティクス状態**を保ったままブレンドする。ゲート: `linkBlendTest` で λ=0/1 端点のビット一致と中間 λ の対数ブレンド式一致を検証（全6レート） |
 | S | Listen（ノードソロ）が「そのノードの除去信号」と非厳密 | resonance-suppressor Phase 5a | 1 ノードだけをソロして聴く機能で、他ノードの寄与が混ざる、または depth=0 でも似非の除去信号を出す（class J の亜種：無音から幻の差分を作る）と、ユーザーが「今何を削っているか」を誤認する | 対象ノード**のみ**を残したプロファイル（他は基線 1.0）＋ `delta=true`＋`mix=1.0` で「そのノードの除去信号そのもの」を出す。プロファイルは**既存の非ゼロ reduction をスケールするだけ**（無音から生成しない、computeGains は depth>0 でしかゲートしない）という設計で無音時の幻除去を構造的に防ぐ。ゲート: `listenProfileTest` — (a) depth>0 でノード帯域に実際の除去エネルギーがある、(b) 同一プロファイルのまま depth=0 にすると delta が STFT 再構成残差（<=1e-6）まで収束する、の両方を検証（全6レート） |
 | T | Quality 切替のレイテンシ整合崩れ（PDC・リフィルホールド） | resonance-suppressor Phase 1-2（Quality: Fast/Normal/High） | Quality 切替は解析窓長 N（＝申告レイテンシ）を変える。切替直後は OLA リングが空になるため、そのまま wet を出すと無音／破綻したフレームが漏れ、ホスト PDC の再申告が遅れると他トラックとタイミングがずれる | 切替が確定するフレーム境界で OLA リング・ゲイン・フレーム位相をクリアしつつ、直後の N サンプルは**強制的にレイテンシ整合済みドライ**を保持（リフィルホールド）、その後は既存の bypass 用クロスフェードで wet に復帰。申告レイテンシは切替直後に新しい N へ即時更新（host PDC 再ネゴシエーション）。ゲート: 全 Quality の遅延テーブル（N_L(q) など）と、切替またぎで depth=0 再構成が 1e-9 以内に復帰することを検証（`qualityTest`／`dualQualityTest`、全6レート） |
+| V | 帰還ノードの denormal storm（直列で致命的高負荷） | resonance-suppressor（実 DAW で 2 インスタンス直列、shipping v2.1.0 でも再現） | 安定 IIR（`Biquad`）の帰還状態 z1/z2 が、減衰テールが無音に沈む際に subnormal（非正規化）域に入り込んで**ピン留め**される。subnormal 演算はマイクロコード化され正規の ~80x。直列だと段1の減衰テールが段2に underflow し**両段同時にストーム**、FTZ を callback 内で設定しないホストで RT 予算を突破 | core は **FP モード非依存**（ホスト境界の FTZ ガードに依存しない）→ `Biquad` が subnormal 状態を**純粋算術でゼロフラッシュ**（`flushDenormalToZero`、`|z| < 最小正規化 double` のときだけ 0、正規域はビット不変で既存オラクル・byte-equivalence 不変）。ゲート: FTZ/DAZ を**明示 OFF** にして減衰テール→無音が (a) finite・(b) settled 域に持続 subnormal なし（`noSubnormals`）・(c) 出力が**厳密ゼロ収束**、を全6レートで検証（`primitives_test` の `Biquad`/`LinkwitzRiley`＋`dsp_test` の直列2段 `chainedSeriesDenormalTest`） |
 
 ---
 
@@ -287,6 +288,39 @@
   効いている（オンセット直後は表示が遅れて立ち上がる）ことと定常で両者が収束することも
   確認し、無効化・過剰平滑の両方向の回帰を塞ぐ。
 
+### V. 帰還ノードは denormal storm を起こさない（直列時の致命的高負荷）
+- フィードバックを持つ IIR（`Biquad` と、それを composす `LinkwitzRiley` /
+  `Crossover3` / `Crossover5` / `MultiResSuppressor`）は、減衰テールが**無音（厳密
+  ゼロ入力）**に沈むとき、帰還状態 z1/z2 が subnormal（非正規化）域に入り込んで
+  **ピン留め**され得る。subnormal を含む浮動小数演算はマイクロコード化され、正規演算の
+  **~80x** に達する（実測: LinkwitzRiley が無音入力で 398 ns/samp、フラッシュ後 5-8
+  ns/samp）。1 インスタンスでは「重い」で済んでも、**2 段直列**では段 1 の減衰テールが
+  段 2 の入力に underflow し、両段が同時にストームして RT 予算を突破する（実 DAW で
+  resonance-suppressor 2 直列が「単に重い」ではなく致命的に。**shipping JUCE v2.1.0
+  でも再現** = 共有 DSP のバグで CLAP/Visage グルーではない）。
+- DSP コアは **FP モード非依存**（CPU の丸めモードを仮定も設定もしない — `shell/
+  include/factory_shell/DenormalGuard.h` のコメント参照）。ホスト境界の FTZ/DAZ ガード
+  （wrapper 側の `ScopedNoDenormals`）に**依存しない**こと。ガードは正しくスコープされて
+  いても、コアがそもそも denormal を撒くこと自体が潜在バグ。したがって修正は core の
+  帰還プリミティブ自身に置く: `factory_core::Biquad::processSample` が状態 z1/z2 を毎
+  サンプル `flushDenormalToZero`（`|x| < std::numeric_limits<double>::min()` のとき
+  だけ 0 に）。**既に subnormal な値だけ**を触るので正規域の出力はビット不変（既存
+  オラクル・RsCore の byte-equivalence ゲートは不変。両 RS 経路が同一 `Biquad` を composす
+  ので equivalence は構造的に保たれる）。純粋算術なので FTZ の有無に関わらず効く。
+- **テスト（必須・全6レート）**: ハードウェアの denormal フラッシュを**明示的に OFF**
+  （FTZ/DAZ クリア）にして、純粋算術ガード単体を検証する（FTZ が ON だと CPU が
+  subnormal をゼロ化してしまい、ガードを外しても緑になる = **偽陽性**）。減衰バースト→
+  長い無音で、(a) `allFinite`、(b) settled 域（テール後半）に**持続 subnormal なし**
+  （`noSubnormals`）、(c) 出力が**厳密ゼロへ収束**（末尾 10ms が bit-zero）を assert。
+  減衰途中に 1 サンプルだけ出る過渡 subnormal 出力は無害（非持続・レート依存）なので
+  **settled 域**で判定する。ゲート: `core/tests/primitives_test.cpp` の
+  `testDenormalFlush`（生 `Biquad`＋`LinkwitzRiley`）と、
+  `plugins/resonance-suppressor/tests/dsp_test.cpp` の `chainedSeriesDenormalTest`
+  （`MultiResSuppressor` を**2 段直列**、music→無音で両段が厳密ゼロへ収束）。
+- **core 変更の波及**: `Biquad` は多数のプラグイン（dynamic-eq / fuzznari /
+  multiband-enhancer / vocal-mbcomp / nam-player / resonance-suppressor）が composす
+  ので、変更時は**全依存プラグインの DSP テスト**を走らせること（`CLAUDE.md`）。
+
 ---
 
 ## チェックリスト
@@ -296,8 +330,8 @@
       テスト可能（GUI/ホスト不要）。
 - [ ] テストは `sampleRatesFromArgs()` を使い **全6レート** で走る。CMake の
       `foreach(_fs ...)` も同じ6レート。
-- [ ] フィードバックがあるなら A（loop gain<1・最悪ケース）と C（finite ガード）を
-      検証。
+- [ ] フィードバックがあるなら A（loop gain<1・最悪ケース）・C（finite ガード）・
+      V（減衰テールが無音で denormal を持続させない）を検証。
 - [ ] 共振/高次フィルタがあるなら B（ピーク絶対上限）を検証。
 - [ ] 遅延バッファがあるなら D（最悪ケースで確保）を検証。
 - [ ] `prepareToPlay` で `reset()`、bypass/mode 遷移で状態リセット（E）。

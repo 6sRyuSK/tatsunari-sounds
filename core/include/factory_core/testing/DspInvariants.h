@@ -76,6 +76,23 @@ namespace factory_core::testing
         return p;
     }
 
+    // True iff NO element is subnormal (denormalized). A stable feedback node fed
+    // a decaying tail into silence must not get pinned in the subnormal range,
+    // where every op is microcoded and costs ~80x a normal one — two such nodes in
+    // series (e.g. two resonance-suppressor instances, stage 1's tail underflowing
+    // into stage 2) then run catastrophically over the real-time budget on any
+    // host that does not force FTZ/DAZ around the callback. The DSP cores are
+    // FP-mode-agnostic, so this must hold from pure arithmetic, independent of the
+    // CPU rounding mode. Pair with allFinite(): finite AND subnormal-free == every
+    // value is a normal double or an exact zero. (regression-policy class V.)
+    inline bool noSubnormals (const std::vector<double>& x)
+    {
+        for (double v : x)
+            if (std::fpclassify (v) == FP_SUBNORMAL)
+                return false;
+        return true;
+    }
+
     inline double windowEnergy (const std::vector<double>& x, std::size_t start, std::size_t len)
     {
         double e = 0.0;
