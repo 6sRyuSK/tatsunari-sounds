@@ -44,6 +44,7 @@
 | S | Listen（ノードソロ）が「そのノードの除去信号」と非厳密 | resonance-suppressor Phase 5a | 1 ノードだけをソロして聴く機能で、他ノードの寄与が混ざる、または depth=0 でも似非の除去信号を出す（class J の亜種：無音から幻の差分を作る）と、ユーザーが「今何を削っているか」を誤認する | 対象ノード**のみ**を残したプロファイル（他は基線 1.0）＋ `delta=true`＋`mix=1.0` で「そのノードの除去信号そのもの」を出す。プロファイルは**既存の非ゼロ reduction をスケールするだけ**（無音から生成しない、computeGains は depth>0 でしかゲートしない）という設計で無音時の幻除去を構造的に防ぐ。ゲート: `listenProfileTest` — (a) depth>0 でノード帯域に実際の除去エネルギーがある、(b) 同一プロファイルのまま depth=0 にすると delta が STFT 再構成残差（<=1e-6）まで収束する、の両方を検証（全6レート） |
 | T | Quality 切替のレイテンシ整合崩れ（PDC・リフィルホールド） | resonance-suppressor Phase 1-2（Quality: Fast/Normal/High） | Quality 切替は解析窓長 N（＝申告レイテンシ）を変える。切替直後は OLA リングが空になるため、そのまま wet を出すと無音／破綻したフレームが漏れ、ホスト PDC の再申告が遅れると他トラックとタイミングがずれる | 切替が確定するフレーム境界で OLA リング・ゲイン・フレーム位相をクリアしつつ、直後の N サンプルは**強制的にレイテンシ整合済みドライ**を保持（リフィルホールド）、その後は既存の bypass 用クロスフェードで wet に復帰。申告レイテンシは切替直後に新しい N へ即時更新（host PDC 再ネゴシエーション）。ゲート: 全 Quality の遅延テーブル（N_L(q) など）と、切替またぎで depth=0 再構成が 1e-9 以内に復帰することを検証（`qualityTest`／`dualQualityTest`、全6レート） |
 | V | 帰還ノードの denormal storm（直列で致命的高負荷） | resonance-suppressor（実 DAW で 2 インスタンス直列、shipping v2.1.0 でも再現） | 安定 IIR（`Biquad`）の帰還状態 z1/z2 が、減衰テールが無音に沈む際に subnormal（非正規化）域に入り込んで**ピン留め**される。subnormal 演算はマイクロコード化され正規の ~80x。直列だと段1の減衰テールが段2に underflow し**両段同時にストーム**、FTZ を callback 内で設定しないホストで RT 予算を突破 | core は **FP モード非依存**（ホスト境界の FTZ ガードに依存しない）→ `Biquad` が subnormal 状態を**純粋算術でゼロフラッシュ**（`flushDenormalToZero`、`|z| < 最小正規化 double` のときだけ 0、正規域はビット不変で既存オラクル・byte-equivalence 不変）。ゲート: FTZ/DAZ を**明示 OFF** にして減衰テール→無音が (a) finite・(b) settled 域に持続 subnormal なし（`noSubnormals`）・(c) 出力が**厳密ゼロ収束**、を全6レートで検証（`primitives_test` の `Biquad`/`LinkwitzRiley`＋`dsp_test` の直列2段 `chainedSeriesDenormalTest`） |
+| W | 毎ブロック冗長計算による生 CPU 過負荷（直列で RT 予算突破） | resonance-suppressor（実 DAW: Studio One 192kHz/1024 で Normal×2 直列・High×1 が過負荷。**denormal 非依存＝FTZ ON でも再現**、shipping v2.1.0 でも同じ） | reduction プロファイルの**ラスタライズ**（全ビン×全ノードの transcendental 掃引、8 バンドで最重）と**表示スペクトル publish**（3×O(N) の dB 変換＋マージ）を、パラメータもエディタ状態も変わらないのに**毎ブロック**再計算。ブロックが小さいほど（＝192k のように N が大きいほど）この固定オーバーヘッドが償却されず、2 直列で予算突破。denormal でも content 依存でもない**純粋な生 CPU**（stage2 が stage1 の抑圧後スペクトルを処理しても超線形化しない：computeGains にピーク探索ループが無く O(N/2) 固定） | (A) プロファイルをキャッシュし、**入力（listen ノード / reduction ノード全フィールド / 両グリッドのビン数）が変わったブロックだけ**再ラスタライズ（`updateProfile`）。engine は前ブロックのプロファイルを保持（`setProfile` はコピー）。band の中心 log 周波数を bin 掃引の外へ hoist（`prepareBandLogF`、ビット不変）。(B) **エディタ未アタッチ時**（`editorActive`／CLAP は `RsFeedFromCore::setDisplayActive`）は publish と表示平滑化を skip（DSP・音声は不変）。JUCE 処理と RsCore で**同一ロジック**（byte-equivalence を維持）。ゲート: `profilePreparedHoistIdentityTest`（hoist がビット恒等、tol 0）＋`reductionNodesIdentityTest`（キャッシュキーが全フィールドを見る＝取りこぼし無し）＋`rscore_equiv` の**automation ケース**（毎ブロック param 変更でキャッシュが両側で同期無効化）＋ editor-closed ケース（表示ゲートが音声透過）。この 4 つで「キャッシュ出力 == 毎ブロック再ラスタライズ出力」を担保 |
 
 ---
 
@@ -320,6 +321,61 @@
 - **core 変更の波及**: `Biquad` は多数のプラグイン（dynamic-eq / fuzznari /
   multiband-enhancer / vocal-mbcomp / nam-player / resonance-suppressor）が composす
   ので、変更時は**全依存プラグインの DSP テスト**を走らせること（`CLAUDE.md`）。
+
+### W. 毎ブロック冗長計算をキャッシュする（生 CPU 過負荷・直列で RT 予算突破）
+- クラス V（denormal storm）の**別種**。こちらは denormal でも content 依存でも
+  ない**純粋な生 CPU**。`processBlock` が、パラメータもエディタ状態も変わらないのに
+  重い純関数を**毎ブロック**再計算していると、ブロックが小さい／N が大きい設定
+  （例 192kHz）で固定オーバーヘッドが償却されず、2 直列で RT 予算を突破する。
+  診断の分岐点: **FTZ ON でも再現する**なら denormal ではない。stage2 が stage1 の
+  抑圧後（ノッチ）スペクトルを処理しても**超線形化しない**なら content 依存でもない
+  （`ResonanceSuppressor::computeGains` はピーク探索ループを持たず全ビン O(N/2) 固定
+  ＝検出コストは入力内容に依らない）。残るのは生コスト＝償却の問題。
+- resonance-suppressor の 2 大ホットスポット（いずれも毎ブロック・内容非依存）:
+  1. **プロファイルのラスタライズ**（`rasterizeProfile`）: 全ビン × 全ノードで
+     `reductionProfileLinearAt`（1 ビンあたり ~20 個の transcendental、8 バンドで最重）
+     を両エンジンのグリッドに掃引。実測 48k/128/Normal でエンジン本体（4 FFT）の ~2 倍。
+  2. **表示スペクトルの publish**: `magnitudeDb`/`reductionDb`/`magnitudePreDb`（各
+     O(N) の log10＋log-f マージ）＋ per-bin atomic store。**エディタを閉じていても走る**。
+- 修正（**低リスクの純キャッシュ＋ゲート**。sonic/taste でも tolerance 緩和でもない）:
+  - **(A) プロファイルキャッシュ**: ラスタライズは純関数 = f(listen ノード, reduction
+    ノード, 両グリッドのビン数)。この**キー**を前ブロックと比較し、変わったブロック
+    だけ再ラスタライズ（`updateProfile`）。engine は前回のプロファイルを保持
+    （`setProfile` がコピー）。キーは「実際のラスタライズ入力そのもの」を比較するので
+    **set フック依存より安全**（取りこぼしで stale にならない）。Quality 切替は
+    グリッドのビン数変化として、listen 変化は listen キーとして捕捉。band の中心
+    log 周波数（bin 掃引で loop-invariant）は `prepareBandLogF` で掃引外へ hoist
+    （`reductionProfile*AtPrepared`、ビット不変）。
+  - **(B) エディタ未アタッチ時は表示を止める**: publish と表示平滑化は GUI 専用。
+    `editorActive`（JUCE は editor ctor/dtor、CLAP は `RsClapEditor::create/destroy`
+    → `RsFeed::setDisplayActive` → `RsCore`）が false のとき両方を skip。**DSP・出力
+    音声は不変**（表示ゲートは音声透過）。既定 false（GUI の無いホストは表示に払わない）。
+  - JUCE 処理（`PluginProcessor`）と `RsCore` で**バイト等価な同一ロジック**にする
+    （両者が共有 `factory_core::reductionNodesIdentical` とグリッドキーで同期無効化）。
+- **RT 安全**: 無効化パスは比較のみ（alloc/lock 無し）。edit が来たブロックの
+  再ラスタライズは**従来の毎ブロックと同じ**ワークが**稀に**走るだけ（最悪単一ブロック
+  コストは従来以下。hoist でむしろ軽い）。
+- **テスト（必須）**: キャッシュ出力が「毎ブロック再ラスタライズ」と厳密一致すること、
+  かつ JUCE/RsCore が乖離しないことを、次の 4 ゲートで担保する:
+  1. `profilePreparedHoistIdentityTest`（`dsp_test`）: `reductionProfile*AtPrepared`
+     ==`*At` を 8 バンド＋両カット構成・20Hz–20kHz で**ビット恒等（tol 0）**。
+  2. `reductionNodesIdentityTest`（`dsp_test`）: `reductionNodesIdentical` が全カット
+     ＋全バンドの**各フィールド**の差分を検出する（＝キャッシュキーの取りこぼし無し）。
+     これが無いと「あるフィールドを見落とす比較バグ」を**両側が同じく持てば
+     byte-equivalence では捕捉できない**（両方が同じく stale）。
+  3. `rscore_equiv` の **automation ケース**（`runAutomation`）: **毎ブロック**
+     パラメータを変える（band/cut 各フィールド・depth・時折 Quality/Listen）ことで
+     キャッシュを常時無効化し、出力＋published スペクトルが**バイト一致**することを
+     検証（両側のキャッシュが同期して無効化される保証）。静的 config の equivalence
+     だけでは非対称／フィールド盲目な無効化を捕捉できない。
+  4. `rscore_equiv` の **editor-closed ケース**: `editorActive=false` で音声が
+     **バイト不変**（表示ゲートが音声透過）かつ両側が published スペクトルを同一に
+     凍結することを検証。
+- **診断メモ（再発時の切り分け）**: 生コスト過負荷は「CPU% が **1/ブロックサイズ**
+  と **有効ノード数**に比例、**入力内容には非依存（無音でも同じ）**」が指紋。
+  block を 512→128 に落として CPU% がほぼ倍化するなら固定オーバーヘッドの償却不足
+  （＝このクラス）。denormal（V）は FTZ ON で消え、content 依存は stage 直列で超線形化
+  する — どちらでもなければ W。
 
 ---
 

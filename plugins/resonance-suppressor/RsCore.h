@@ -127,6 +127,9 @@ namespace rs_core
             for (auto& a : pubMag)    a.store (-120.0f, std::memory_order_relaxed);
             for (auto& a : pubRed)    a.store (   0.0f, std::memory_order_relaxed);
             for (auto& a : pubMagPre) a.store (-120.0f, std::memory_order_relaxed);
+            // Invalidate the profile cache: the engine's profile is all-1.0 after
+            // prepare and the grid may have changed, so the first block must bake.
+            profileCacheValid = false;
         }
 
         // Mirror processBlock's inner work on caller-owned buffers. L/R is the main
@@ -144,8 +147,14 @@ namespace rs_core
             // for THIS block and outranks SC Listen; < 0 is the normal path.
             const int listen = listenNode.load (std::memory_order_relaxed);
 
-            // Live display-smoothing override (l.253): atomic load only.
-            suppressor.setDisplaySmoothingMs ((double) displaySmoothMsUi.load (std::memory_order_relaxed));
+            // Editor-attached gate (perf): mirrors the processor's editorActive. The
+            // display publish + display-time smoothing are GUI-only; with no editor
+            // attached (CLAP GUI closed) both are skipped, DSP untouched. Read once.
+            const bool showDisplay = displayActive.load (std::memory_order_relaxed);
+
+            // Live display-smoothing override (l.253): atomic load only. Forced to 0
+            // (the engine's cheap unsmoothed display path) while no editor is attached.
+            suppressor.setDisplaySmoothingMs (showDisplay ? (double) displaySmoothMsUi.load (std::memory_order_relaxed) : 0.0);
             uiQuality = s.quality;
 
             // Mode read once (l.257): steers both the Depth mapping and setMode.
@@ -170,8 +179,7 @@ namespace rs_core
             suppressor.setMode        (hardMode ? 1 : 0);                          // l.289
             suppressor.setQuality     (s.quality);                                 // l.293
             suppressor.setBypassed    (s.bypass);                                  // l.298
-            if (listen >= 0) rasterizeListenProfile (listen, s);                   // l.302
-            else             rasterizeProfile (s);                                 // l.303
+            updateProfile (listen, s);                                             // l.302-303 (cached; see below)
 
             // Output-trim target (l.321-323): unity while bypassed so bypass stays a
             // unity passthrough, else pow(10, out/20). Seed on the first block.
@@ -208,16 +216,22 @@ namespace rs_core
 
             // Publish the latest display spectra on the now-current bin grid
             // (l.353-362). Scratch is preallocated at the top order, so this is
-            // allocation-free.
-            const int bins = suppressor.numBins();
-            const double* magDb    = suppressor.magnitudeDb    (magScratch.data());
-            const double* redDb    = suppressor.reductionDb    (redScratch.data());
-            const double* magPreDb = suppressor.magnitudePreDb (preScratch.data());
-            for (int k = 0; k < bins; ++k)
+            // allocation-free. Skipped when no editor is attached (perf): the three
+            // merged-dB reads + per-bin atomic stores are display-only work; the
+            // snapshots resume one block after an editor attaches. Mirrors the
+            // processor's showDisplay gate so the equivalence gate stays byte-exact.
+            if (showDisplay)
             {
-                pubMag   [(size_t) k].store ((float) magDb   [k], std::memory_order_relaxed);
-                pubRed   [(size_t) k].store ((float) redDb   [k], std::memory_order_relaxed);
-                pubMagPre[(size_t) k].store ((float) magPreDb[k], std::memory_order_relaxed);
+                const int bins = suppressor.numBins();
+                const double* magDb    = suppressor.magnitudeDb    (magScratch.data());
+                const double* redDb    = suppressor.reductionDb    (redScratch.data());
+                const double* magPreDb = suppressor.magnitudePreDb (preScratch.data());
+                for (int k = 0; k < bins; ++k)
+                {
+                    pubMag   [(size_t) k].store ((float) magDb   [k], std::memory_order_relaxed);
+                    pubRed   [(size_t) k].store ((float) redDb   [k], std::memory_order_relaxed);
+                    pubMagPre[(size_t) k].store ((float) magPreDb[k], std::memory_order_relaxed);
+                }
             }
         }
 
@@ -245,6 +259,16 @@ namespace rs_core
         {
             displaySmoothMsUi.store (ms < 0.0f ? 0.0f : ms, std::memory_order_relaxed);
         }
+
+        // Editor-attached flag (perf), mirroring the processor's setEditorActive.
+        // The CLAP editor sets it true on GUI create() and false on destroy() (via
+        // the RsFeed seam). While false -- no GUI -- process() skips the display
+        // publish + display-time smoothing (the DSP / audio are untouched, so the
+        // byte-equivalence gate holds under both states). Defaults false so a
+        // never-opened shell instance pays for no display. GUI thread sets, audio
+        // thread reads (lock-free), same discipline as listenNode.
+        void setDisplayActive (bool active) noexcept { displayActive.store (active, std::memory_order_relaxed); }
+        bool getDisplayActive() const noexcept       { return displayActive.load (std::memory_order_relaxed); }
 
         // Optional read-out for a UI: the label of the last snapshot's Quality.
         const char* qualityLabel() const noexcept
@@ -277,46 +301,82 @@ namespace rs_core
             return n;
         }
 
-        // Rasterise the full node graph onto BOTH engines' grids (transcribed from
-        // rasterizeProfile l.173-197).
-        void rasterizeProfile (const RsParamSnapshot& s) noexcept
+        // Rebake the reduction profile ONLY when its inputs changed since the last
+        // block (perf) -- the byte-identical mirror of the processor's updateProfile.
+        // Key = (listen node, reduction nodes, both grids' bin counts); when
+        // unchanged the engine retains the previous profile (setProfile copies) and
+        // the transcendental sweep is skipped. Comparing the actual rasterise inputs
+        // means the cache can never go stale, and using the SAME shared
+        // reductionNodesIdentical / grid-bin key as the processor keeps the two
+        // caches invalidating in lockstep (the equivalence gate's under-automation
+        // case proves it). Bit-identical to rasterising every block.
+        void updateProfile (int listen, const RsParamSnapshot& s) noexcept
         {
-            const auto nodes = nodesFromSnapshot (s);
+            const auto nodes  = nodesFromSnapshot (s);
+            const int  nLow   = suppressor.numBins();
+            const int  nHigh  = suppressor.highEngine().numBins();
+
+            if (profileCacheValid
+                && listen == cachedListenNode
+                && nLow == cachedLowBins && nHigh == cachedHighBins
+                && factory_core::reductionNodesIdentical (nodes, cachedProfileNodes))
+                return;
+
+            if (listen >= 0) rasterizeListenProfile (listen, nodes);
+            else             rasterizeProfile (nodes);
+
+            cachedListenNode  = listen;
+            cachedLowBins     = nLow;
+            cachedHighBins    = nHigh;
+            cachedProfileNodes = nodes;
+            profileCacheValid = true;
+        }
+
+        // Rasterise the full node graph onto BOTH engines' grids (transcribed from
+        // rasterizeProfile l.173-197). The per-band centre log-frequency is hoisted
+        // out of the bin sweep (prepareBandLogF) -- loop-invariant, bit-identical.
+        void rasterizeProfile (const factory_core::ReductionNodes& nodes) noexcept
+        {
+            factory_core::BandLogF bandLogF;
+            factory_core::prepareBandLogF (nodes, bandLogF);
+
             const int nLow = suppressor.numBins();
             profileBuf[0] = 1.0; // DC: nominal
             for (int k = 1; k < nLow; ++k)
-                profileBuf[(size_t) k] = factory_core::reductionProfileLinearAt (suppressor.binToHz (k), nodes);
+                profileBuf[(size_t) k] = factory_core::reductionProfileLinearAtPrepared (suppressor.binToHz (k), nodes, bandLogF);
 
             const auto& high = suppressor.highEngine();
             const int nHigh = high.numBins();
             profileBufHigh[0] = 1.0;
             for (int k = 1; k < nHigh; ++k)
-                profileBufHigh[(size_t) k] = factory_core::reductionProfileLinearAt (high.binToHz (k), nodes);
+                profileBufHigh[(size_t) k] = factory_core::reductionProfileLinearAtPrepared (high.binToHz (k), nodes, bandLogF);
 
             suppressor.setProfile (profileBuf.data(), nLow, profileBufHigh.data(), nHigh);
         }
 
         // Solo one reduction node onto BOTH grids (transcribed from
         // rasterizeListenProfile l.199-226): same mapping, only that node contributes.
-        void rasterizeListenProfile (int nodeId, const RsParamSnapshot& s) noexcept
+        void rasterizeListenProfile (int nodeId, const factory_core::ReductionNodes& nodes) noexcept
         {
-            const auto nodes = nodesFromSnapshot (s);
             factory_core::ReductionNodes solo;
             if (nodeId == 0)      solo.lowCut  = nodes.lowCut;
             else if (nodeId == 1) solo.highCut = nodes.highCut;
             else if (nodeId >= 2 && nodeId - 2 < kNumBands)
                 solo.bands[(size_t) (nodeId - 2)] = nodes.bands[(size_t) (nodeId - 2)];
 
+            factory_core::BandLogF bandLogF;
+            factory_core::prepareBandLogF (solo, bandLogF);
+
             const int nLow = suppressor.numBins();
             listenProfileLow[0] = 1.0;
             for (int k = 1; k < nLow; ++k)
-                listenProfileLow[(size_t) k] = factory_core::reductionProfileLinearAt (suppressor.binToHz (k), solo);
+                listenProfileLow[(size_t) k] = factory_core::reductionProfileLinearAtPrepared (suppressor.binToHz (k), solo, bandLogF);
 
             const auto& high = suppressor.highEngine();
             const int nHigh = high.numBins();
             listenProfileHigh[0] = 1.0;
             for (int k = 1; k < nHigh; ++k)
-                listenProfileHigh[(size_t) k] = factory_core::reductionProfileLinearAt (high.binToHz (k), solo);
+                listenProfileHigh[(size_t) k] = factory_core::reductionProfileLinearAtPrepared (high.binToHz (k), solo, bandLogF);
 
             suppressor.setProfile (listenProfileLow.data(), nLow, listenProfileHigh.data(), nHigh);
         }
@@ -347,6 +407,16 @@ namespace rs_core
 
         std::atomic<int>   listenNode        { -1 };    // -1 = normal processing
         std::atomic<float> displaySmoothMsUi { 50.0f }; // == prepareToPlay's fixed 50 ms until overridden
+        std::atomic<bool>  displayActive     { false }; // editor attached? (see setDisplayActive)
         int                uiQuality         { 1 };     // last snapshot Quality (for qualityLabel)
+
+        // Profile-rasterisation cache (perf), byte-identical to the processor's:
+        // the key of the last rasterise (listen node / nodes / grid bin counts).
+        // `valid` is reset false in prepare() so the first block bakes.
+        bool                         profileCacheValid = false;
+        int                          cachedListenNode  = -1;
+        int                          cachedLowBins     = 0;
+        int                          cachedHighBins    = 0;
+        factory_core::ReductionNodes cachedProfileNodes {};
     };
 } // namespace rs_core

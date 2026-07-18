@@ -225,11 +225,19 @@ namespace
 
             curW_ = kDesignW;
             curH_ = kDesignH;
+
+            // The analyser is now live: let the core publish display spectra + run
+            // display-time smoothing again (both skipped while no editor is attached
+            // -- see RsCore::setDisplayActive). Cleared in destroy(). Main thread, as
+            // the whole gui contract is; the core reads the flag on the audio thread.
+            feed_.setDisplayActive (true);
             return true;
         }
 
         void destroy() noexcept override
         {
+            // GUI going away: stop the core's display publish + smoothing (perf).
+            feed_.setDisplayActive (false);
             if (app_) app_->close();
             editor_.reset();
             app_.reset();

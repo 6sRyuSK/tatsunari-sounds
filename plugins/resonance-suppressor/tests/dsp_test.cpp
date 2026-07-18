@@ -305,6 +305,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -4216,6 +4217,100 @@ namespace
         std::printf ("  maxErr=%.2e (expect ~0, additive by construction)\n", maxErr);
     }
 
+    // Prepared-hoist identity (perf refactor supporting the plugin's rasterisation
+    // cache). reductionProfile*AtPrepared is the rasteriser fast path: it hoists each
+    // band's centre log-frequency (std::log(freqHz), loop-invariant across a bin
+    // sweep) out of the per-frequency evaluation. It must be BIT-IDENTICAL to the
+    // per-call reductionProfile*At -- same inputs, same deterministic std::log, same
+    // band iteration/accumulation order -- so the plugin's cached rasteriser (which
+    // uses the prepared form on BOTH the JUCE processor and RsCore) can never drift
+    // from the reference curve the editor and the oracle gates above evaluate.
+    // Tolerance 0 (bitwise memcmp), over the 8-band + both-cuts config, 20 Hz..20 kHz.
+    void profilePreparedHoistIdentityTest()
+    {
+        std::printf ("Prepared-hoist identity (reductionProfile*AtPrepared == *At, bitwise)\n");
+        const double freqs [8] = { 80.0, 200.0, 500.0, 1200.0, 3000.0, 6000.0, 9000.0, 15000.0 };
+        const double senss [8] = { 4.0, -6.0, 8.0, -3.0, 10.0, -8.0, 5.0, -2.0 };
+        const BT     types [8] = { BT::Bell, BT::LowShelf, BT::HighShelf, BT::BandShelf,
+                                   BT::BandReject, BT::Tilt, BT::Bell, BT::LowShelf };
+        const double widths[8] = { 0.25, 0.50, 1.0, 2.0, 0.30, 0.75, 1.5, 0.10 };
+
+        factory_core::ReductionNodes n;
+        n.lowCut  = { true, 35.0,    24.0 };
+        n.highCut = { true, 16000.0, 24.0 };
+        for (int b = 0; b < 8; ++b)
+            n.bands[(size_t) b] = { true, freqs[b], types[b], senss[b], widths[b] };
+
+        factory_core::BandLogF bandLogF;
+        factory_core::prepareBandLogF (n, bandLogF);
+
+        auto bitsEq = [] (double a, double b) { return std::memcmp (&a, &b, sizeof (double)) == 0; };
+        long long mism = 0;
+        for (int i = 0; i <= 2000; ++i)
+        {
+            const double t = (double) i / 2000.0;
+            const double f = 20.0 * std::pow (1000.0, t); // 20 Hz .. 20 kHz, log-spaced
+            if (! bitsEq (factory_core::reductionProfileDbAtPrepared (f, n, bandLogF),
+                          factory_core::reductionProfileDbAt (f, n))) ++mism;
+            if (! bitsEq (factory_core::reductionProfileLinearAtPrepared (f, n, bandLogF),
+                          factory_core::reductionProfileLinearAt (f, n))) ++mism;
+        }
+        if (mism != 0) fail ("prepared hoist not bit-identical: " + std::to_string (mism) + " mismatch(es)");
+        std::printf ("  2001 freqs x 2 forms, %lld mismatch(es) (expect 0)\n", mism);
+    }
+
+    // reductionNodesIdentical completeness (perf: the rasterisation cache KEY). The
+    // plugin re-rasterises the profile only when reductionNodesIdentical(current,
+    // cached) is false, so if that comparison IGNORED any node field, an edit to that
+    // field would be silently dropped (stale profile) -- and because BOTH the JUCE
+    // processor and RsCore share the same buggy compare, the byte-equivalence gate
+    // could NOT catch it (both wrong identically). This gate is the independent proof
+    // that the key examines EVERY field: identical copies compare equal, and a tweak
+    // to any single field compares unequal. (Combined with the hoist-identity gate
+    // and the equivalence gate's under-automation case, this proves cached ==
+    // rasterise-every-block.)
+    void reductionNodesIdentityTest()
+    {
+        std::printf ("reductionNodesIdentical completeness (cache key sees every field)\n");
+        auto base = [] {
+            factory_core::ReductionNodes n;
+            n.lowCut  = { true, 40.0,    24.0 };
+            n.highCut = { true, 15000.0, 12.0 };
+            const BT types[8] = { BT::Bell, BT::LowShelf, BT::HighShelf, BT::BandShelf,
+                                  BT::BandReject, BT::Tilt, BT::Bell, BT::HighShelf };
+            for (int b = 0; b < 8; ++b)
+                n.bands[(size_t) b] = { true, 100.0 * (b + 1), types[b], (double) (b - 3), 0.4 + 0.05 * b };
+            return n;
+        };
+
+        const auto a = base();
+        if (! factory_core::reductionNodesIdentical (a, base()))
+            fail ("reductionNodesIdentical: identical copies not equal");
+
+        int missed = 0;
+        auto mustDiffer = [&] (factory_core::ReductionNodes m, const char* what) {
+            if (factory_core::reductionNodesIdentical (a, m)) { fail (std::string ("cache key ignores ") + what); ++missed; }
+        };
+        // Cuts: on / freq / slope, both low and high.
+        { auto m = a; m.lowCut.on = ! m.lowCut.on;                 mustDiffer (m, "lowCut.on"); }
+        { auto m = a; m.lowCut.freqHz += 1.0;                      mustDiffer (m, "lowCut.freq"); }
+        { auto m = a; m.lowCut.slopeDbPerOct = 48.0;               mustDiffer (m, "lowCut.slope"); }
+        { auto m = a; m.highCut.on = ! m.highCut.on;               mustDiffer (m, "highCut.on"); }
+        { auto m = a; m.highCut.freqHz += 1.0;                     mustDiffer (m, "highCut.freq"); }
+        { auto m = a; m.highCut.slopeDbPerOct = 6.0;               mustDiffer (m, "highCut.slope"); }
+        // Every band field, every band.
+        for (int b = 0; b < 8; ++b)
+        {
+            { auto m = a; m.bands[(size_t) b].on = ! m.bands[(size_t) b].on;            mustDiffer (m, "band.on"); }
+            { auto m = a; m.bands[(size_t) b].freqHz += 1.0;                            mustDiffer (m, "band.freq"); }
+            { auto m = a; m.bands[(size_t) b].type = (m.bands[(size_t) b].type == BT::Bell) ? BT::Tilt : BT::Bell;
+                                                                                       mustDiffer (m, "band.type"); }
+            { auto m = a; m.bands[(size_t) b].sensDb += 0.5;                            mustDiffer (m, "band.sens"); }
+            { auto m = a; m.bands[(size_t) b].widthOct += 0.01;                         mustDiffer (m, "band.width"); }
+        }
+        std::printf ("  %s (every cut+band field detected)\n", missed == 0 ? "ok" : "FAILED");
+    }
+
     void reductionDefaultTest (double Fs)
     {
         std::printf ("Reduction default profile (rasterise) @ Fs=%.0f\n", Fs);
@@ -4338,6 +4433,8 @@ int main (int argc, char** argv)
     reductionDefaultIdentityTest();
     widthSweepTest();
     eightBandSuperpositionTest();
+    profilePreparedHoistIdentityTest();
+    reductionNodesIdentityTest();
     for (double Fs : rates)
     {
         reconstructionTest (Fs);

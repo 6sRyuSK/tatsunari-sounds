@@ -107,6 +107,7 @@ namespace
         struct Bnd { bool on; float freq; int type; float sens; float width; } b[8];
         int   listen;   // -1 = off
         float smoothMs; // display smoothing
+        bool  editorActive = true; // editor attached? (display publish + smoothing gate)
     };
 
     void setParam (RS& p, const juce::String& id, float real)
@@ -156,6 +157,13 @@ namespace
         feed.setListenNode (c.listen);
         p.setDisplaySmoothMs (c.smoothMs);
         feed.setDisplaySmoothMs (c.smoothMs);
+        // Editor-attached gate, driven on the processor directly AND on the core
+        // THROUGH the feed (exercising the feed's setDisplayActive mapping, like the
+        // other two write hooks). editorActive=true keeps the display publish live so
+        // the published-spectra byte compare below stays meaningful; a dedicated
+        // editor-closed step drives it false and confirms the AUDIO stays byte-exact.
+        p.setEditorActive (c.editorActive);
+        feed.setDisplayActive (c.editorActive);
     }
 
     // Snapshot every value the processor pulls per block, read from the SAME
@@ -289,6 +297,94 @@ namespace
         }
     }
 
+    // Equivalence UNDER AUTOMATION (the profile-cache guard). Unlike runStep (one
+    // static config for all its blocks), this CHANGES parameters EVERY block --
+    // walking band freq/sens/width/type/on, cut fields, depth, and occasionally
+    // Quality + Listen -- so the reduction-profile rasterisation cache invalidates on
+    // (nearly) every block and its key is stressed from every direction. The gate is
+    // the SAME byte-exact compare as runStep (every output sample + published
+    // spectra): it proves the JUCE processor's cache and RsCore's cache invalidate in
+    // lockstep, i.e. the perf cache can never make the two drift and a changing
+    // profile is re-rasterised identically on both. (Static-config equivalence alone
+    // could not catch an asymmetric or field-blind invalidation; a moving profile can.)
+    void runAutomation (Ctx& ctx, RS& proc, rs_core::RsCore& core, rs_ui::RsFeed& feed,
+                        bool scConnected, SignalGen& gen, double fs, int blockSize, int numBlocks,
+                        Cfg cfg, const std::string& where)
+    {
+        const int totalIn  = proc.getTotalNumInputChannels();
+        const int totalOut = proc.getTotalNumOutputChannels();
+        const int nch = std::max (totalIn, totalOut);
+        juce::MidiBuffer midi;
+        std::vector<float> mL, mR, sL, sR, coreL, coreR, coreScL, coreScR;
+
+        for (int blk = 0; blk < numBlocks; ++blk)
+        {
+            // Mutate the config this block so the profile key moves a different way
+            // each time (every invalidation path: band fields, a toggled band, cut
+            // freq/on/slope, depth, plus periodic Quality + Listen transitions).
+            const int band = blk % 8;
+            cfg.b[band].freq  = 200.0f + (float) ((blk * 137) % 12000);
+            cfg.b[band].sens  = (float) (((blk * 7) % 21) - 10);
+            cfg.b[band].width = 0.25f + (float) (blk % 6) * 0.20f;
+            cfg.b[band].type  = (blk / 3) % 6;
+            cfg.b[(band + 3) % 8].on = ((blk % 2) == 0);
+            cfg.lc.freq  = 30.0f + (float) (blk % 200);
+            cfg.lc.on    = ((blk % 5) != 0);
+            cfg.hc.slope = blk % 4;
+            cfg.depth    = 20.0f + (float) (blk % 60);
+            if (blk % 7 == 6) cfg.quality = (blk / 7) % 3;   // occasional Quality switch
+            cfg.listen   = (blk % 11 == 10) ? (blk % 10) : -1; // occasional Listen solo
+            applyCfg (proc, feed, cfg);
+            const auto snap = buildSnapshot (proc);
+
+            gen.block (fs, blockSize, mL, mR, sL, sR);
+            juce::AudioBuffer<float> procBuf (nch, blockSize);
+            procBuf.clear();
+            std::memcpy (procBuf.getWritePointer (0), mL.data(), sizeof (float) * (size_t) blockSize);
+            std::memcpy (procBuf.getWritePointer (1), mR.data(), sizeof (float) * (size_t) blockSize);
+            if (scConnected && nch >= 4)
+            {
+                std::memcpy (procBuf.getWritePointer (2), sL.data(), sizeof (float) * (size_t) blockSize);
+                std::memcpy (procBuf.getWritePointer (3), sR.data(), sizeof (float) * (size_t) blockSize);
+            }
+            coreL = mL; coreR = mR; coreScL = sL; coreScR = sR;
+
+            proc.processBlock (procBuf, midi);
+            {
+                juce::ScopedNoDenormals noDenormals;
+                core.process (coreL.data(), coreR.data(),
+                              scConnected ? coreScL.data() : nullptr,
+                              scConnected ? coreScR.data() : nullptr,
+                              blockSize, snap);
+            }
+
+            const float* pL = procBuf.getReadPointer (0);
+            const float* pR = procBuf.getReadPointer (1);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                if (! bitEqual (pL[i], coreL[(size_t) i]))
+                    reportFail (ctx, where + " L[" + std::to_string (i) + "] blk " + std::to_string (blk));
+                if (! bitEqual (pR[i], coreR[(size_t) i]))
+                    reportFail (ctx, where + " R[" + std::to_string (i) + "] blk " + std::to_string (blk));
+            }
+            if (proc.binsForDisplay() != core.numBins())
+                reportFail (ctx, where + " numBins blk " + std::to_string (blk));
+            const int bins = core.numBins();
+            const std::atomic<float>* cMag = core.magnitudeDb();
+            const std::atomic<float>* cPre = core.magnitudePreDb();
+            const std::atomic<float>* cRed = core.reductionDb();
+            for (int k = 0; k < bins; ++k)
+            {
+                if (! bitEqual (proc.displayMagDb (k),    cMag[k].load (std::memory_order_relaxed)))
+                    reportFail (ctx, where + " magDb[" + std::to_string (k) + "] blk " + std::to_string (blk));
+                if (! bitEqual (proc.displayMagPreDb (k), cPre[k].load (std::memory_order_relaxed)))
+                    reportFail (ctx, where + " magPreDb[" + std::to_string (k) + "] blk " + std::to_string (blk));
+                if (! bitEqual (proc.displayRedDb (k),    cRed[k].load (std::memory_order_relaxed)))
+                    reportFail (ctx, where + " redDb[" + std::to_string (k) + "] blk " + std::to_string (blk));
+            }
+        }
+    }
+
     // ---- configs ------------------------------------------------------------
     Cfg cfgBase()
     {
@@ -384,6 +480,22 @@ int main()
             runStep (ctx, *proc, *core, true, buildSnapshot (*proc), gen, fs, 1024, 3, at + " fastQ+scListen");
             runStep (ctx, *proc, *core, true, buildSnapshot (*proc), gen, fs, 1, 4, at + " tiny-blocks");
 
+            // 7. UNDER AUTOMATION: parameters move every block -> the profile
+            //    rasterisation cache invalidates constantly; both engines must stay
+            //    byte-identical (proves the two caches invalidate in lockstep).
+            runAutomation (ctx, *proc, *core, feed, true, gen, fs, 256, 64, base, at + " automation");
+            runAutomation (ctx, *proc, *core, feed, true, gen, fs, 192, 40, cfgHardMS (base), at + " automation-odd");
+
+            // 8. Editor CLOSED (display publish + smoothing gated off): the audio must
+            //    stay byte-identical (display gating is audio-transparent) and both
+            //    engines freeze the published spectra identically.
+            Cfg closed = base; closed.editorActive = false;
+            applyCfg (*proc, feed, closed);
+            runStep (ctx, *proc, *core, true, buildSnapshot (*proc), gen, fs, 512, 3, at + " editor-closed");
+            // Re-open the editor so the read-out mapping check below sees live spectra.
+            applyCfg (*proc, feed, base);
+            runStep (ctx, *proc, *core, true, buildSnapshot (*proc), gen, fs, 256, 2, at + " editor-reopened");
+
             // ---- RsFeedFromCore read-out mapping (pointers + values) ----
             if (feed.bins() != core->numBins())            reportFail (ctx, at + " feed.bins mismatch");
             if (! bitEqualD (feed.sampleRate(), core->sampleRate())) reportFail (ctx, at + " feed.sampleRate mismatch");
@@ -437,6 +549,14 @@ int main()
             Cfg fast = base; fast.quality = 0; fast.delta = true; fast.listen = -1;
             applyCfg (*proc, feed, fast);
             runStep (ctx, *proc, *core, false, buildSnapshot (*proc), gen, fs, 1024, 2, at + " fastQ+delta");
+
+            // Automation at the user's small block size + editor-closed on the plain
+            // (non-SC) path: the cache + display gate are SC-independent, but exercise
+            // them here too, at block 128.
+            runAutomation (ctx, *proc, *core, feed, false, gen, fs, 128, 48, base, at + " automation");
+            Cfg closed = base; closed.editorActive = false;
+            applyCfg (*proc, feed, closed);
+            runStep (ctx, *proc, *core, false, buildSnapshot (*proc), gen, fs, 256, 2, at + " editor-closed");
         }
     }
 

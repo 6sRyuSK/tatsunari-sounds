@@ -141,6 +141,16 @@ public:
     // displaySmoothMsUi). Clamped to >= 0; applied at the top of processBlock.
     void setDisplaySmoothMs (float ms) noexcept { displaySmoothMsUi.store (juce::jmax (0.0f, ms), std::memory_order_relaxed); }
 
+    // Editor-attached flag (perf). The analyser publish (three per-bin dB spectra)
+    // and the display-time smoothing are GUI-only work. When no editor is attached
+    // -- the common "plugin window closed" case -- both are skipped: the
+    // suppression/detection DSP and the output audio are UNTOUCHED (bit-identical),
+    // only the analyser snapshots stop updating and resume on the first block after
+    // an editor attaches. Set by the editor ctor/dtor (GUI thread); read once per
+    // block by the audio thread (lock-free). Defaults false so a headless / no-GUI
+    // host never pays for a display nobody reads.
+    void setEditorActive (bool active) noexcept { editorActive.store (active, std::memory_order_relaxed); }
+
     // A/B compare (Phase 5b-1): two session-only state slots, same scope as
     // getStateInformation (APVTS + program index) -- NOT listenNode or other
     // transient execution state. Host persistence is unchanged: getStateInformation
@@ -153,16 +163,27 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    void rasterizeProfile();
+    // Rasterise the reduction profile onto both engines' grids -- ONLY when it has
+    // changed since the last block (perf). The profile is a pure function of
+    // (listen node, reduction nodes, both grids' bin counts); updateProfile compares
+    // that key against the cache and rebakes (dispatching to rasterizeProfile /
+    // rasterizeListenProfile) only on a change, else leaves the engine's retained
+    // profile untouched. RsCore carries byte-identical logic (the equivalence gate,
+    // incl. its under-automation case, proves the two caches invalidate in lockstep,
+    // which is also what guarantees the cache can never go stale). Output is
+    // bit-identical to re-rasterising every block; the per-block transcendental
+    // sweep collapses to edit-time-only work.
+    void updateProfile (int listen);
+    void rasterizeProfile (const factory_core::ReductionNodes& nodes);
     // A/B slot helpers (5b-1): reuse the same stateToXml/applyStateXml logic
     // getStateInformation/setStateInformation use, just targeting an in-memory
     // slot instead of the host's blob.
     void copyStateToSlot (int slot);
     void loadStateFromSlot (int slot);
     // Listen (5a-1-B): rasterise a profile with only ONE node (nodeId) copied
-    // from the live parameters, everything else off -- same per-engine grid
-    // mapping as rasterizeProfile(), just a single-node config.
-    void rasterizeListenProfile (int nodeId);
+    // from `nodes`, everything else off -- same per-engine grid mapping as
+    // rasterizeProfile(), just a single-node config.
+    void rasterizeListenProfile (int nodeId, const factory_core::ReductionNodes& nodes);
 
     std::atomic<float>* depthParam  = nullptr;
     std::atomic<float>* detailParam = nullptr; // v2.1 Detail macro (0..100 %) -- replaces sharpness/selectivity as the DSP driver
@@ -199,6 +220,20 @@ private:
 
     // Assemble the node config from the cached audio-thread pointers.
     factory_core::ReductionNodes currentNodes() const noexcept;
+
+    // Profile-rasterisation cache (perf): the key of the last rasterise. The
+    // profile is recomputed only when (listen node, nodes, grid bin counts) differs
+    // from this (see updateProfile). `valid` starts false in prepareToPlay so the
+    // first block always bakes. Audio-thread only, so plain members.
+    bool                         profileCacheValid = false;
+    int                          cachedListenNode  = -1;
+    int                          cachedLowBins     = 0;
+    int                          cachedHighBins    = 0;
+    factory_core::ReductionNodes cachedProfileNodes {};
+
+    // Editor-attached flag (perf): see setEditorActive. GUI thread sets, audio
+    // thread reads. False = no display work (publish + smoothing skipped).
+    std::atomic<bool> editorActive { false };
 
     factory_core::MultiResSuppressor suppressor;
     // v2.1 Output trim smoother (~20 ms linear ramp on the linear gain; reset

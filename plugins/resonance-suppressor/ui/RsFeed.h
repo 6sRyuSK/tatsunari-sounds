@@ -54,6 +54,14 @@ namespace rs_ui
         // Analyser display time smoothing, ms (>= 0). Ex-AnalyzerDevPanel control.
         virtual void setDisplaySmoothMs (float ms) noexcept = 0;
 
+        // Editor-attached flag (perf): the editor sets true when its analyser is on
+        // screen and false when it tears down, so a feed backed by a live engine can
+        // skip publishing display spectra + display-time smoothing while no GUI reads
+        // them (the DSP is untouched). Non-pure with a no-op default so a feed with no
+        // such engine behind it (e.g. the synthetic harness feed) need not implement
+        // it; the real RsFeedFromCore forwards it to the RsCore.
+        virtual void setDisplayActive (bool /*active*/) noexcept {}
+
         // Optional info read-outs (a UI may show them; a feed may return 0 / "").
         virtual int         latencySamples() const noexcept { return 0; }
         virtual const char* qualityLabel()   const noexcept { return ""; }

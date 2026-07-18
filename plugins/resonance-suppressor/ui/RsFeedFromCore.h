@@ -46,6 +46,11 @@ namespace rs_ui
         // core's next process() block.
         void setDisplaySmoothMs (float ms) noexcept override { core_.setDisplaySmoothMs (ms); }
 
+        // Editor-attached flag -> the core (perf): while false the core skips the
+        // display publish + display-time smoothing. The CLAP editor sets it on GUI
+        // create()/destroy().
+        void setDisplayActive (bool active) noexcept override { core_.setDisplayActive (active); }
+
         // Optional info read-outs.
         int         latencySamples() const noexcept override { return core_.latencySamples(); }
         const char* qualityLabel()   const noexcept override { return core_.qualityLabel(); }
