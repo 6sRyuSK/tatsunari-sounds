@@ -62,7 +62,7 @@ jobs:
             ninja-build \
             libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
-            libfontconfig1-dev libgl1-mesa-dev ladspa-sdk
+            libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev ladspa-sdk
 
       - name: Configure (FACTORY_RS_CLAP=ON)
         run: >

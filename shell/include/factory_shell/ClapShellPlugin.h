@@ -32,9 +32,17 @@
 //                                                  // steady-state latency (0 = constant-latency core)
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// GUI: NOT implemented in chunk 3a. get_extension() returns nullptr for
-// CLAP_EXT_GUI, so the host treats the plugin as GUI-less and every gate here is
-// headless-validatable. The Visage editor + clap.gui land in chunk 3b.
+// GUI (chunk 3b): OPT-IN and Policy-driven. The shell advertises CLAP_EXT_GUI
+// (and, on Linux, CLAP_EXT_POSIX_FD_SUPPORT) ONLY when the Policy provides an
+// editor — i.e. defines `static constexpr bool kHasEditor = true` plus a
+// `makeEditor(core, store, session, host)` factory returning a
+// factory_shell::IClapEditor. Detection is compile-time (PolicyHasEditor), so a
+// Policy WITHOUT an editor (every headless chunk-3a plugin) is byte-for-byte the
+// old GUI-less shell: get_extension() returns nullptr for CLAP_EXT_GUI and every
+// gate stays headless-validatable. The concrete editor (Visage-backed for RS)
+// lives in the plugin and is the ONLY place that links Visage; this header — and
+// the shell library — never see it. All gui.* calls are [main-thread]; the audio
+// thread never touches the editor.
 //
 // REAL-TIME SAFETY: process() and everything it calls (event apply, the Policy
 // snapshot+process, the latency check) performs no allocation, lock, or syscall.
@@ -44,6 +52,7 @@
 //
 #include "factory_shell/ClapParamBridge.h"
 #include "factory_shell/ClapStateBridge.h"
+#include "factory_shell/ClapEditor.h"
 #include "factory_shell/DenormalGuard.h"
 
 #include "factory_params/ParamDesc.h"
@@ -59,6 +68,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <vector>
 
 namespace factory_shell
@@ -113,6 +123,12 @@ namespace factory_shell
             s->hostParams  = static_cast<const clap_host_params_t*>  (s->host->get_extension (s->host, CLAP_EXT_PARAMS));
             s->hostLatency = static_cast<const clap_host_latency_t*> (s->host->get_extension (s->host, CLAP_EXT_LATENCY));
             s->hostState   = static_cast<const clap_host_state_t*>   (s->host->get_extension (s->host, CLAP_EXT_STATE));
+#ifdef __linux__
+            // Only relevant when we run a GUI; harmless to fetch otherwise. The
+            // editor's X11 window fd is pumped by the host through this extension.
+            s->hostPosixFd = static_cast<const clap_host_posix_fd_support_t*> (
+                s->host->get_extension (s->host, CLAP_EXT_POSIX_FD_SUPPORT));
+#endif
             return true;
         }
 
@@ -408,8 +424,141 @@ namespace factory_shell
             if (std::strcmp (id, CLAP_EXT_STATE)       == 0) return &sState;
             if (std::strcmp (id, CLAP_EXT_LATENCY)     == 0) return &sLatency;
             if (std::strcmp (id, CLAP_EXT_TAIL)        == 0) return &sTail;
-            // No CLAP_EXT_GUI in chunk 3a — GUI-less to the host (see file header).
+
+            // GUI (chunk 3b) — advertised ONLY when the Policy carries an editor.
+            // For a GUI-less Policy this whole block folds away and the host sees a
+            // headless plugin, exactly as in chunk 3a (see file header).
+            if constexpr (PolicyHasEditor<Policy>::value)
+            {
+                if (std::strcmp (id, CLAP_EXT_GUI) == 0) return &sGui;
+#ifdef __linux__
+                if (std::strcmp (id, CLAP_EXT_POSIX_FD_SUPPORT) == 0) return &sPosixFd;
+#endif
+            }
             return nullptr;
+        }
+
+        // ──────────────────────────── gui (3b) ──────────────────────────────
+        // Thin [main-thread] delegation to the Policy's IClapEditor. The editor is
+        // created lazily in guiCreate and owned here; guiDestroy tears it down. On
+        // Linux the shell (not the editor) owns the host posix-fd register/unregister
+        // round-trip, driven off the editor's window fd.
+        static bool guiIsApiSupported (const clap_plugin_t* p, const char* api, bool floating)
+        {
+            auto* s = self (p);
+            // Answerable before create(): construct the editor object if needed (it
+            // allocates no native window until create()).
+            if (! s->ensureEditor()) return false;
+            return s->editor->isApiSupported (api, floating);
+        }
+
+        static bool guiGetPreferredApi (const clap_plugin_t* p, const char** api, bool* floating)
+        {
+            auto* s = self (p);
+            if (! s->ensureEditor()) return false;
+            return s->editor->getPreferredApi (api, floating);
+        }
+
+        static bool guiCreate (const clap_plugin_t* p, const char* api, bool floating)
+        {
+            auto* s = self (p);
+            if (! s->ensureEditor()) return false;
+            return s->editor->create (api, floating);
+        }
+
+        static void guiDestroy (const clap_plugin_t* p)
+        {
+            auto* s = self (p);
+            if (! s->editor) return;
+#ifdef __linux__
+            const int fd = s->editor->posixFd();
+            if (fd >= 0 && s->hostPosixFd != nullptr)
+                s->hostPosixFd->unregister_fd (s->host, fd);
+#endif
+            s->editor->destroy();
+            s->editor.reset();
+        }
+
+        static bool guiSetScale (const clap_plugin_t* p, double scale)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->setScale (scale);
+        }
+
+        static bool guiGetSize (const clap_plugin_t* p, std::uint32_t* w, std::uint32_t* h)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->getSize (w, h);
+        }
+
+        static bool guiCanResize (const clap_plugin_t* p)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->canResize();
+        }
+
+        static bool guiGetResizeHints (const clap_plugin_t* p, clap_gui_resize_hints_t* hints)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->getResizeHints (hints);
+        }
+
+        static bool guiAdjustSize (const clap_plugin_t* p, std::uint32_t* w, std::uint32_t* h)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->adjustSize (w, h);
+        }
+
+        static bool guiSetSize (const clap_plugin_t* p, std::uint32_t w, std::uint32_t h)
+        {
+            auto* s = self (p);
+            return s->editor && s->editor->setSize (w, h);
+        }
+
+        static bool guiSetParent (const clap_plugin_t* p, const clap_window_t* window)
+        {
+            auto* s = self (p);
+            if (! s->editor) return false;
+            if (! s->editor->setParent (window)) return false;
+#ifdef __linux__
+            const int fd = s->editor->posixFd();
+            if (fd >= 0 && s->hostPosixFd != nullptr)
+            {
+                const clap_posix_fd_flags_t flags =
+                    CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE | CLAP_POSIX_FD_ERROR;
+                return s->hostPosixFd->register_fd (s->host, fd, flags);
+            }
+#endif
+            return true;
+        }
+
+        static bool guiSetTransient (const clap_plugin_t*, const clap_window_t*) { return false; }
+        static void guiSuggestTitle (const clap_plugin_t*, const char*) {}
+
+        static bool guiShow (const clap_plugin_t* p) { auto* s = self (p); return s->editor && s->editor->show(); }
+        static bool guiHide (const clap_plugin_t* p) { auto* s = self (p); return s->editor && s->editor->hide(); }
+
+        static void posixFdOnFd (const clap_plugin_t* p, int /*fd*/, clap_posix_fd_flags_t flags)
+        {
+            auto* s = self (p);
+            if (s->editor) s->editor->onPosixFd (flags);
+        }
+
+        // Construct (but do not open) the editor object. Returns false when the
+        // Policy carries no editor (the `if constexpr` folds the whole GUI path
+        // away for such policies). Cheap + allocation-only — no native window yet.
+        bool ensureEditor()
+        {
+            if constexpr (PolicyHasEditor<Policy>::value)
+            {
+                if (! editor)
+                    editor = Policy::makeEditor (core, store, session, host);
+                return editor != nullptr;
+            }
+            else
+            {
+                return false;
+            }
         }
 
         // ──────────────────── latency priming (main thread) ─────────────────
@@ -439,12 +588,19 @@ namespace factory_shell
         const clap_host_params_t*  hostParams  = nullptr;
         const clap_host_latency_t* hostLatency = nullptr;
         const clap_host_state_t*   hostState   = nullptr;
+        const clap_host_posix_fd_support_t* hostPosixFd = nullptr; // Linux GUI event pump
 
         std::vector<factory_params::ParamDesc> paramTable; // owns the table (backs the bridge)
         factory_params::ParamStore             store;      // copies the table; the live value store
         ParamBridge                            bridge;     // holds a ref to paramTable
         factory_presets::PresetSession         session;    // drives the store for presets/program idx
         typename Policy::Core                  core;       // the DSP core
+
+        // The 3b editor aliases core / store / session (its feed + preset/A-B models
+        // hold refs), so it is declared LAST — destroyed FIRST — guaranteeing those
+        // objects outlive it even if a host tears the plugin down without a prior
+        // gui.destroy(). Null unless the Policy carries an editor.
+        std::unique_ptr<IClapEditor> editor;
 
         clap_plugin_t plugin {};
 
@@ -464,6 +620,8 @@ namespace factory_shell
         static const clap_plugin_state_t       sState;
         static const clap_plugin_latency_t     sLatency;
         static const clap_plugin_tail_t        sTail;
+        static const clap_plugin_gui_t         sGui;      // returned only when PolicyHasEditor
+        static const clap_plugin_posix_fd_support_t sPosixFd; // Linux only
     };
 
     template <class Policy>
@@ -496,5 +654,29 @@ namespace factory_shell
     template <class Policy>
     const clap_plugin_tail_t ClapShellPlugin<Policy>::sTail {
         &ClapShellPlugin<Policy>::tailGet
+    };
+
+    template <class Policy>
+    const clap_plugin_gui_t ClapShellPlugin<Policy>::sGui {
+        &ClapShellPlugin<Policy>::guiIsApiSupported,
+        &ClapShellPlugin<Policy>::guiGetPreferredApi,
+        &ClapShellPlugin<Policy>::guiCreate,
+        &ClapShellPlugin<Policy>::guiDestroy,
+        &ClapShellPlugin<Policy>::guiSetScale,
+        &ClapShellPlugin<Policy>::guiGetSize,
+        &ClapShellPlugin<Policy>::guiCanResize,
+        &ClapShellPlugin<Policy>::guiGetResizeHints,
+        &ClapShellPlugin<Policy>::guiAdjustSize,
+        &ClapShellPlugin<Policy>::guiSetSize,
+        &ClapShellPlugin<Policy>::guiSetParent,
+        &ClapShellPlugin<Policy>::guiSetTransient,
+        &ClapShellPlugin<Policy>::guiSuggestTitle,
+        &ClapShellPlugin<Policy>::guiShow,
+        &ClapShellPlugin<Policy>::guiHide
+    };
+
+    template <class Policy>
+    const clap_plugin_posix_fd_support_t ClapShellPlugin<Policy>::sPosixFd {
+        &ClapShellPlugin<Policy>::posixFdOnFd
     };
 } // namespace factory_shell

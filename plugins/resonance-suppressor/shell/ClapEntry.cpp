@@ -24,6 +24,14 @@
 
 #include "RsClapEntry.h"
 
+#if FACTORY_RS_CLAP_GUI
+ // Visage-free declaration (the definition — the only visage TU — is RsClapEditor.cpp,
+ // compiled only under FACTORY_RS_CLAP_GUI). Keeping this header framework-free is
+ // what lets THIS file stay headless / visage-free.
+ #include "RsClapEditor.h"
+ #include <memory>
+#endif
+
 #include "RsCore.h"                  // rs_core::RsCore / RsParamSnapshot (plugin root on the include path)
 #include "Source/Params.h"          // resonance_suppressor_params::buildRsParams()
 #include "Source/FactoryPresets.h"  // resonance_suppressor_presets::bank / kExclude
@@ -232,6 +240,22 @@ namespace
         // window swap and reports its steady-state latency before we latch it.
         // 2^15 comfortably exceeds the largest window (2^14) + hop, for any rate.
         static std::uint32_t primeFrames() { return 1u << 15; }
+
+#if FACTORY_RS_CLAP_GUI
+        // ── GUI (chunk 3b) — advertised only in the FACTORY_RS_CLAP_GUI build ──
+        // The presence of kHasEditor is what makes the generic shell expose
+        // CLAP_EXT_GUI (+ Linux posix-fd); makeEditor builds the Visage editor host
+        // over the shell's live core / store / session. Without this flag the RS
+        // Policy has no kHasEditor and the shell is byte-for-byte the headless 3a.
+        static constexpr bool kHasEditor = true;
+
+        static std::unique_ptr<factory_shell::IClapEditor>
+        makeEditor (Core& core, factory_params::ParamStore& store,
+                    factory_presets::PresetSession& session, const clap_host_t* host)
+        {
+            return rs_shell::makeRsClapEditor (core, store, session, host);
+        }
+#endif
     };
 
     using RsShell = factory_shell::ClapShellPlugin<RsClapPolicy>;
