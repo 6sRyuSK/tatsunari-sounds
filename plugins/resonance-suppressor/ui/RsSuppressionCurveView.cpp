@@ -42,13 +42,20 @@ namespace rs_ui
         // The analyser used to emit THOUSANDS of per-PIXEL fill(rect)/segment
         // primitives per frame (the path-atlas workaround), which capped the dev
         // (-O0) build at ~3 fps. Two things fix that here:
-        //   (1) sample every trace at a COARSE column step (kStepPx below) so the
+        //   (1) sample most traces at a COARSE column step (kStepPx below) so the
         //       primitive COUNT — the -O0 submission bottleneck — drops several-
-        //       fold with no visible loss (the curves read the same at ~4-6 px);
-        //   (2) draw from primitives (rounded segments for lines, edge-to-edge
-        //       vertical bars for fills) so nothing touches the path-fill atlas
-        //       (immune to the "large plot-spanning path poisons every path fill"
-        //       bug) AND the software rasteriser only shades the thin covered band.
+        //       fold with no visible loss (the curves read the same at ~4-7 px);
+        //   (2) the animated traces (pre/post spectra, reduction curtain) + the thin
+        //       per-node profile curves stroke as cheap rounded CAPSULES and fill as
+        //       ONE closed path, so those hot every-frame paths stay light.
+        // Round #4 (jagged coral curve): the ONE curve the user actually zoomed — the
+        // thick combined reduction line — is the exception. It is sampled per-PIXEL
+        // (kStepCombinedPx) and stroked as a single round-join visage::Path (the
+        // z-domain equivalent of the shipped PathStrokeType(curved, rounded), and the
+        // gallery SpectrumView idiom), so its near-horizontal runs read smooth on
+        // native D3D. That is ONE extra plot-spanning path stroke per frame — measured
+        // fine — vs the ~2x busy-state cost of stroking EVERY trace as a path; its
+        // soft wide glow stays on capsules (a blurry halo hides any faceting).
         // NB: visage's GraphLine (canvas.graphLine/graphFill) was evaluated per the
         // brief but REJECTED — see the report. It is one draw per trace, but each
         // is a FULL-PLOT quad whose per-pixel fragment shader (a 20-sample distance
@@ -58,11 +65,10 @@ namespace rs_ui
         // hardware GraphLine would win; the software raster path these primitives
         // take is the one that has to be fast for the dev loop + the headless gate.
         //
-        // Column count for a plot span at ~kStepPx spacing (>= 2 points). Tuned so
-        // the analyser reads the same but the primitive count (the -O0 submission
-        // bottleneck) is a fraction of the old per-pixel counts.
-        constexpr float kStepSpectrumPx = 4.0f; // spectra keep resonance detail
-        constexpr float kStepProfilePx  = 7.0f; // profile/per-node curves are smooth
+        // Column count for a plot span at ~kStepPx spacing (>= 2 points).
+        constexpr float kStepSpectrumPx = 4.0f; // spectra + reduction keep resonance detail
+        constexpr float kStepProfilePx  = 7.0f; // per-node curves + the combined glow (thin/soft)
+        constexpr float kStepCombinedPx = 1.0f; // COMBINED coral curve: per-pixel (round #4 jaggy fix)
 
         int columnCount (float widthPx, float stepPx)
         {
@@ -103,6 +109,48 @@ namespace rs_ui
                 if (ya >= floorY - 0.5f && yb >= floorY - 0.5f) continue; // whole segment on the floor
                 canvas.segment (x0 + (float) (i - 1) * dx, ya, x0 + (float) i * dx, yb, width, true);
             }
+        }
+
+        // Round #4 fix (jagged coral curve): stroke the COMBINED reduction curve as
+        // ONE round-join / round-cap path — the gallery SpectrumView idiom and the
+        // z-domain equivalent of the shipped JUCE PathStrokeType(curved, rounded) —
+        // so its near-horizontal runs read smooth instead of stair-stepped. Used
+        // ONLY for the thick combined curve (glow + main), which we sample per-pixel;
+        // the thin per-node curves and the animated spectra/reduction stay on the
+        // cheap capsule primitive above, so this adds just two plot-spanning path
+        // strokes per frame over the round-3 cost (measured: no busy-state FPS
+        // regression, unlike stroking every trace as a path). Floor-trimmed exactly
+        // like the JUCE oracle: land on the floor (one anchor), lift, and rise out of
+        // that same anchor — each off-floor run is its own subpath of one Path, so it
+        // stays a single stroke primitive.
+        void strokeSmoothTrimFloor (visage::Canvas& canvas, float x0, float w,
+                                    const std::vector<float>& screenY, float width, float floorY)
+        {
+            const int n = (int) screenY.size();
+            if (n < 2 || w <= 0.0f) return;
+            const float dx = w / (float) (n - 1);
+            visage::Path line;
+            bool penDown = false, haveAnchor = false;
+            float anchorX = 0.0f, anchorY = 0.0f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float x = x0 + (float) i * dx;
+                const float y = screenY[(std::size_t) i];
+                if (y >= floorY - 0.5f) // at the floor: hold the pen, don't stroke a horizontal run
+                {
+                    if (penDown) { line.lineTo (x, y); penDown = false; } // land on the floor, then lift
+                    anchorX = x; anchorY = y; haveAnchor = true;
+                }
+                else if (! penDown) // lifting off the floor: rise out of the last floor point
+                {
+                    if (haveAnchor) { line.moveTo (anchorX, anchorY); line.lineTo (x, y); }
+                    else             line.moveTo (x, y);
+                    penDown = true; haveAnchor = false;
+                }
+                else line.lineTo (x, y);
+            }
+            if (line.numPoints() >= 2)
+                canvas.fill (line.stroke (width, visage::Path::Join::Round, visage::Path::EndCap::Round));
         }
 
         // Fill the region between a per-column trace and a horizontal baseline
@@ -403,7 +451,13 @@ namespace rs_ui
     //   (2) the COMBINED profile over ALL nodes as a SOLID coral line (2.2 px,
     //       alpha 1) with a soft glow under it (0.22 / 5 px), floor-trimmed so a
     //       cut rolled to the plot floor doesn't stroke a flat edge.
-    // All from downsampled primitives (A3) — no plot-wide path fills.
+    // The COMBINED curve — the thick coral line the user zoomed — is sampled per-
+    // PIXEL and stroked as a single round-join path (strokeSmoothTrimFloor) to match
+    // the shipped SuppressionCurveComponent, so its near-horizontal runs read smooth
+    // instead of stair-stepped (round #4 fix). The thin per-node curves keep the
+    // coarser column step + cheap capsule stroke (their faceting is negligible under
+    // the combined, and per-pixel path strokes for up to 10 of them would double the
+    // busy-state frame cost — measured).
     void RsSuppressionCurveView::drawProfile (visage::Canvas& canvas)
     {
         if (plot_.w < 2.0f || plot_.h <= 0.0f) return;
@@ -411,10 +465,9 @@ namespace rs_ui
         const float y0     = sensToY (0.0f);          // nominal (0 dB) baseline = plot middle
         const float floorY = plot_.y + plot_.h;
 
-        // reductionProfileDbAt is heavier than a bin lookup and the curves are
-        // smooth, so sample coarser than the spectra.
-        const int cols = columnCount (plot_.w, kStepProfilePx);
-        auto sampleProfile = [&] (const factory_core::ReductionNodes& cfg, std::vector<float>& out)
+        // reductionProfileDbAt is heavier than a bin lookup, so per-node curves
+        // sample at the coarse profile step; the combined curve samples per-pixel.
+        auto sampleProfile = [&] (const factory_core::ReductionNodes& cfg, int cols, std::vector<float>& out)
         {
             out.resize ((std::size_t) cols);
             for (int i = 0; i < cols; ++i)
@@ -423,6 +476,8 @@ namespace rs_ui
                 out[(std::size_t) i] = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), cfg));
             }
         };
+        const int colsNode     = columnCount (plot_.w, kStepProfilePx);  // per-node (capsules)
+        const int colsCombined = columnCount (plot_.w, kStepCombinedPx); // combined (per-pixel path stroke)
 
         std::vector<float> curveY; // reused across nodes (keeps capacity)
 
@@ -434,7 +489,7 @@ namespace rs_ui
                 if (! model_.nodeOn (id)) continue;
                 const std::uint32_t col = RsProfileModel::isCut (id) ? theme_.base.palette.textDim
                                                                      : bandColour (id);
-                sampleProfile (RsProfileModel::singleNode (nodes, id), curveY);
+                sampleProfile (RsProfileModel::singleNode (nodes, id), colsNode, curveY);
                 if (theme_.rs.perNodeFillAlpha > 0.0f)
                 {
                     canvas.setColor (visage::Color (col).withAlpha (theme_.rs.perNodeFillAlpha));
@@ -448,16 +503,21 @@ namespace rs_ui
             }
         }
 
-        // (2) Combined reduction curve: soft glow under a crisp SOLID stroke,
-        //     floor-trimmed.
-        sampleProfile (nodes, curveY);
+        // (2) Combined reduction curve, floor-trimmed. The soft WIDE glow (5 px,
+        //     0.22 alpha) stays on the cheap capsule stroke at the coarse step — a
+        //     blurry halo hides any faceting — while the crisp thin MAIN line (the
+        //     thick coral curve the user zoomed) is sampled PER-PIXEL and stroked as
+        //     a single round-join path so its near-horizontal runs read smooth
+        //     (round #4 fix). One extra path stroke per frame; the glow adds none.
         if (theme_.rs.profileGlowAlpha > 0.0f && theme_.rs.profileGlowWidth > 0.0f)
         {
+            sampleProfile (nodes, colsNode, curveY); // coarse — the glow is soft + wide
             canvas.setColor (visage::Color (theme_.rs.profileColour).withAlpha (theme_.rs.profileGlowAlpha));
             strokeColumnsTrimFloor (canvas, plot_.x, plot_.w, curveY, theme_.rs.profileGlowWidth, floorY);
         }
+        sampleProfile (nodes, colsCombined, curveY); // per-pixel — the crisp visible line
         canvas.setColor (visage::Color (theme_.rs.profileColour).withAlpha (theme_.rs.profileStrokeAlpha));
-        strokeColumnsTrimFloor (canvas, plot_.x, plot_.w, curveY, theme_.rs.profileStrokeWidth, floorY);
+        strokeSmoothTrimFloor (canvas, plot_.x, plot_.w, curveY, theme_.rs.profileStrokeWidth, floorY);
     }
 
     void RsSuppressionCurveView::drawNodes (visage::Canvas& canvas)

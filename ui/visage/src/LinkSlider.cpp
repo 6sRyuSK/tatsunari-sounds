@@ -112,10 +112,24 @@ namespace factory_ui_visage
 
     void LinkSlider::mouseDown (const visage::MouseEvent& e)
     {
-        // Alt-click OR double-click restores the default (round-3 fix 5: alt-click
-        // reset on MIX/OUT/STEREO LINK too). A single click is repeat count 1 in
-        // visage (double-click is 2), so the double-click threshold must be >= 2 —
-        // otherwise every press resets instead of dragging.
+        // Double-click the value read-out opens the direct text entry; a double-click
+        // ANYWHERE ELSE (or an alt-click) restores the default — matching the JUCE
+        // RsLinkSlider, where the value-area double-click edits and everything else
+        // falls back to the slider's double-click-to-default. A single click still
+        // drags from anywhere (the value read-out included).
+        if (e.repeatClickCount() >= 2)
+        {
+            const Layout L = computeLayout();
+            const Rect& v = L.value;
+            const bool inValue = e.position.x >= v.x && e.position.x < v.x + v.w
+                              && e.position.y >= v.y && e.position.y < v.y + v.h;
+            if (inValue && requestValueEntry) { openValueEntry(); return; }
+        }
+
+        // Alt-click OR double-click (elsewhere) restores the default (round-3 fix 5:
+        // alt-click reset on MIX/OUT/STEREO LINK too). A single click is repeat count
+        // 1 in visage (double-click is 2), so the double-click threshold must be >= 2
+        // — otherwise every press resets instead of dragging.
         if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             store_.beginGesture (index_);
@@ -150,5 +164,33 @@ namespace factory_ui_visage
             dragging_ = false;
             store_.endGesture (index_);
         }
+    }
+
+    void LinkSlider::openValueEntry()
+    {
+        if (! requestValueEntry) return;
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end()); // match the drawn read-out
+
+        const Layout L = computeLayout();
+        const visage::Point o = positionInWindow();
+        ValueEntryRequest req;
+        req.x = o.x + L.value.x; req.y = o.y + L.value.y; req.w = L.value.w; req.h = L.value.h;
+        req.prefill = stripLeadingNumber (disp);
+        req.fontPx  = theme_.font.callout; // the value read-out font (RS: 12 px)
+        req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
+        requestValueEntry (req);
+    }
+
+    void LinkSlider::commitValueEntry (const std::string& text)
+    {
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        float real = 0.0f; // JUCE getValueFromText("") == 0 -> range-clamped by setFromUi
+        factory_params::parseValue (desc, text, real);
+        store_.beginGesture (index_);
+        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
+        store_.endGesture (index_);
+        redraw();
     }
 }

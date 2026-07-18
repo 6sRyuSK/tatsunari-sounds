@@ -15,6 +15,7 @@
 #include "factory_ui_visage/IconButton.h"
 #include "factory_ui_visage/PresetSelectorView.h"
 #include "factory_ui_visage/Dropdown.h"
+#include "factory_ui_visage/ValueEntry.h"
 #include "factory_params/ParamStore.h"
 #include "factory_params/UndoStack.h"
 
@@ -103,6 +104,12 @@ namespace rs_ui
         { return nodePanel_ && nodePanel_->isVisible() && nodePanel_->miniKnobDialInWindow (which, cx, cy, arcR); }
         // Active Pre/Post/Both segment (0/1/2) for the per-segment assert (fix 8).
         int  analyzerModeSegment() const { return curve_ ? curve_->analyzerModeSegment() : 2; }
+        // Direct text-entry overlay state (for the driver): is it open + its text +
+        // a node-panel mini's value read-out rect (window px) to double-click.
+        bool valueEntryOpen() const;
+        std::string valueEntryText() const;
+        bool miniValueRectInWindow (int which, float& x, float& y, float& w, float& h) const
+        { return nodePanel_ && nodePanel_->isVisible() && nodePanel_->miniValueRectInWindow (which, x, y, w, h); }
         bool plotRectInWindow (float& x, float& y, float& w, float& h) const;
         void plotRectInWindowLocal (float& x, float& y, float& w, float& h) const; // editor-frame-local
 
@@ -125,6 +132,7 @@ namespace rs_ui
         void   rebuildPresetMenu();
         void   presentDropdown (std::vector<factory_ui_visage::Dropdown::Item> items, int sel,
                                 visage::Frame* anchor, std::function<void (int)> onSelect);
+        void   onValueEntryRequest (const factory_ui_visage::ValueEntryRequest& req); // window->local, open
         void   drawBrand (visage::Canvas& canvas);
         void   drawHeaderChrome (visage::Canvas& canvas);
         void   drawFooterChrome (visage::Canvas& canvas);
@@ -150,6 +158,7 @@ namespace rs_ui
         std::unique_ptr<factory_ui_visage::IconButton>  undoBtn_, redoBtn_, copyBtn_;
         std::unique_ptr<factory_ui_visage::PresetSelectorView> preset_;
         std::unique_ptr<factory_ui_visage::Dropdown>    dropdown_;
+        std::unique_ptr<factory_ui_visage::ValueEntry>  valueEntry_; // shared direct-text-entry overlay
         std::unique_ptr<RsSuppressionCurveView>         curve_;
         std::unique_ptr<RsNodePanel>                    nodePanel_;
 

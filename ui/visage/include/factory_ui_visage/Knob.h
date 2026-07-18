@@ -1,6 +1,7 @@
 #pragma once
 
 #include "factory_ui_visage/Theme.h"
+#include "factory_ui_visage/ValueEntry.h"
 #include "factory_params/ParamStore.h"
 #include "factory_params/Range.h"
 
@@ -123,6 +124,11 @@ namespace factory_ui_visage
             redraw();
         }
 
+        // Direct text entry: double-clicking the value read-out opens the shared
+        // ValueEntry overlay (the editor hosts it). Unset (the gallery default) => no
+        // text entry, double-click on the value row does nothing extra.
+        ValueEntryOpener requestValueEntry;
+
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
         void mouseDrag (const visage::MouseEvent& e) override;
@@ -134,6 +140,9 @@ namespace factory_ui_visage
     private:
         float currentNorm() const;    // live store value -> normalised 0..1
         void  writeNorm (float norm); // normalised -> real, store via setFromUi, redraw
+        float valueRowHeight() const; // bottom value read-out row height (px)
+        void  openValueEntry();       // double-click the value row -> shared overlay
+        void  commitValueEntry (const std::string& text); // parse + clamp + gesture-write
 
         factory_params::ParamStore& store_;
         int index_;

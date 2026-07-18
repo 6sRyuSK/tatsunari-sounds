@@ -33,7 +33,7 @@ namespace
     rs_ui::RsEditor* g_editor = nullptr;
     SyntheticRsFeed* g_feed = nullptr;
     visage::ApplicationWindow* g_app = nullptr;
-    std::string g_list, g_error, g_rect, g_plot, g_mini, g_dial;
+    std::string g_list, g_error, g_rect, g_plot, g_mini, g_dial, g_ventry, g_mvrect;
 
     std::string jsonEscape (const std::string& s)
     {
@@ -277,6 +277,30 @@ extern "C"
     // Active Pre/Post/Both mode as a visual segment index (0=Pre,1=Post,2=Both) —
     // the driver clicks a segment and asserts this equals its index (fix 8).
     KEEPALIVE int rs_analyzer_mode_segment() { return g_editor ? g_editor->analyzerModeSegment() : 2; }
+
+    // Direct text-entry overlay (P3c port): is it open, its live text, and a node-
+    // panel mini's value read-out rect (window px) to double-click open it.
+    KEEPALIVE int rs_value_entry_open() { return (g_editor && g_editor->valueEntryOpen()) ? 1 : 0; }
+    KEEPALIVE const char* rs_value_entry_text()
+    {
+        g_ventry = g_editor ? g_editor->valueEntryText() : std::string();
+        return g_ventry.c_str();
+    }
+    KEEPALIVE const char* rs_mini_value_rect (int which)
+    {
+        g_mvrect = "null";
+        if (g_editor != nullptr)
+        {
+            float x = 0, y = 0, w = 0, h = 0;
+            if (g_editor->miniValueRectInWindow (which, x, y, w, h))
+            {
+                std::ostringstream o;
+                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
+                g_mvrect = o.str();
+            }
+        }
+        return g_mvrect.c_str();
+    }
 
     KEEPALIVE const char* rs_plot_rect()
     {

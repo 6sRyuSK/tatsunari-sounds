@@ -2,11 +2,15 @@
 
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Knob.h" // shared knobAngleForNorm / knobNeedleTip (A2)
+#include "factory_ui_visage/ValueEntry.h" // stripLeadingNumber + ValueEntryRequest
 #include "factory_params/Text.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 namespace rs_ui
 {
@@ -16,6 +20,28 @@ namespace rs_ui
 
     namespace
     {
+        // Parse a FREQ text entry to raw Hz, mirroring the shipped JUCE NodePanel
+        // freq valueFromTextFunction: the display is Hz/kHz, so a trailing k/kHz
+        // (case/space tolerant) means kHz, and a bare number below the parameter
+        // minimum whose *1000 lands in range is treated as kHz ("2.6" against a
+        // "2.6kHz" display). setFromUi clamps the result to the range regardless.
+        float parseFreqEntry (const std::string& text, double lo, double hi)
+        {
+            std::string t = text;
+            auto isSpace = [] (char c) { return std::isspace ((unsigned char) c) != 0; };
+            while (! t.empty() && isSpace (t.front())) t.erase (t.begin());
+            while (! t.empty() && isSpace (t.back()))  t.pop_back();
+            std::string low = t;
+            for (char& c : low) c = (char) std::tolower ((unsigned char) c);
+            bool asK = false;
+            if (low.size() >= 3 && low.compare (low.size() - 3, 3, "khz") == 0) { t.resize (t.size() - 3); asK = true; }
+            else if (! low.empty() && low.back() == 'k')                        { t.resize (t.size() - 1); asK = true; }
+            const double v = std::strtod (t.c_str(), nullptr); // 0 on no-number (== JUCE getDoubleValue)
+            if (asK) return (float) (v * 1000.0);
+            if (v < lo && v * 1000.0 >= lo && v * 1000.0 <= hi) return (float) (v * 1000.0);
+            return (float) v;
+        }
+
         // (The mini-knob sweep endpoints now come from the shared KnobMetrics —
         // theme_.base.knob.arcStart/arcEnd — via fuv::knobAngleForNorm, and the value
         // ring itself is drawn with the SHARED fuv::fillArcBand (Knob.h), the SAME
@@ -378,6 +404,53 @@ namespace rs_ui
         redraw();
     }
 
+    // Value read-out sub-rect (frame-local): the bottom valueH band of the mini area
+    // (matches drawMiniKnob's value text row).
+    RsNodePanel::Rect RsNodePanel::miniValueRect (const MiniKnob& k) const
+    {
+        constexpr float valueH = 14.0f;
+        return { k.area.x, k.area.y + k.area.h - valueH, k.area.w, valueH };
+    }
+
+    bool RsNodePanel::miniValueRectInWindow (int which, float& x, float& y, float& w, float& h) const
+    {
+        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
+        const Rect r = miniValueRect (*ks[which]);
+        const visage::Point o = positionInWindow();
+        x = o.x + r.x; y = o.y + r.y; w = r.w; h = r.h;
+        return true;
+    }
+
+    void RsNodePanel::openMiniEntry (MiniKnob& k)
+    {
+        if (! requestValueEntry) return;
+        const Rect r = miniValueRect (k);
+        const visage::Point o = positionInWindow();
+        fuv::ValueEntryRequest req;
+        req.x = o.x + r.x; req.y = o.y + r.y; req.w = r.w; req.h = r.h;
+        req.prefill = fuv::stripLeadingNumber (valueText (k)); // "2.6kHz"->"2.6", "7.40 dB"->"7.40"
+        req.fontPx  = 11.0f; // the mini value read-out font
+        const int  pi     = k.paramIndex;
+        const bool isFreq = k.freq;
+        req.commit = [this, pi, isFreq] (const std::string& t) { commitMiniEntry (pi, isFreq, t); };
+        requestValueEntry (req);
+    }
+
+    void RsNodePanel::commitMiniEntry (int paramIndex, bool isFreq, const std::string& text)
+    {
+        const factory_params::ParamDesc& desc = model_.store().desc (paramIndex);
+        float real = 0.0f; // JUCE getValueFromText("") == 0 -> range-clamped by setFromUi
+        if (isFreq) real = parseFreqEntry (text, desc.minValue, desc.maxValue);
+        else        factory_params::parseValue (desc, text, real);
+        model_.store().beginGesture (paramIndex);
+        model_.store().setFromUi (paramIndex, real); // snapToLegalValue clamps + snaps
+        model_.store().endGesture (paramIndex);
+        if (onNodeEdited) onNodeEdited (nodeId_);
+        if (onGestureEnd) onGestureEnd();
+        redraw();
+    }
+
     void RsNodePanel::mouseDown (const visage::MouseEvent& e)
     {
         const visage::Point pos = e.position;
@@ -421,6 +494,14 @@ namespace rs_ui
         for (int i = 0; i < 3; ++i)
             if (ks[i]->visible && ks[i]->area.contains (pos))
             {
+                // Value read-out double-click opens the direct text entry (FREQ uses
+                // the Hz/kHz parser); elsewhere in the mini it falls through to the
+                // reset below — matching the footer knobs' value-row-edits behaviour.
+                if (e.repeatClickCount() >= 2 && requestValueEntry && miniValueRect (*ks[i]).contains (pos))
+                {
+                    openMiniEntry (*ks[i]);
+                    return;
+                }
                 // Alt-click (or double-click) resets this mini-knob to its parameter
                 // default, matching the footer knobs (round-3 fix 5); no drag begins.
                 if (e.isAltDown() || e.repeatClickCount() >= 2)

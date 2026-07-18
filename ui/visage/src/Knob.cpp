@@ -112,8 +112,27 @@ namespace factory_ui_visage
         canvas.text (valueText, boldFont (valueFontPx), visage::Font::kCenter, 0.0f, height() - textBot, width(), textBot);
     }
 
+    // The bottom value read-out row height (px) — the profile's textBottom, else the
+    // widget default. The rotary excludes this row (like the JUCE RsKnob), so double-
+    // clicking here edits the value instead of dragging / resetting the dial.
+    float Knob::valueRowHeight() const
+    {
+        return textBottomPx_ >= 0.0f ? textBottomPx_ : 16.0f;
+    }
+
     void Knob::mouseDown (const visage::MouseEvent& e)
     {
+        // Value read-out row: with text entry wired (requestValueEntry set), a double-
+        // click there opens the entry and a single click is a no-op — the JUCE RsKnob's
+        // rotary excludes the value area, so it can't compete with a dial drag. Without
+        // it wired (the gallery), the value row is NOT intercepted, so double-click-to-
+        // reset still works there — the gallery is unaffected.
+        if (requestValueEntry && e.position.y >= height() - valueRowHeight())
+        {
+            if (e.repeatClickCount() >= 2) openValueEntry();
+            return;
+        }
+
         // Alt-click OR double-click restores the default value (round-3 fix 5:
         // alt-click reset on every knob, matching the JUCE editor; Shift, not Alt,
         // is fine-drag, so resetting on alt-down never conflicts with a drag). A
@@ -174,5 +193,35 @@ namespace factory_ui_visage
         writeNorm (norm);
         store_.endGesture (index_);
         return true;
+    }
+
+    void Knob::openValueEntry()
+    {
+        if (! requestValueEntry) return;
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        // Pre-fill with the drawn read-out (spaces stripped, as in draw()) reduced to
+        // a bare number, so the user edits "62" not "62%".
+        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end());
+
+        const float rowH = valueRowHeight();
+        const visage::Point o = positionInWindow();
+        ValueEntryRequest req;
+        req.x = o.x; req.y = o.y + height() - rowH; req.w = width(); req.h = rowH;
+        req.prefill = stripLeadingNumber (disp);
+        req.fontPx  = valueFontPx_ >= 0.0f ? valueFontPx_ : theme_.font.label;
+        req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
+        requestValueEntry (req);
+    }
+
+    void Knob::commitValueEntry (const std::string& text)
+    {
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        float real = 0.0f; // JUCE getValueFromText("") == 0 -> range-clamped by setFromUi
+        factory_params::parseValue (desc, text, real);
+        store_.beginGesture (index_);
+        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
+        store_.endGesture (index_);
+        redraw();
     }
 }

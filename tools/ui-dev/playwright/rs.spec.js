@@ -51,6 +51,14 @@ async function clickWindow(page, wx, wy) {
   await page.mouse.down(); await page.waitForTimeout(35);
   await page.mouse.up(); await page.waitForTimeout(35);
 }
+// Double-click at a window point — drives the value-read-out double-click that
+// opens the direct text entry (P3c). clickCount:2 registers as repeatClickCount>=2.
+async function dblclickWindow(page, wx, wy) {
+  const p = await toPage(page, wx, wy);
+  await page.mouse.move(p.x, p.y); await page.waitForTimeout(30);
+  await page.mouse.click(p.x, p.y, { clickCount: 2, delay: 20 });
+  await page.waitForTimeout(60);
+}
 // Alt+click (Alt held across the whole press) — drives the alt-click-to-default
 // reset on knobs / nodes (fix 5). Emscripten forwards event.altKey -> kModifierAlt.
 async function altClickWindow(page, wx, wy) {
@@ -545,6 +553,8 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     const g = await page.evaluate(() => ({
       depth: window.ui.widgetRect("depth"), detail: window.ui.widgetRect("detail"),
       atk: window.ui.widgetRect("attack"), rel: window.ui.widgetRect("release"), tilt: window.ui.widgetRect("tilt"),
+      div1: window.ui.widgetRect("footerDiv1"), div2: window.ui.widgetRect("footerDiv2"),
+      mode: window.ui.widgetRect("modeCard"), card: window.ui.widgetRect("footerCard"),
     }));
     const bigDia = Math.min(g.depth.w, g.depth.h - 33), miniDia = Math.min(g.atk.w, g.atk.h - 28);
     const bigVGap = ((g.depth.h - 33) - bigDia) / 2, miniVGap = ((g.atk.h - 28) - miniDia) / 2;
@@ -558,6 +568,117 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
       approx(bigEdge, 40, 1.5), "bigEdge=" + bigEdge.toFixed(1));
     check("footer ATK/REL/TILT edge-to-edge gaps 20px",
       approx(miniEdge1, 20, 1.5) && approx(miniEdge2, 20, 1.5), "miniEdges=" + miniEdge1.toFixed(1) + "/" + miniEdge2.toFixed(1));
+
+    // Round #4: every section-content<->divider gap is UNIFORM (P). At 1069x747
+    // (k=1) the footer inner-left is card.x + S(14) = card.x + 14. The five gaps —
+    // left-card-edge->DEPTH, DEPTH/DETAIL-right->div1, div1->ATK, TILT->div2 and
+    // div2->MODE-card-left — must all be equal (±1px). The minis used to hug the
+    // dividers at ~6px while the bigs had ~65px to div1.
+    const fx = g.card.x + 14;
+    const gaps = [
+      g.depth.x - fx,                        // left card edge -> DEPTH
+      g.div1.x - (g.detail.x + g.detail.w),  // DEPTH/DETAIL right -> footerDiv1
+      g.atk.x - g.div1.x,                    // footerDiv1 -> ATK (minis left)
+      g.div2.x - (g.tilt.x + g.tilt.w),      // TILT (minis right) -> footerDiv2
+      g.mode.x - g.div2.x,                   // footerDiv2 -> MODE card left
+    ];
+    const maxDev = Math.max(...gaps) - Math.min(...gaps);
+    check("footer section<->divider gaps are uniform (all equal ±1px)",
+      maxDev <= 1.0 && Math.min(...gaps) > 10,
+      "gaps=[" + gaps.map((v) => v.toFixed(1)).join(", ") + "] maxDev=" + maxDev.toFixed(2));
+  }
+
+  // --- 20. direct value text entry (P3c port) --------------------------------
+  // Double-clicking a value read-out opens the shared ValueEntry overlay pre-filled
+  // (select-all) with the current value as a bare number; typing + Enter commits
+  // through the ParamStore clamp path, Esc cancels (unchanged), invalid text yields
+  // the range-clamped 0 (JUCE getValueFromText). Covered on a BIG KNOB (DEPTH), a
+  // SLIDER (MIX) and a BAND-PANEL MINI (SENS + the FREQ kHz heuristic).
+  {
+    await page.evaluate(() => { window.rs.selectNode(-1); window.rs.setSize(1069, 747); window.ui.freeze(true); });
+    // Give the canvas DOM focus so keyboard events route to the wasm app.
+    await page.locator("#canvas").click({ position: { x: 5, y: 5 } });
+    await wait(page, 60);
+
+    // (a) DEPTH big knob: open + prefill + select-all-replace commit.
+    await page.evaluate(() => window.ui.set("depth", 30));
+    const dr = await page.evaluate(() => window.ui.widgetRect("depth"));
+    await dblclickWindow(page, dr.x + dr.w * 0.5, dr.y + dr.h - 8); // value read-out row
+    const eOpen = await page.evaluate(() => ({ open: window.rs.valueEntryOpen(), text: window.rs.valueEntryText() }));
+    check("dblclick knob value opens the entry prefilled with the current value",
+      eOpen.open === true && eOpen.text === "30", JSON.stringify(eOpen));
+    // capture value-entry-open.png (entry visible on DEPTH)
+    {
+      const cb = await page.evaluate(() => { const r = document.getElementById("canvas").getBoundingClientRect(); return { left: r.left, top: r.top }; });
+      fs.writeFileSync(path.join(OUT, "value-entry-open.png"),
+        await page.screenshot({ clip: { x: Math.max(0, cb.left + dr.x - 10), y: Math.max(0, cb.top + dr.y - 6), width: dr.w + 20, height: dr.h + 12 } }));
+    }
+    await page.keyboard.type("55", { delay: 25 }); // select-all on open -> replaces "30"
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const dAfter = await page.evaluate(() => ({ v: window.ui.get("depth"), open: window.rs.valueEntryOpen() }));
+    check("type + Enter commits the knob value (prefill was selected) + closes",
+      approx(dAfter.v, 55, 0.6) && dAfter.open === false, JSON.stringify(dAfter));
+
+    // (b) Esc cancels — value unchanged.
+    await page.evaluate(() => window.ui.set("depth", 42));
+    await dblclickWindow(page, dr.x + dr.w * 0.5, dr.y + dr.h - 8);
+    await page.keyboard.type("999", { delay: 20 });
+    await page.keyboard.press("Escape");
+    await wait(page, 80);
+    const dEsc = await page.evaluate(() => ({ v: window.ui.get("depth"), open: window.rs.valueEntryOpen() }));
+    check("Esc cancels the edit (value unchanged, entry closed)",
+      approx(dEsc.v, 42, 0.6) && dEsc.open === false, JSON.stringify(dEsc));
+
+    // (c) invalid text -> oracle: getValueFromText("")==0 -> clamped to the range min.
+    const depthMin = await page.evaluate(() => window.ui.list().find((p) => p.id === "depth").min);
+    await page.evaluate(() => window.ui.set("depth", 42));
+    await dblclickWindow(page, dr.x + dr.w * 0.5, dr.y + dr.h - 8);
+    await page.keyboard.type("abc", { delay: 20 });
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const dInvalid = await page.evaluate(() => window.ui.get("depth"));
+    check("invalid text commits the range-clamped 0 (oracle getValueFromText)",
+      approx(dInvalid, depthMin, 0.6), "invalid -> " + dInvalid + " (min " + depthMin + ")");
+
+    // (d) MIX slider value read-out.
+    await page.evaluate(() => window.ui.set("mix", 50));
+    const mr = await page.evaluate(() => window.ui.widgetRect("mix"));
+    await dblclickWindow(page, mr.x + mr.w - 25, mr.y + mr.h * 0.5); // right value column
+    const mOpen = await page.evaluate(() => ({ open: window.rs.valueEntryOpen(), text: window.rs.valueEntryText() }));
+    await page.keyboard.type("80", { delay: 25 });
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const mAfter = await page.evaluate(() => window.ui.get("mix"));
+    check("dblclick slider value opens + commits (MIX 50 -> 80)",
+      mOpen.open === true && mOpen.text === "50" && approx(mAfter, 80, 0.6),
+      "open=" + JSON.stringify(mOpen) + " after=" + mAfter);
+
+    // (e) SENS band-panel mini + (f) FREQ kHz heuristic.
+    await page.evaluate(() => { window.ui.set("b0_on", 1); window.ui.set("b0_sens", 5); window.rs.selectNode(2); });
+    await wait(page, 120);
+    const sv = await page.evaluate(() => window.rs.miniValueRect(1)); // 1 = SENS
+    await dblclickWindow(page, sv.x + sv.w * 0.5, sv.y + sv.h * 0.5);
+    const sOpen = await page.evaluate(() => ({ open: window.rs.valueEntryOpen(), text: window.rs.valueEntryText() }));
+    await page.keyboard.type("12", { delay: 25 });
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const sAfter = await page.evaluate(() => window.ui.get("b0_sens"));
+    check("dblclick band-mini SENS value opens + commits (5 -> 12)",
+      sOpen.open === true && sOpen.text === "5.00" && approx(sAfter, 12, 0.1),
+      "open=" + JSON.stringify(sOpen) + " after=" + sAfter);
+
+    await page.evaluate(() => { window.ui.set("b0_freq", 800); window.rs.selectNode(2); });
+    await wait(page, 100);
+    const fv = await page.evaluate(() => window.rs.miniValueRect(0)); // 0 = FREQ
+    await dblclickWindow(page, fv.x + fv.w * 0.5, fv.y + fv.h * 0.5);
+    await page.keyboard.type("2.6", { delay: 25 }); // "2.6" against a kHz display -> 2600 Hz
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const fAfter = await page.evaluate(() => window.ui.get("b0_freq"));
+    check("band-mini FREQ text entry applies the kHz heuristic (2.6 -> 2600 Hz)",
+      approx(fAfter, 2600, 5), "freq -> " + fAfter);
+    await page.evaluate(() => window.rs.selectNode(-1));
   }
 
   check("no JS/HTTP errors", jsErrors.length === 0 && httpErrors.length === 0, jsErrors.concat(httpErrors).slice(0, 4).join(" | "));
@@ -567,7 +688,7 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   const passed = asserts.every((a) => a.ok);
   const result = {
     url: URL, passed, webgl: webgl.renderer, timings,
-    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png", "rs-knob-depth.png", "panel-left.png", "panel-right.png", "panel-right-after-cut.png"].map((f) => path.join(OUT, f)),
+    screenshots: ["rs-default.png", "rs-busy.png", "rs-min.png", "rs-max.png", "rs-knob-depth.png", "panel-left.png", "panel-right.png", "panel-right-after-cut.png", "value-entry-open.png"].map((f) => path.join(OUT, f)),
     asserts, jsErrorCount: jsErrors.length, httpErrorCount: httpErrors.length,
   };
   fs.writeFileSync(path.join(OUT, "rs_result.json"), JSON.stringify(result, null, 2));

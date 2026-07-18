@@ -67,7 +67,10 @@
     profileDbAt: function (hz)    { return cc('rs_profile_db_at', 'number', ['number'], [hz]); },
     miniKnobTip: function (which) { var s = cc('rs_mini_knob_tip', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } },
     miniKnobDial:function (which) { var s = cc('rs_mini_knob_dial', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } },
-    analyzerModeSegment: function () { return cc('rs_analyzer_mode_segment', 'number', [], []); }
+    analyzerModeSegment: function () { return cc('rs_analyzer_mode_segment', 'number', [], []); },
+    valueEntryOpen: function ()     { return cc('rs_value_entry_open', 'number', [], []) === 1; },
+    valueEntryText: function ()     { return cc('rs_value_entry_text', 'string', [], []); },
+    miniValueRect:  function (which){ var s = cc('rs_mini_value_rect', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } }
   };
 
   // ---- dev nicety 1: theme.json hot reload ----------------------------------

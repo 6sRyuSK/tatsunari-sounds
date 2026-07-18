@@ -4,6 +4,7 @@
 #include "RsFeed.h"
 #include "RsProfileModel.h"
 
+#include "factory_ui_visage/ValueEntry.h"
 #include "factory_params/Range.h"
 
 #include <visage_ui/frame.h>
@@ -45,6 +46,9 @@ namespace rs_ui
         std::function<void (int)> onNodeEdited;
         // A discrete edit finished (the editor snapshots undo).
         std::function<void()> onGestureEnd;
+        // Direct text entry on a mini value read-out (FREQ/SENS/WIDTH) — opens the
+        // editor's shared ValueEntry overlay (set by the editor).
+        factory_ui_visage::ValueEntryOpener requestValueEntry;
 
         // Rebind to node `id` (0 = low cut, 1 = high cut, 2.. = band).
         void setNode (int id);
@@ -62,6 +66,10 @@ namespace rs_ui
         // the accent arc END lines up with the needle (catches an arc-vs-needle
         // angular divergence like the old 90°-off mini arc; round-3 fix 6).
         bool miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const;
+
+        // Mini-knob value read-out sub-rect (WINDOW px) — the driver double-clicks it
+        // to open the direct text entry (0 = FREQ, 1 = SENS, 2 = WIDTH). False if hidden.
+        bool miniValueRectInWindow (int which, float& x, float& y, float& w, float& h) const;
 
         void draw (visage::Canvas& canvas) override;
         void resized() override;
@@ -94,6 +102,9 @@ namespace rs_ui
         void drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k);
         std::string valueText (const MiniKnob& k) const;
         void writeKnob (MiniKnob& k, float norm);
+        Rect miniValueRect (const MiniKnob& k) const;    // value read-out sub-rect (frame-local)
+        void openMiniEntry (MiniKnob& k);                // double-click value -> shared overlay
+        void commitMiniEntry (int paramIndex, bool isFreq, const std::string& text);
 
         std::string nodeName() const;
         std::uint32_t nodeColour() const;

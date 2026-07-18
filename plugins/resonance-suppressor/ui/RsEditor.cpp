@@ -42,6 +42,7 @@ namespace rs_ui
             // dial diameters equal the JUCE ones and the minis stop reading too small.
             if (ki < 2) knob->setDialProfile (16.0f, 17.0f, 12.0f, 13.0f, 0.0f);
             else        knob->setDialProfile (14.0f, 14.0f, 10.0f, 11.0f, 0.0f);
+            knob->requestValueEntry = [this] (const fuv::ValueEntryRequest& r) { onValueEntryRequest (r); };
             addChild (knob.get());
             knobs_.push_back (std::move (knob));
             ++ki;
@@ -73,6 +74,8 @@ namespace rs_ui
         linkAmt_->setCaptionColumnPx (86.0f);
         mix_->setCaptionColumnPx (34.0f);
         out_->setCaptionColumnPx (34.0f);
+        for (fuv::LinkSlider* s : { linkAmt_.get(), mix_.get(), out_.get() })
+            s->requestValueEntry = [this] (const fuv::ValueEntryRequest& r) { onValueEntryRequest (r); };
         addChild (linkAmt_.get()); addChild (mix_.get()); addChild (out_.get());
 
         // --- pill cells ------------------------------------------------------
@@ -114,13 +117,20 @@ namespace rs_ui
         nodePanel_ = std::make_unique<RsNodePanel> (rsTheme_, model_, feed_);
         nodePanel_->onCloseRequested = [this] { selectNode (-1); };
         nodePanel_->onNodeEdited = [this] (int) { if (curve_) curve_->redraw(); };
+        nodePanel_->requestValueEntry = [this] (const fuv::ValueEntryRequest& r) { onValueEntryRequest (r); };
         nodePanel_->setVisible (false);
         addChild (nodePanel_.get());
 
-        // --- shared dropdown overlay (on top) --------------------------------
+        // --- shared overlays (on top) ----------------------------------------
         dropdown_ = std::make_unique<fuv::Dropdown> (base);
         dropdown_->setVisible (false);
         addChild (dropdown_.get());
+
+        // Shared direct-text-entry overlay (topmost) — RsKnob / RsLinkSlider / node-
+        // panel mini value read-outs open it via their requestValueEntry hook.
+        valueEntry_ = std::make_unique<fuv::ValueEntry> (base);
+        valueEntry_->setVisible (false);
+        addChild (valueEntry_.get());
 
         // --- undo baseline ---------------------------------------------------
         lastSnap_ = snapshotNow();
@@ -252,6 +262,11 @@ namespace rs_ui
     void RsEditor::selectNode (int id)
     {
         if (! curve_) return;
+        // A pending value edit belongs to the node/control being left — discard it
+        // (mirrors NodePanel::setNode -> closeValueEditor). A click that switches
+        // nodes first drops focus from the entry, which COMMITS it (focus-loss),
+        // so this only fires for a still-open (e.g. programmatic) edit.
+        if (valueEntry_) valueEntry_->cancelEntry();
         if (id != curve_->selectedNode())
             feed_.setListenNode (-1); // switching drops Listen
         curve_->setSelectedNode (id);
@@ -296,6 +311,21 @@ namespace rs_ui
         dropdown_->open (std::move (items), selected, a.x - self.x, a.y - self.y, anchor->width(), anchor->height());
     }
 
+    // ---- direct text entry --------------------------------------------------
+
+    // A control asked to edit its value read-out. The request carries the rect in
+    // WINDOW px; convert to this editor's frame-local coords and open the shared
+    // ValueEntry there (it renders above every other child).
+    void RsEditor::onValueEntryRequest (const fuv::ValueEntryRequest& req)
+    {
+        if (! valueEntry_) return;
+        const visage::Point o = positionInWindow();
+        valueEntry_->open (req.x - o.x, req.y - o.y, req.w, req.h, req.prefill, req.fontPx, req.commit);
+    }
+
+    bool RsEditor::valueEntryOpen() const { return valueEntry_ && valueEntry_->isOpen(); }
+    std::string RsEditor::valueEntryText() const { return valueEntry_ ? valueEntry_->currentText() : std::string(); }
+
     // ---- theme --------------------------------------------------------------
 
     bool RsEditor::reloadTheme (const std::string& overlayJson, std::string& error)
@@ -319,6 +349,10 @@ namespace rs_ui
 
     void RsEditor::resized()
     {
+        // A window resize moves every control — discard any in-flight value edit so
+        // the overlay can't linger over a stale rect.
+        if (valueEntry_) valueEntry_->cancelEntry();
+
         const float w = width(), h = height();
         const int mx = S (20);
         const float ix = (float) mx, iw = w - 2.0f * mx;
@@ -365,38 +399,48 @@ namespace rs_ui
         // cell = name14 + 8 + dial57 + 8 + value14 = 101 (the gap falls out of the
         // dial being width-limited inside the taller cell, so each dial is centred
         // with an 8 px band above/below). Horizontal edge-to-edge dial gaps: DEPTH↔
-        // DETAIL 40, ATK↔REL↔TILT 20. Each cell is exactly the dial width so the
-        // cell-to-cell gap IS the edge-to-edge dial gap. col1/col2 are redistributed
-        // so the wider mini trio fits (col2 = trio + 12 pad, col1 = remainder);
-        // footerDiv2 / col3 (MODE) are untouched. All lengths scale with S().
-        footerDiv2_ = fx + fw * 0.60f;                          // unchanged col2/col3 boundary
+        // DETAIL 40, ATK↔REL↔TILT 20 (LOCKED). Each cell is exactly the dial width so
+        // the cell-to-cell gap IS the edge-to-edge dial gap.
+        //
+        // Round #4 fix (uniform section↔divider spacing): every section-content↔
+        // divider gap is a SINGLE value P — left-card-edge↔DEPTH, DEPTH/DETAIL-right↔
+        // footerDiv1, footerDiv1↔ATK, TILT↔footerDiv2 and footerDiv2↔MODE-card-left
+        // all equal — instead of the old col2 = trio + 12 pad that left the minis
+        // hugging both dividers at only 6 px while the big pair had ~65 px to div1.
+        // The MODE card (col3) is UNCHANGED: its left edge stays at the old
+        // fx + 0.60*fw + S(10), so only the two dividers move to equalise. P falls out
+        // of the width budget (bigs centred in col1 with P margins, minis in col2):
+        //   modeLeft = fx + P + bigPairW + P + P + miniTrioW + P + P
+        //   => P = ((modeLeft - fx) - bigPairW - miniTrioW) / 5.
+        // All lengths scale with S().
         const float bigDia = (float) S (104), miniDia = (float) S (57);
         const float bigCellH = (float) S (153), miniCellH = (float) S (101);
-        const float bigGap = (float) S (40), miniGap = (float) S (20); // edge-to-edge dial gaps
+        const float bigGap = (float) S (40), miniGap = (float) S (20); // edge-to-edge dial gaps (locked)
         const float bigPairW = 2.0f * bigDia + bigGap;
         const float miniTrioW = 3.0f * miniDia + 2.0f * miniGap;
-        const float col2W = miniTrioW + (float) S (12);
-        const float col1W = (footerDiv2_ - fx) - col2W;
-        footerDiv1_ = fx + col1W;
+        const float modeLeft = fx + fw * 0.60f + (float) S (10);       // MODE card left — unchanged (== old col3 cx)
+        const float gapP = ((modeLeft - fx) - bigPairW - miniTrioW) / 5.0f; // the single uniform gap
+        footerDiv1_ = fx + gapP + bigPairW + gapP;                     // bigs centred in col1 with P margins
+        footerDiv2_ = footerDiv1_ + gapP + miniTrioW + gapP;           // minis centred in col2 (== modeLeft - P)
         const float chFull = fh - 2.0f * S (6);
         const float cyBig = fy + S (6) + (chFull - bigCellH) * 0.5f;   // stacks vertically centred
         const float cyMini = fy + S (6) + (chFull - miniCellH) * 0.5f;
 
-        // col1: 2 big knobs — pair centred in col1, bigGap between.
+        // col1: 2 big knobs — pair centred in col1 (gapP from the left card edge + gapP to footerDiv1).
         {
-            const float pairLeft = fx + (col1W - bigPairW) * 0.5f;
+            const float pairLeft = fx + gapP;
             for (int i = 0; i < 2; ++i)
                 knobs_[(std::size_t) i]->setBounds (pairLeft + (float) i * (bigDia + bigGap), cyBig, bigDia, bigCellH);
         }
-        // col2: 3 mini knobs — trio centred in col2, miniGap between.
+        // col2: 3 mini knobs — trio centred in col2 (gapP from footerDiv1 + gapP to footerDiv2).
         {
-            const float trioLeft = footerDiv1_ + (col2W - miniTrioW) * 0.5f;
+            const float trioLeft = footerDiv1_ + gapP;
             for (int i = 0; i < 3; ++i)
                 knobs_[(std::size_t) (2 + i)]->setBounds (trioLeft + (float) i * (miniDia + miniGap), cyMini, miniDia, miniCellH);
         }
-        // col3: MODE + 5 setting rows
+        // col3: MODE + 5 setting rows (UNCHANGED — anchored at modeLeft == old cx).
         {
-            const float cx = footerDiv2_ + S (10), cy = fy + S (6);
+            const float cx = modeLeft, cy = fy + S (6);
             const float cw = (fx + fw) - cx - S (10), ch = fh - 2.0f * S (6);
             const float rowGap = (float) S (6), cellGap = (float) std::max (4, S (6));
 
@@ -574,6 +618,11 @@ namespace rs_ui
         if (key == "copy")   return rectOf (copyBtn_.get());
         if (key == "nodePanel") return nodePanel_ && nodePanel_->isVisible() ? rectOf (nodePanel_.get()) : false;
         if (key == "ab")     { x = o.x + abStrip_.x; y = o.y + abStrip_.y; w = abStrip_.w; h = abStrip_.h; return true; }
+        // Footer chrome (window px) — the divider-gap uniformity guard (test 19).
+        if (key == "footerDiv1") { x = o.x + footerDiv1_; y = o.y + footerCard_.y; w = 1.0f; h = footerCard_.h; return true; }
+        if (key == "footerDiv2") { x = o.x + footerDiv2_; y = o.y + footerCard_.y; w = 1.0f; h = footerCard_.h; return true; }
+        if (key == "modeCard")   { x = o.x + modeCell_.x; y = o.y + modeCell_.y; w = modeCell_.w; h = modeCell_.h; return true; }
+        if (key == "footerCard") { x = o.x + footerCard_.x; y = o.y + footerCard_.y; w = footerCard_.w; h = footerCard_.h; return true; }
 
         const int pi = store_.indexOf (key);
         if (pi < 0) return false;

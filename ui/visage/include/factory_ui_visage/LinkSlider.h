@@ -2,6 +2,7 @@
 
 #include "factory_ui_visage/Theme.h"
 #include "factory_ui_visage/Icons.h"
+#include "factory_ui_visage/ValueEntry.h"
 #include "factory_params/ParamStore.h"
 #include "factory_params/Range.h"
 
@@ -36,6 +37,10 @@ namespace factory_ui_visage
         // per-slider to restore the MIX/OUT track width (round-3 fix 3).
         void setCaptionColumnPx (float px) { captionColumnPx_ = px; redraw(); }
 
+        // Direct text entry: double-clicking the value read-out opens the shared
+        // ValueEntry overlay (set by the editor; unset in the gallery = no entry).
+        ValueEntryOpener requestValueEntry;
+
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
         void mouseDrag (const visage::MouseEvent& e) override;
@@ -50,6 +55,8 @@ namespace factory_ui_visage
         Layout computeLayout() const;
         float  currentNorm() const;
         void   writeNorm (float norm);
+        void   openValueEntry();                          // double-click value col -> overlay
+        void   commitValueEntry (const std::string& text); // parse + clamp + gesture-write
 
         factory_params::ParamStore& store_;
         int index_;
