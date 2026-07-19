@@ -217,8 +217,12 @@ namespace factory_ui_visage
     void Knob::commitValueEntry (const std::string& text)
     {
         const factory_params::ParamDesc& desc = store_.desc (index_);
-        float real = 0.0f; // JUCE getValueFromText("") == 0 -> range-clamped by setFromUi
-        factory_params::parseValue (desc, text, real);
+        float real = 0.0f;
+        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle
+        // (getValueFromText("") == 0 -> clamp-to-min). Invalid / empty input REVERTS
+        // (no gesture, no write, label unchanged) rather than snapping to the minimum
+        // — user request. A valid-but-out-of-range number still commits + clamps.
+        if (! factory_params::tryParseValue (desc, text, real)) return;
         store_.beginGesture (index_);
         store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
         store_.endGesture (index_);

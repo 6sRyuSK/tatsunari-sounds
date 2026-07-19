@@ -24,8 +24,11 @@ namespace rs_ui
         // freq valueFromTextFunction: the display is Hz/kHz, so a trailing k/kHz
         // (case/space tolerant) means kHz, and a bare number below the parameter
         // minimum whose *1000 lands in range is treated as kHz ("2.6" against a
-        // "2.6kHz" display). setFromUi clamps the result to the range regardless.
-        float parseFreqEntry (const std::string& text, double lo, double hi)
+        // "2.6kHz" display). Returns false (REVERT) when there is no leading number
+        // after trimming + stripping the k/kHz suffix ("abc", "", "kHz") — the round
+        // #4 follow-up (invalid reverts, not clamp-to-min). setFromUi clamps a valid
+        // result to the range.
+        bool parseFreqEntry (const std::string& text, double lo, double hi, float& out)
         {
             std::string t = text;
             auto isSpace = [] (char c) { return std::isspace ((unsigned char) c) != 0; };
@@ -36,10 +39,12 @@ namespace rs_ui
             bool asK = false;
             if (low.size() >= 3 && low.compare (low.size() - 3, 3, "khz") == 0) { t.resize (t.size() - 3); asK = true; }
             else if (! low.empty() && low.back() == 'k')                        { t.resize (t.size() - 1); asK = true; }
-            const double v = std::strtod (t.c_str(), nullptr); // 0 on no-number (== JUCE getDoubleValue)
-            if (asK) return (float) (v * 1000.0);
-            if (v < lo && v * 1000.0 >= lo && v * 1000.0 <= hi) return (float) (v * 1000.0);
-            return (float) v;
+            double v = 0.0;
+            if (! factory_params::tryParseNumber (t, v)) return false; // no leading number -> revert
+            if (asK) { out = (float) (v * 1000.0); return true; }
+            if (v < lo && v * 1000.0 >= lo && v * 1000.0 <= hi) { out = (float) (v * 1000.0); return true; }
+            out = (float) v;
+            return true;
         }
 
         // (The mini-knob sweep endpoints now come from the shared KnobMetrics —
@@ -440,9 +445,13 @@ namespace rs_ui
     void RsNodePanel::commitMiniEntry (int paramIndex, bool isFreq, const std::string& text)
     {
         const factory_params::ParamDesc& desc = model_.store().desc (paramIndex);
-        float real = 0.0f; // JUCE getValueFromText("") == 0 -> range-clamped by setFromUi
-        if (isFreq) real = parseFreqEntry (text, desc.minValue, desc.maxValue);
-        else        factory_params::parseValue (desc, text, real);
+        float real = 0.0f;
+        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle — invalid /
+        // empty input REVERTS (no gesture, no write) rather than clamping to the
+        // minimum, including through the FREQ kHz parser ("abc" reverts). (User request.)
+        const bool ok = isFreq ? parseFreqEntry (text, desc.minValue, desc.maxValue, real)
+                               : factory_params::tryParseValue (desc, text, real);
+        if (! ok) return;
         model_.store().beginGesture (paramIndex);
         model_.store().setFromUi (paramIndex, real); // snapToLegalValue clamps + snaps
         model_.store().endGesture (paramIndex);

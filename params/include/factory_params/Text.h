@@ -88,4 +88,65 @@ namespace factory_params
         outReal = v;
         return true;
     }
+
+    // Try to read a leading number (strtod-style) from `text`, ignoring surrounding
+    // whitespace and any trailing unit/suffix: false when there is NO parseable
+    // leading number ("", "abc", "-", "."), true otherwise ("12" -> 12, "12abc" ->
+    // 12, "-3.5 dB" -> -3.5). The shared JUCE-free numeric validator behind
+    // tryParseValue and the RS FREQ kHz parser.
+    inline bool tryParseNumber (std::string_view text, double& out)
+    {
+        std::size_t b = 0, e = text.size();
+        while (b < e && std::isspace (static_cast<unsigned char> (text[b]))) ++b;
+        while (e > b && std::isspace (static_cast<unsigned char> (text[e - 1]))) --e;
+        const std::string s (text.substr (b, e - b));
+        char* endp = nullptr;
+        const double v = std::strtod (s.c_str(), &endp);
+        if (endp == s.c_str()) return false; // no leading number
+        out = v;
+        return true;
+    }
+
+    // Parse display text to a real value AND report validity, so a UI text-entry can
+    // REVERT on invalid input instead of writing a fallback (parseValue()'s false
+    // return is ignored by some existing callers; this is the value-entry validator).
+    // Choice: exact label else numeric index; Bool: on/off/true/false/yes/no or a
+    // number; Float: a leading number (tryParseNumber, unit suffix ignored). Returns
+    // false only when nothing sensible parses; a valid-but-out-of-range number still
+    // parses (clamping is the ParamStore's job). parseValue() is left as-is.
+    inline bool tryParseValue (const ParamDesc& d, std::string_view text, float& outReal)
+    {
+        std::size_t b = 0, e = text.size();
+        while (b < e && std::isspace (static_cast<unsigned char> (text[b]))) ++b;
+        while (e > b && std::isspace (static_cast<unsigned char> (text[e - 1]))) --e;
+        const std::string_view t = text.substr (b, e - b);
+
+        if (d.type == ParamType::Bool)
+        {
+            std::string low;
+            low.reserve (t.size());
+            for (char c : t) low.push_back (static_cast<char> (std::tolower (static_cast<unsigned char> (c))));
+            if (low == "on"  || low == "true"  || low == "yes") { outReal = 1.0f; return true; }
+            if (low == "off" || low == "false" || low == "no")  { outReal = 0.0f; return true; }
+            double n = 0.0;
+            if (! tryParseNumber (t, n)) return false;
+            outReal = n > 0.5 ? 1.0f : 0.0f;
+            return true;
+        }
+
+        if (d.type == ParamType::Choice)
+        {
+            for (std::size_t i = 0; i < d.choices.size(); ++i)
+                if (t == d.choices[i]) { outReal = static_cast<float> (i); return true; }
+            double n = 0.0;
+            if (! tryParseNumber (t, n)) return false;
+            outReal = static_cast<float> (static_cast<long> (n));
+            return true;
+        }
+
+        double n = 0.0;
+        if (! tryParseNumber (t, n)) return false;
+        outReal = static_cast<float> (n);
+        return true;
+    }
 }

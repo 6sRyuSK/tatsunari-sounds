@@ -253,6 +253,29 @@ void checkText()
     check (parseValue (dlt, "On", r) && bitEqual (r, 1.0f), "parse bool 'On'");
     check (parseValue (dlt, "off", r) && bitEqual (r, 0.0f), "parse bool 'off'");
     check (parseValue (dlt, "true", r) && bitEqual (r, 1.0f), "parse bool 'true'");
+
+    // tryParseValue / tryParseNumber: report validity so a UI value-entry can REVERT
+    // on invalid input (round #4 follow-up) instead of writing a fallback.
+    check (tryParseValue (depth, "42.5 %", r) && std::abs (r - 42.5f) < 1e-4f, "tryParse '42.5 %' -> 42.5 (valid)");
+    check (tryParseValue (depth, "12abc", r) && std::abs (r - 12.0f) < 1e-4f, "tryParse '12abc' -> 12 (lenient leading number)");
+    check (tryParseValue (out, "-6.0 dB", r) && std::abs (r - (-6.0f)) < 1e-4f, "tryParse '-6.0 dB' -> -6.0");
+    check (tryParseValue (depth, "999", r) && std::abs (r - 999.0f) < 1e-3f, "tryParse '999' valid (out-of-range; store clamps)");
+    check (! tryParseValue (depth, "abc", r), "tryParse 'abc' -> invalid (revert)");
+    check (! tryParseValue (depth, "", r), "tryParse '' -> invalid (revert)");
+    check (! tryParseValue (depth, "   ", r), "tryParse whitespace -> invalid (revert)");
+    check (! tryParseValue (depth, "-", r), "tryParse '-' -> invalid (revert)");
+    check (! tryParseValue (depth, ".", r), "tryParse '.' -> invalid (revert)");
+    check (tryParseValue (mode, "Hard", r) && bitEqual (r, 1.0f), "tryParse choice label 'Hard'");
+    check (! tryParseValue (mode, "xyz", r), "tryParse choice 'xyz' -> invalid");
+    check (tryParseValue (dlt, "on", r) && bitEqual (r, 1.0f), "tryParse bool 'on'");
+    check (! tryParseValue (dlt, "maybe", r), "tryParse bool 'maybe' -> invalid");
+
+    double n = 0.0;
+    check (tryParseNumber ("  2.6 kHz", n) && std::abs (n - 2.6) < 1e-9, "tryParseNumber '2.6 kHz' -> 2.6");
+    check (tryParseNumber ("12abc", n) && std::abs (n - 12.0) < 1e-9, "tryParseNumber '12abc' -> 12");
+    check (! tryParseNumber ("kHz", n), "tryParseNumber 'kHz' -> invalid (no leading number)");
+    check (! tryParseNumber ("", n), "tryParseNumber '' -> invalid");
+    check (! tryParseNumber ("  -  ", n), "tryParseNumber '-' -> invalid");
 }
 
 // ---------------------------------------------------------------------------

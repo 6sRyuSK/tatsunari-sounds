@@ -630,16 +630,27 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     check("Esc cancels the edit (value unchanged, entry closed)",
       approx(dEsc.v, 42, 0.6) && dEsc.open === false, JSON.stringify(dEsc));
 
-    // (c) invalid text -> oracle: getValueFromText("")==0 -> clamped to the range min.
-    const depthMin = await page.evaluate(() => window.ui.list().find((p) => p.id === "depth").min);
+    // (c) invalid text -> REVERT to the original value (no write). DELIBERATE
+    // deviation from the JUCE oracle (getValueFromText("")==0 -> clamp-to-min):
+    // the user asked for invalid/empty to behave like cancel (round #4 follow-up).
     await page.evaluate(() => window.ui.set("depth", 42));
     await dblclickWindow(page, dr.x + dr.w * 0.5, dr.y + dr.h - 8);
     await page.keyboard.type("abc", { delay: 20 });
     await page.keyboard.press("Enter");
     await wait(page, 80);
     const dInvalid = await page.evaluate(() => window.ui.get("depth"));
-    check("invalid text commits the range-clamped 0 (oracle getValueFromText)",
-      approx(dInvalid, depthMin, 0.6), "invalid -> " + dInvalid + " (min " + depthMin + ")");
+    check("invalid text reverts to the original value (no write, not clamp-to-min)",
+      approx(dInvalid, 42, 0.6), "abc -> " + dInvalid + " (orig 42)");
+
+    // (c2) empty string (clear the selected prefill) -> also reverts.
+    await page.evaluate(() => window.ui.set("depth", 37));
+    await dblclickWindow(page, dr.x + dr.w * 0.5, dr.y + dr.h - 8);
+    await page.keyboard.press("Backspace"); // deletes the select-all'd prefill -> empty
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const dEmpty = await page.evaluate(() => window.ui.get("depth"));
+    check("empty text reverts to the original value (no write)",
+      approx(dEmpty, 37, 0.6), "empty -> " + dEmpty + " (orig 37)");
 
     // (d) MIX slider value read-out.
     await page.evaluate(() => window.ui.set("mix", 50));
@@ -678,6 +689,18 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     const fAfter = await page.evaluate(() => window.ui.get("b0_freq"));
     check("band-mini FREQ text entry applies the kHz heuristic (2.6 -> 2600 Hz)",
       approx(fAfter, 2600, 5), "freq -> " + fAfter);
+
+    // (g) FREQ invalid text -> reverts through parseFreqEntry too (no clamp-to-min).
+    await page.evaluate(() => { window.ui.set("b0_freq", 1500); window.rs.selectNode(2); });
+    await wait(page, 100);
+    const fv2 = await page.evaluate(() => window.rs.miniValueRect(0));
+    await dblclickWindow(page, fv2.x + fv2.w * 0.5, fv2.y + fv2.h * 0.5);
+    await page.keyboard.type("abc", { delay: 20 });
+    await page.keyboard.press("Enter");
+    await wait(page, 80);
+    const fInvalid = await page.evaluate(() => window.ui.get("b0_freq"));
+    check("FREQ invalid text reverts (parseFreqEntry, not clamp-to-min)",
+      approx(fInvalid, 1500, 1), "abc -> " + fInvalid + " (orig 1500)");
     await page.evaluate(() => window.rs.selectNode(-1));
   }
 
