@@ -53,6 +53,26 @@ if(NOT TARGET clap-wrapper-extensions)
   set(VST3_SDK_ROOT "${vst3sdk_SOURCE_DIR}" CACHE PATH "VST3 SDK root" FORCE)
   message(STATUS "factory_clap: VST3_SDK_ROOT = ${VST3_SDK_ROOT}")
 
+  # 2b. AudioUnitSDK (Apple only) — the AUv2 wrapper's guarantee_auv2sdk() needs
+  #     AUDIOUNIT_SDK_ROOT when downloads are OFF (its only other paths are the
+  #     CPM download we disable and a local-dir search that fails on CI). Same
+  #     populate-only pattern as the VST3 SDK; pinned to the exact tag the pinned
+  #     clap-wrapper would CPM-fetch itself (parity, see base_sdks.cmake). Only
+  #     configured on APPLE — Linux/Windows never reach the AUv2 path.
+  if(APPLE)
+    set(FACTORY_AUV2SDK_TAG "AudioUnitSDK-1.1.0" CACHE STRING "apple/AudioUnitSDK tag")
+    FetchContent_Declare(audiounitsdk
+      GIT_REPOSITORY https://github.com/apple/AudioUnitSDK.git
+      GIT_TAG        ${FACTORY_AUV2SDK_TAG}
+      GIT_SHALLOW    ON)
+    FetchContent_GetProperties(audiounitsdk)
+    if(NOT audiounitsdk_POPULATED)
+      FetchContent_Populate(audiounitsdk)
+    endif()
+    set(AUDIOUNIT_SDK_ROOT "${audiounitsdk_SOURCE_DIR}" CACHE PATH "AudioUnit SDK root" FORCE)
+    message(STATUS "factory_clap: AUDIOUNIT_SDK_ROOT = ${AUDIOUNIT_SDK_ROOT}")
+  endif()
+
   # 3. clap-wrapper — downloads OFF so its vendored CPM bootstrap never runs.
   set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
   set(CLAP_WRAPPER_BUILD_TESTS           OFF CACHE BOOL "" FORCE)
