@@ -109,7 +109,19 @@ namespace factory_params
 
         void endGesture (int idx) noexcept
         {
+            gestureEndSeq.fetch_add (1, std::memory_order_release);
             pushHostWrite ({ idx, 0.0f, HostWrite::Kind::GestureEnd });
+        }
+
+        // Monotonic count of gesture-ends, as a NON-CONSUMING observer signal
+        // (distinct from the single-consumer host-write queue). A gesture-end also
+        // enqueues a HostWrite the host driver drains (for CLAP output events), so
+        // an observer that must NOT steal that queue — e.g. the editor's undo
+        // coalescer — watches this counter instead: any number of observers can,
+        // each holding its own last-seen value, exactly like ChangeSweeper's epochs.
+        std::uint32_t gestureEndCount() const noexcept
+        {
+            return gestureEndSeq.load (std::memory_order_acquire);
         }
 
         // --- host-write queue drain (single consumer = host driver) ----------
@@ -165,6 +177,7 @@ namespace factory_params
         std::atomic<std::size_t>     queueHead { 0 };      // producer (UI) index
         std::atomic<std::size_t>     queueTail { 0 };      // consumer (host) index
         std::atomic<std::uint32_t>   droppedCount { 0 };
+        std::atomic<std::uint32_t>   gestureEndSeq { 0 };  // gesture-end observer (non-consuming)
     };
 
     //

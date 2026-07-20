@@ -63,9 +63,12 @@ OSES = ["macOS", "Windows"]
 # `factory_clap_plugin(<Target> ...)` (whose macro does not exist in the repo
 # yet — that's expected). Both mirror the workflow's grep/sed: first call of the
 # macro, first identifier after the opening paren.
+# NOTE: the clap target name is the plugin SLUG (a make_clapfirst TARGET_NAME),
+# which contains hyphens (e.g. resonance-suppressor) — so its capture class must
+# include '-', unlike the JUCE CMake target identifier (e.g. ResonanceSuppressor).
 _TARGET_RES = {
     "juce": re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)"),
-    "clap": re.compile(r"factory_clap_plugin\(\s*([A-Za-z0-9_]+)"),
+    "clap": re.compile(r"factory_clap_plugin\(\s*([A-Za-z0-9_-]+)"),
 }
 
 
@@ -87,12 +90,23 @@ def _plugin_table(toml_path: Path) -> dict:
 def _resolve_target(cmake_path: Path) -> tuple[str, str]:
     """Resolve a plugin's (target, kind) from its CMakeLists. kind is "juce" for
     a juce_add_plugin target, "clap" for a factory_clap_plugin one. Declaring
-    both styles in one file is ambiguous — which one ships? — so it is a hard
-    error, in the same spirit as the no-target case. A missing file or no match
-    yields ("", ""), which enumerate_plugins turns into the no-target error."""
-    if not cmake_path.is_file():
+    both styles is ambiguous — which one ships? — so it is a hard error, in the
+    same spirit as the no-target case. A missing file or no match yields ("", ""),
+    which enumerate_plugins turns into the no-target error.
+
+    A clap-first plugin (resonance-suppressor) declares factory_clap_plugin in its
+    shell/CMakeLists.txt, not the main file, so BOTH are scanned. juce_add_console_app
+    test oracles in the main file (e.g. rscore_equiv) are NOT juce_add_plugin and so
+    never register a shipping target here."""
+    texts: list[str] = []
+    if cmake_path.is_file():
+        texts.append(cmake_path.read_text(encoding="utf-8"))
+    shell_cmake = cmake_path.parent / "shell" / "CMakeLists.txt"
+    if shell_cmake.is_file():
+        texts.append(shell_cmake.read_text(encoding="utf-8"))
+    if not texts:
         return "", ""
-    text = cmake_path.read_text(encoding="utf-8")
+    text = "\n".join(texts)
     found: dict[str, str] = {}
     for kind, rx in _TARGET_RES.items():
         m = rx.search(text)

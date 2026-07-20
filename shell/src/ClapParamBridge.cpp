@@ -74,6 +74,23 @@ namespace factory_shell
         return exposed[paramIndex];
     }
 
+    bool ParamBridge::clapIdForStoreIndex (int storeIndex, clap_id& outId) const noexcept
+    {
+        if (table == nullptr || storeIndex < 0 || storeIndex >= static_cast<int> (table->size()))
+            return false;
+        // Only exposed parameters carry a CLAP id / output lane. `exposed` is small
+        // (~40 params) and this is called once per drained GUI edit, not per sample.
+        for (int full : exposed)
+        {
+            if (full == storeIndex)
+            {
+                outId = (*table)[static_cast<std::size_t> (storeIndex)].uid;
+                return true;
+            }
+        }
+        return false;
+    }
+
     int ParamBridge::storeIndexForId (clap_id id) const noexcept
     {
         // Binary search the sorted (uid -> FULL index) table. RT-safe.
@@ -87,6 +104,52 @@ namespace factory_shell
             else                hi = mid - 1;
         }
         return -1;
+    }
+
+    void emitParamEventsToHost (factory_params::ParamStore& store,
+                                const ParamBridge&          bridge,
+                                const clap_output_events_t* out) noexcept
+    {
+        if (out == nullptr)
+            return;
+
+        store.drainHostWrites ([&bridge, out] (const factory_params::HostWrite& w) noexcept
+        {
+            clap_id id;
+            if (! bridge.clapIdForStoreIndex (w.index, id))
+                return; // legacy / non-exposed parameter: no CLAP output lane
+
+            if (w.kind == factory_params::HostWrite::Kind::Value)
+            {
+                clap_event_param_value_t ev {};
+                ev.header.size     = sizeof (ev);
+                ev.header.time     = 0;
+                ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                ev.header.type     = CLAP_EVENT_PARAM_VALUE;
+                ev.header.flags    = 0;
+                ev.param_id   = id;
+                ev.cookie     = nullptr;
+                ev.note_id    = -1;
+                ev.port_index = -1;
+                ev.channel    = -1;
+                ev.key        = -1;
+                ev.value      = static_cast<double> (w.value);
+                out->try_push (out, &ev.header);
+            }
+            else
+            {
+                clap_event_param_gesture_t ev {};
+                ev.header.size     = sizeof (ev);
+                ev.header.time     = 0;
+                ev.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                ev.header.type     = (w.kind == factory_params::HostWrite::Kind::GestureBegin)
+                                         ? CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                         : CLAP_EVENT_PARAM_GESTURE_END;
+                ev.header.flags = 0;
+                ev.param_id     = id;
+                out->try_push (out, &ev.header);
+            }
+        });
     }
 
     void ParamBridge::valueToText (int storeIndex, double value, char* out, std::uint32_t cap) const

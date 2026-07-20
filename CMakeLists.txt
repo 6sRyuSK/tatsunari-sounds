@@ -73,6 +73,7 @@ add_subdirectory(presets/tests)
 set(FACTORY_PLUGINS "" CACHE STRING "Plugin slugs to configure, comma/semicolon separated (empty = all)")
 string(REPLACE "," ";" _factory_plugins "${FACTORY_PLUGINS}")
 
+set(_rs_configured FALSE)
 file(GLOB _plugin_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/plugins/*)
 foreach(_dir ${_plugin_dirs})
   if(IS_DIRECTORY ${_dir} AND EXISTS ${_dir}/CMakeLists.txt)
@@ -80,24 +81,32 @@ foreach(_dir ${_plugin_dirs})
     if(_factory_plugins AND NOT _slug IN_LIST _factory_plugins)
       continue()
     endif()
+    if(_slug STREQUAL "resonance-suppressor")
+      set(_rs_configured TRUE)  # -> assemble its clap-first shipping build below
+    endif()
     add_subdirectory(${_dir})
   endif()
 endforeach()
 
-# --- CLAP coexistence (Phase P4, chunk 3a) — OPT-IN, OFF by default ----------
-# When OFF (the default, and what ci.yml configures), NOTHING CLAP is fetched or
-# built: no clap / clap-wrapper / vst3sdk FetchContent, no shell/ target. The
-# shipping JUCE VST3/AU gate is therefore completely unaffected. Only when the
-# operator passes -DFACTORY_RS_CLAP=ON (clap.yml) is the CLAP shell assembled —
-# a parallel build alongside the untouched JUCE processor. add_subdirectory(shell)
-# performs the pinned SDK FetchContent (see shell/cmake/FactoryClapPlugin.cmake).
-option(FACTORY_RS_CLAP "Build the RS CLAP shell (coexistence; fetches CLAP SDKs)" OFF)
-if(FACTORY_RS_CLAP)
+# --- resonance-suppressor: CLAP-FIRST SHIPPING BUILD (3.0.0 cutover) ----------
+# RS now ships clap-first: the make_clapfirst shell produces the CLAP + wrapper
+# VST3 (+ AUv2 on Apple, with the Visage editor) that REPLACES the old JUCE
+# VST3/AU (there is no juce_add_plugin for RS any more — see
+# plugins/resonance-suppressor/CMakeLists.txt). The shell + pinned CLAP/VST3/
+# clap-wrapper SDKs are therefore assembled whenever RS is in the configured set
+# (_rs_configured). Other plugins never reach factory_clap_plugin, so a
+# subset configure that excludes RS (FACTORY_PLUGINS=<other>) fetches nothing
+# CLAP-related — the SDK fetch tracks RS's presence, not a global flag.
+#
+# FACTORY_RS_CLAP is retained as a harmless no-op so a stray -DFACTORY_RS_CLAP=ON
+# on a configure line (older scripts) neither errors nor changes anything.
+option(FACTORY_RS_CLAP "Legacy no-op: RS is clap-first unconditionally now" OFF)
+if(_rs_configured)
   # The impl + clap-wrapper's own static libs (base-sdk-vst3, the per-target VST3
   # wrapper glue) are linked into MODULE (shared) libraries, so they must be PIC.
   # Set it here — the root scope — so BOTH add_subdirectory()s below (and the
-  # clap-wrapper targets they create) inherit it; the JUCE targets above are
-  # already defined and unaffected.
+  # clap-wrapper targets they create) inherit it; the header-only INTERFACE libs +
+  # the OTHER plugins' JUCE targets above are already defined and unaffected.
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
   # Pin the MSVC C runtime for the WHOLE CLAP build tree, at the root scope, so
@@ -109,9 +118,10 @@ if(FACTORY_RS_CLAP)
   # swarm of LNK2005 duplicate-symbol errors. clap-wrapper honours the variable
   # when it is already DEFINED, so defining it here (cached, before the
   # add_subdirectory()s that populate clap-wrapper) makes the entire tree /MD —
-  # matching the shipping JUCE VST3/AU (also /MD), so the coexistence binaries
-  # share the same CRT and the same redist assumption. (CI never caught this:
-  # clap.yml builds the CLAP shell on Linux only.) Left overridable — pass
+  # matching the OTHER plugins' JUCE VST3/AU (also /MD), so every factory binary
+  # shares the same CRT and the same redist assumption. (ci.yml now builds RS
+  # clap-first on macOS + Windows, so this Windows link path is gated on the real
+  # shipping runners.) Left overridable — pass
   # -DCMAKE_MSVC_RUNTIME_LIBRARY=... (e.g. the static variant for a redist-free,
   # self-contained plugin) and this respects it, exactly like clap-wrapper does.
   if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
