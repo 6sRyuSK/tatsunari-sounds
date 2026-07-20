@@ -2,6 +2,22 @@ cmake_minimum_required(VERSION 3.22)   # JUCE 8 requires CMake >= 3.22
 
 project(PluginFactory VERSION 0.1.0 LANGUAGES C CXX)
 
+# Objective-C/C++ must be enabled HERE — before the JUCE fetch and before any
+# subdirectory. Root cause (3.0.0 cutover, mac): with OBJCXX never enabled,
+# CMake compiles .mm via the CXX rules and clang picks ObjC++ by extension —
+# that's how the JUCE plugins' .mm modules built for months. But clap-wrapper
+# (fetched for RS's clap-first build) enable_language()s OBJC/OBJCXX inside its
+# own subdirectory, which flips the GLOBAL extension mapping: every .mm in the
+# project now maps to the OBJCXX language, while directories processed before
+# that point (all plugins/, with JUCE's .mm module unities) never received the
+# OBJCXX compile rules → the mac generate step dies with "Missing variable:
+# CMAKE_OBJCXX_COMPILE_OBJECT" for ~every JUCE .mm. Enabling at the true root
+# gives every directory the rules regardless of processing order.
+if(APPLE)
+  enable_language(OBJC)
+  enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -102,18 +118,6 @@ endforeach()
 # on a configure line (older scripts) neither errors nor changes anything.
 option(FACTORY_RS_CLAP "Legacy no-op: RS is clap-first unconditionally now" OFF)
 if(_rs_configured)
-  # clap-wrapper's AUv2/cocoa glue and visage's macOS windowing are
-  # Objective-C++ (.mm). clap-wrapper does enable_language(OBJC/OBJCXX) only
-  # inside its own FetchContent subdirectory scope, which does not provide
-  # compile rules to SIBLING subdirectories (visage, our shell targets) — the
-  # mac generate step then dies with "Missing variable:
-  # CMAKE_OBJCXX_COMPILE_OBJECT". Enable both at the root scope so every
-  # subdirectory below gets the rules. (JUCE plugins were unaffected because
-  # JUCE handles its own .mm inside its own tree.)
-  if(APPLE)
-    enable_language(OBJC OBJCXX)
-  endif()
-
   # The impl + clap-wrapper's own static libs (base-sdk-vst3, the per-target VST3
   # wrapper glue) are linked into MODULE (shared) libraries, so they must be PIC.
   # Set it here — the root scope — so BOTH add_subdirectory()s below (and the

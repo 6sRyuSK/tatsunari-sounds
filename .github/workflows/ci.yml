@@ -96,7 +96,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+          # Post-cutover the _deps content also tracks the CLAP/VST3/AudioUnitSDK
+          # pins in shell/cmake/FactoryClapPlugin.cmake, not just the JUCE pin here.
+          key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'shell/cmake/FactoryClapPlugin.cmake') }}
 
       # Decide which plugins can have changed binaries. Shared code (core/ ui/
       # presets/ params/ shell/ cmake/ the root CMakeLists.txt, this workflow) affects every
