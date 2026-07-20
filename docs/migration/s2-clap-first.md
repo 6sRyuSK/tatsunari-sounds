@@ -24,6 +24,7 @@ Everything below was done entirely in the scratch workspace
 | **free-audio/clap** | tag **`1.2.10`** (commit `195b42a004144fab0b3cf95e9c067187d15365b7`) | header-only `clap` INTERFACE target |
 | **free-audio/clap-wrapper** | main HEAD **`35f524b771ec09f54c164720bb90f271273b37d3`** | project version `0.15.1` |
 | **steinbergmedia/vst3sdk** | tag **`v3.8.0_build_66`** | exactly what clap-wrapper's own CPM path pins; parsed version `3.8.0`. Only submodules `base public.sdk pluginterfaces cmake` are needed |
+| **apple/AudioUnitSDK** | tag **`AudioUnitSDK-1.1.0`** | AUv2 wrapper (APPLE only); exactly what clap-wrapper's own CPM path pins — handed via `AUDIOUNIT_SDK_ROOT` since our downloads stay OFF (added at the 3.0.0 cutover: `guarantee_auv2sdk()` otherwise fails the mac configure) |
 | **clap-validator** | release **`0.3.2`** (src commit `db38eb85f3a9ec08a1d45ad1dbe5d4f6b4737b30`) | built from source here (see gotcha #3); real CI downloads the prebuilt |
 | **pluginval** | release **`v1.0.4`** (src commit `ed19c2c16b57a6d94db391bea3ef4a80b769d5bf`; bundled JUCE submodule `5179f4e720d8406ebd1b5401c86aea8da6cc83c9`) | built from source here; real CI downloads the prebuilt |
 

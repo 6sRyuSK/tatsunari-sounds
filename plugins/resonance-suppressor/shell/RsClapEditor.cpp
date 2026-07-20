@@ -14,9 +14,12 @@
 //   * factory_params::ParamStore -> every control binds by string id;
 //   * factory_presets::PresetSession -> the REAL program list (Init + the six
 //                                   factory presets) and apply path.
-// A/B compare is a store-snapshot model (functional, but not yet the processor's
-// setABSlot — see the header's tomorrow-list); preset apply relays a rescan +
-// mark-dirty to the host so the change lands in the DAW.
+// A/B compare is the real rs_ui::AbCompareModel (RsAbState.h): two session slots of
+// {full parameter state + program index}, the exact JUCE-2.1.0 setABSlot /
+// copyActiveToOther scope. A bulk state change (preset apply / A-B switch) relays a
+// host rescan + mark-dirty so the DAW reflects it WITHOUT recording per-parameter
+// automation; individual knob edits DO reach the host as automation, via the shell's
+// GUI-edit -> CLAP output-event relay (ClapShellPlugin::emitHostWrites).
 //
 // PARENT ATTACH (host-provided window):
 //   * Linux  : clap_window.x11 is the X11 Window id; visage embeds via show(ptr)
@@ -38,6 +41,7 @@
 #include "RsFeedFromCore.h"
 #include "RsTheme.h"
 #include "RsModels.h"
+#include "RsAbState.h"
 
 #include "RsCore.h"
 #include "factory_params/ParamStore.h"
@@ -110,57 +114,10 @@ namespace
         std::function<void()>           onLoaded_;
     };
 
-    // --- A/B compare (store-snapshot; functional mock — see header) -----------
-    class StoreAbModel final : public rs_ui::RsAbModel
-    {
-    public:
-        explicit StoreAbModel (factory_params::ParamStore& store, std::function<void()> onSwitched)
-            : store_ (store), onSwitched_ (std::move (onSwitched)) {}
-
-        int activeSlot() const override { return active_; }
-
-        void setActiveSlot (int slot) override
-        {
-            if (slot == active_ || slot < 0 || slot > 1) return;
-            slotState_[static_cast<std::size_t> (active_)] = snapshot();
-            seeded_[static_cast<std::size_t> (active_)] = true;
-            active_ = slot;
-            if (seeded_[static_cast<std::size_t> (slot)])
-                apply (slotState_[static_cast<std::size_t> (slot)]);
-            else
-            {
-                slotState_[static_cast<std::size_t> (slot)] = snapshot();
-                seeded_[static_cast<std::size_t> (slot)] = true;
-            }
-            if (onSwitched_) onSwitched_();
-        }
-
-        void copyActiveToOther() override
-        {
-            const int other = 1 - active_;
-            slotState_[static_cast<std::size_t> (other)] = snapshot();
-            seeded_[static_cast<std::size_t> (other)] = true;
-        }
-
-    private:
-        std::vector<float> snapshot() const
-        {
-            std::vector<float> v (static_cast<std::size_t> (store_.size()));
-            for (int i = 0; i < store_.size(); ++i) v[static_cast<std::size_t> (i)] = store_.value (i);
-            return v;
-        }
-        void apply (const std::vector<float>& s)
-        {
-            for (int i = 0; i < store_.size() && i < static_cast<int> (s.size()); ++i)
-                store_.setFromHost (i, s[static_cast<std::size_t> (i)]);
-        }
-
-        factory_params::ParamStore& store_;
-        std::function<void()>       onSwitched_;
-        int active_ = 0;
-        std::array<std::vector<float>, 2> slotState_ {};
-        std::array<bool, 2> seeded_ { { false, false } };
-    };
+    // A/B compare is the real, JUCE-2.1.0-faithful rs_ui::AbCompareModel (RsAbState.h):
+    // two session-only slots of {full parameter state + program index}, with the
+    // shell's PresetSession backing the program hooks (see ctor). Its onSwitched
+    // callback relays a host rescan + mark-dirty so the DAW reflects the switch.
 
     // --- the IClapEditor implementation ---------------------------------------
     class RsClapEditorImpl final : public factory_shell::IClapEditor
@@ -173,7 +130,10 @@ namespace
               theme_ (rs_ui::RsTheme::defaults()),
               feed_ (core),
               presets_ (session, [this] { notifyHostEdited(); }),
-              ab_ (store, [this] { notifyHostEdited(); })
+              ab_ (store,
+                   [&session] { return session.currentProgram(); },
+                   [&session] (int i) { session.setCurrentProgramClean (i); },
+                   [this] { notifyHostEdited(); })
         {
         }
 
@@ -350,10 +310,13 @@ namespace
                 hostState_ = static_cast<const clap_host_state_t*> (host_->get_extension (host_, CLAP_EXT_STATE));
         }
 
-        // A GUI-driven bulk parameter change (preset load / A-B switch) went into the
+        // A GUI-driven BULK parameter change (preset load / A-B switch) went into the
         // store via setFromHost. Tell the host to re-pull the values + text and flag
-        // the state dirty, so the DAW reflects it (full per-param automation output
-        // is the tomorrow-list "preset real wiring" item).
+        // the state dirty, so the DAW reflects it. This is the correct CLAP idiom for
+        // a bulk change: rescan(VALUES) updates the host WITHOUT recording an
+        // automation point per parameter (which an A/B flip must not do). Individual
+        // knob edits take the other path — setFromUi -> the shell relays them to the
+        // host as CLAP param/gesture output events (recorded automation).
         void notifyHostEdited()
         {
             fetchHostExts();
@@ -372,7 +335,7 @@ namespace
         rs_ui::RsTheme         theme_;   // owned; the editor holds a const ref
         rs_ui::RsFeedFromCore  feed_;    // real feed over the shell's RsCore
         SessionPresetModel     presets_; // real, over PresetSession
-        StoreAbModel           ab_;      // store-snapshot A/B
+        rs_ui::AbCompareModel  ab_;      // real A/B: params + program index (RsAbState.h)
 
         std::unique_ptr<visage::ApplicationWindow> app_;
         std::unique_ptr<rs_ui::RsEditor>           editor_;

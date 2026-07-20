@@ -11,7 +11,8 @@
 //   6. clicking a node opens the NodePanel; a panel TYPE button writes b0_type
 //   7. the NodePanel Listen badge writes listenNode (via the RsFeed hook); deselect drops it
 //   8. an undo -> redo round-trip restores a parameter, and a preset load clears history
-//   9. preset next / prev step the model; an A/B switch swaps a param value
+//   9. preset next / prev step the model; an A/B switch swaps a param value;
+//      A/B copy (copyActiveToOther) snapshots the active slot onto the other
 //  10. resize renders at the min (940x657) and max (1320x922) layout sizes
 //  11. node-on-curve: an isolated band's dot rides the combined profile curve
 //  12. knob three-zone donut: the ring reads accent / accentDim / panelLo
@@ -235,6 +236,18 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     await page.evaluate(() => window.rs.setAb(1));
     const b = await page.evaluate(() => window.ui.get("depth"));
     check("A/B switch swaps the param value", approx(a, 22) && approx(b, 88), "A=" + a + " B=" + b);
+  }
+
+  // --- 9b. A/B copy: copyActiveToOther copies the active slot onto the other -
+  {
+    // Establish a known A state, then copy A -> B and switch to B.
+    await page.evaluate(() => { window.rs.setAb(0); window.ui.set("depth", 30); window.rs.copyAb(); window.rs.setAb(1); });
+    const bAfterCopy = await page.evaluate(() => window.ui.get("depth"));
+    // Prove it was a SNAPSHOT, not a live link: edit B, switch back to A -> A keeps 30.
+    await page.evaluate(() => { window.ui.set("depth", 77); window.rs.setAb(0); });
+    const aStill = await page.evaluate(() => window.ui.get("depth"));
+    check("A/B copy: copyActiveToOther copied A's state onto B", approx(bAfterCopy, 30), "B=" + bAfterCopy);
+    check("A/B copy is a snapshot (editing B did not change A)", approx(aStill, 30), "A=" + aStill);
   }
 
   // --- rs-busy.png: several bands on + a node selected + NodePanel open -----

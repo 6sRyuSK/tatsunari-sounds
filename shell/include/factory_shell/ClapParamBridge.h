@@ -24,6 +24,7 @@
 // are just not host-automatable via CLAP.
 //
 #include "factory_params/ParamDesc.h"
+#include "factory_params/ParamStore.h"
 
 #include <clap/clap.h>
 
@@ -59,6 +60,12 @@ namespace factory_shell
         // The FULL ParamStore index behind an exposed CLAP param index (or -1).
         int storeIndexForParamIndex (std::uint32_t paramIndex) const noexcept;
 
+        // The CLAP clap_id (== uid) for a FULL ParamStore index, if that parameter
+        // is on the CLAP surface. Returns false for a non-exposed (legacy-only)
+        // parameter. Used to relay GUI-driven parameter edits back to the host as
+        // CLAP output events (a legacy param has no CLAP id and no output lane).
+        bool clapIdForStoreIndex (int storeIndex, clap_id& outId) const noexcept;
+
         // value_to_text / text_to_value against the FULL-table descriptor `storeIndex`.
         void valueToText (int storeIndex, double value, char* out, std::uint32_t cap) const;
         bool textToValue (int storeIndex, const char* text, double* outValue) const;
@@ -71,4 +78,19 @@ namespace factory_shell
         std::vector<int>                              exposed;   // FULL indices, exposed order
         std::vector<std::pair<std::uint32_t, int>>    byUid;     // sorted (uid, FULL index), exposed only
     };
+
+    // Drain `store`'s pending host-write queue (the GUI-edit channel: setFromUi /
+    // beginGesture / endGesture) and emit the matching CLAP output events into
+    // `out`, so a DAW records automation from editor knob moves. Value -> a
+    // CLAP_EVENT_PARAM_VALUE with the parameter's snapped real value; GestureBegin
+    // /GestureEnd -> the matching CLAP_EVENT_PARAM_GESTURE_*; a legacy (non-exposed)
+    // parameter has no CLAP id and is skipped. `store` is the SINGLE-consumer point
+    // for that queue (see ParamStore's contract) — the shell calls this from
+    // process() (audio thread) and params.flush() (main thread when inactive), which
+    // CLAP guarantees never overlap. Real-time safe: lock-free ring drain + the
+    // host's RT-safe try_push; no allocation, lock, or syscall. Both ClapShellPlugin
+    // and the shell unit test call THIS, so the event construction is covered.
+    void emitParamEventsToHost (factory_params::ParamStore& store,
+                                const ParamBridge&          bridge,
+                                const clap_output_events_t* out) noexcept;
 } // namespace factory_shell

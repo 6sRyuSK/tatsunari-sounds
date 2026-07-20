@@ -260,9 +260,11 @@ namespace factory_shell
         }
 
         static void paramsFlush (const clap_plugin_t* p, const clap_input_events_t* in,
-                                 const clap_output_events_t*)
+                                 const clap_output_events_t* out)
         {
-            self (p)->applyInputEvents (in);
+            auto* s = self (p);
+            s->applyInputEvents (in);
+            s->emitHostWrites (out); // GUI edits made while not processing reach the host here
         }
 
         // Apply parameter events into the store at BLOCK granularity (last value per
@@ -282,6 +284,30 @@ namespace factory_shell
                 if (si >= 0)
                     store.setFromHost (si, static_cast<float> (ev->value));
             }
+        }
+
+        // Relay GUI-driven parameter edits to the host as CLAP output events. The
+        // editor (main thread) writes edits into the ParamStore via the UI gesture
+        // path (beginGesture / setFromUi / endGesture), which enqueues a lock-free
+        // HostWrite per event; the shell is the SINGLE consumer of that queue and
+        // drains it here, emitting the matching CLAP output event so the DAW records
+        // automation from GUI knob moves (begin/value/end gestures) — the capability
+        // the shipping JUCE build got from its APVTS attachments. Host→plugin input
+        // (automation playback) rides applyInputEvents and never enqueues a
+        // HostWrite, so there is no echo loop. Bulk GUI changes (preset load, A/B
+        // switch) use setFromHost (no HostWrite) + clap_host_params.rescan(VALUES)
+        // instead, so they update the host WITHOUT writing an automation point.
+        //
+        // Called from process() (audio thread, process->out_events) and from
+        // params.flush() (main thread when inactive, its out queue). CLAP guarantees
+        // flush and process never run concurrently, and the editor no longer drains
+        // the queue (it observes gestureEndCount() for undo), so there is exactly one
+        // consumer at any instant. Real-time safe: draining is a lock-free ring read,
+        // try_push is the host's RT-safe sink; no allocation, lock, or syscall. The
+        // event construction lives in the free function (unit-tested in the shell).
+        void emitHostWrites (const clap_output_events_t* out) noexcept
+        {
+            emitParamEventsToHost (store, bridge, out);
         }
 
         // ───────────────────────────── state ────────────────────────────────
@@ -348,6 +374,10 @@ namespace factory_shell
 
             // 1. Block-granular parameter delivery.
             s->applyInputEvents (process->in_events);
+
+            // 1b. Relay any GUI-driven parameter edits (knob moves in the editor) to
+            //     the host as CLAP output param/gesture events, so automation records.
+            s->emitHostWrites (process->out_events);
 
             // 2. Audio I/O. Chunk 3a handles 32-bit buffers (CLAP requires 32-bit
             //    support; 64-bit is optional and not advertised).

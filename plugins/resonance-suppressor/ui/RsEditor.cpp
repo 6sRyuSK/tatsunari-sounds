@@ -135,6 +135,7 @@ namespace rs_ui
         // --- undo baseline ---------------------------------------------------
         lastSnap_ = snapshotNow();
         undo_.push (lastSnap_, now());
+        lastGestureEnd_ = store_.gestureEndCount(); // seed the observer at the current count
         refreshUndoButtons();
     }
 
@@ -157,14 +158,18 @@ namespace rs_ui
 
     void RsEditor::pumpGestures()
     {
-        bool sawEnd = false;
-        store_.drainHostWrites ([&] (const factory_params::HostWrite& w)
+        // Coalesce a drag into one undo step on gesture-end. We OBSERVE the store's
+        // gesture-end counter rather than draining its host-write queue: in the
+        // shipping CLAP build the shell is the queue's single consumer (it relays
+        // every enqueued edit to the host as a param/gesture output event), so the
+        // editor must not steal those events. The counter is a non-consuming signal
+        // any number of observers can watch.
+        const std::uint32_t g = store_.gestureEndCount();
+        if (g != lastGestureEnd_)
         {
-            if (w.kind == factory_params::HostWrite::Kind::GestureEnd)
-                sawEnd = true;
-        });
-        if (sawEnd)
+            lastGestureEnd_ = g;
             commitUndo();
+        }
     }
 
     void RsEditor::commitUndo()

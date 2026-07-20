@@ -168,6 +168,11 @@ namespace rs_ui
         bool   applyingHistory_ = false;
         bool   inGesture_ = false;
         double clockOverride_ = -1.0;
+        // Last-seen gesture-end count (a non-consuming observer of the store): the
+        // undo coalescer must NOT drain the store's host-write queue, because the
+        // CLAP shell is that queue's single consumer (it relays GUI edits to the
+        // host as automation). pumpGestures() snapshots on each new gesture-end.
+        std::uint32_t lastGestureEnd_ = 0;
 
         bool frozen_ = false;
 

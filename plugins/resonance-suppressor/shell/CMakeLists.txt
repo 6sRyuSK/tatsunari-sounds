@@ -1,9 +1,10 @@
-# resonance-suppressor CLAP shell (Phase P4 coexistence, chunk 3a).
+# resonance-suppressor CLAP shell — the SHIPPING build (3.0.0 cutover).
 #
-# Added ONLY from the root under FACTORY_RS_CLAP — the plugin's main
-# CMakeLists.txt (the shipping JUCE VST3/AU) is untouched and never references
-# this. Produces the CLAP + wrapper-VST3 from RsCore + factory_shell, headless
-# (no Visage/editor link; the clap.gui editor is chunk 3b).
+# Assembled from the root CMakeLists whenever RS is configured (_rs_configured);
+# it produces the CLAP + wrapper VST3 (+ AUv2 on Apple) that REPLACE the old JUCE
+# VST3/AU. The GUI (FACTORY_RS_CLAP_GUI, ON by default) embeds the Visage RsEditor.
+# The plugin's main CMakeLists.txt keeps only the JUCE-linked test oracles
+# (rscore_equiv / preset), never a shipping juce_add_plugin.
 
 # plugin.toml stays the single source of truth for the version (catalog == binary).
 factory_read_version(${CMAKE_CURRENT_SOURCE_DIR}/../plugin.toml RS_CLAP_VERSION)
@@ -32,11 +33,11 @@ target_compile_definitions(resonance-suppressor-impl PRIVATE
   RS_CLAP_VERSION="${RS_CLAP_VERSION}")
 set_target_properties(resonance-suppressor-impl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# --- GUI (chunk 3b): embed the Visage RS editor into the clap.gui extension ----
-# ON by default whenever the CLAP shell is built (FACTORY_RS_CLAP); set OFF to get
-# the pure-headless 3a shell back. This is the ONLY switch that pulls native Visage
-# into the RS build — the shipping JUCE VST3/AU never reaches here (FACTORY_RS_CLAP
-# is OFF for it), so it never sees Visage.
+# --- GUI: embed the Visage RS editor into the clap.gui extension --------------
+# ON by default (the shipping build carries the editor); set OFF for a pure-headless
+# shell (used by some validators / bring-up). This is the ONLY switch that pulls
+# native Visage into the RS build; the JUCE test oracles (rscore_equiv / preset) use
+# ui/include/factory_ui, never Visage.
 #
 # ui/visage owns the pinned + sandbox-patched visage dependency; the operator hands
 # it the pinned checkout + bgfx source + FreeType mirror the same way tools/ui-dev
@@ -86,3 +87,17 @@ factory_clap_plugin(resonance-suppressor
   OUTPUT_NAME        "Resonance TatSuppressor"
   VERSION            ${RS_CLAP_VERSION}
   AUV2_SUBTYPE_CODE  Rsup)
+
+# ---- CLAP shell headless test -------------------------------------------------
+# Host-facing param OUTPUT events (GUI knob edit -> begin/value/end to the host),
+# the 3.0.0 clean-break state path (v1 round-trips; a JUCE/v0 blob -> defaults; a
+# bad blob rejected), and the real A/B (params + program index). Links ONLY
+# factory_shell (+ its factory_params / factory_presets) — no JUCE, no Visage.
+add_executable(resonance_suppressor_clap_shell_test
+  ${CMAKE_CURRENT_SOURCE_DIR}/../tests/clap_shell_test.cpp)
+target_link_libraries(resonance_suppressor_clap_shell_test PRIVATE factory_shell)
+target_include_directories(resonance_suppressor_clap_shell_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/..        # plugin root: "Source/..." and "ui/..."
+  ${CMAKE_CURRENT_SOURCE_DIR}/../ui)    # "RsModels.h" included by ui/RsAbState.h
+target_compile_features(resonance_suppressor_clap_shell_test PRIVATE cxx_std_20)
+add_test(NAME resonance_suppressor_clap_shell COMMAND resonance_suppressor_clap_shell_test)

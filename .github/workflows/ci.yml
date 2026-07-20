@@ -10,9 +10,11 @@ name: CI
 # (both happen at configure time, outside the compiler cache) are skipped too.
 
 # Path-scoped: this gate only builds/tests/validates the plugins, so it runs only
-# when a build-affecting source changes. core/ ui/ presets/ params/ cmake/ and the
-# root CMakeLists.txt are included (not just plugins/**) because a change there affects
-# every plugin — CLAUDE.md requires the full suite to run for any core/ change.
+# when a build-affecting source changes. core/ ui/ presets/ params/ shell/ cmake/ and
+# the root CMakeLists.txt are included (not just plugins/**) because a change there
+# affects every plugin — CLAUDE.md requires the full suite to run for any core/ change.
+# (shell/ is the CLAP glue the clap-first resonance-suppressor builds on, so a shell/
+# change must rebuild + revalidate RS here.)
 # Installer- or docs-only PRs skip it. main is unprotected, so a skipped run does
 # not block merges. Keep the two `paths` lists identical (push == pull_request).
 #
@@ -28,6 +30,7 @@ on:
       - 'ui/**'
       - 'presets/**'
       - 'params/**'
+      - 'shell/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'
@@ -38,6 +41,7 @@ on:
       - 'ui/**'
       - 'presets/**'
       - 'params/**'
+      - 'shell/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'
@@ -92,11 +96,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+          # Post-cutover the _deps content also tracks the CLAP/VST3/AudioUnitSDK
+          # pins in shell/cmake/FactoryClapPlugin.cmake, not just the JUCE pin here.
+          key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'shell/cmake/FactoryClapPlugin.cmake') }}
 
       # Decide which plugins can have changed binaries. Shared code (core/ ui/
-      # presets/ params/ cmake/ the root CMakeLists.txt, this workflow) affects every plugin ->
-      # build everything. Otherwise only the plugins the PR touches can change,
+      # presets/ params/ shell/ cmake/ the root CMakeLists.txt, this workflow) affects every
+      # plugin -> build everything. Otherwise only the plugins the PR touches can change,
       # so configure just those — their test exes and pluginval bundles follow
       # automatically. push-to-main and workflow_dispatch always build all, so
       # main stays fully verified and its caches stay warm. Keep the shared-code
@@ -111,7 +117,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --quiet --depth=1 origin "$BASE_SHA"
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
-            if ! echo "$changed" | grep -qE '^(core/|ui/|presets/|params/|cmake/|CMakeLists\.txt$|\.github/workflows/ci\.yml$)'; then
+            if ! echo "$changed" | grep -qE '^(core/|ui/|presets/|params/|shell/|cmake/|CMakeLists\.txt$|\.github/workflows/ci\.yml$)'; then
               # Keep only slugs that still exist (a deleted plugin has nothing
               # to build; if the PR is deletion-only, fall back to build-all).
               for s in $(echo "$changed" | grep -E '^plugins/[^/]+/' | cut -d/ -f2 | sort -u); do
@@ -142,6 +148,11 @@ jobs:
         run: ctest --test-dir build --output-on-failure --parallel 4 --no-tests=error
 
       # ---- pluginval ----------------------------------------------------------
+      # JUCE plugins land their bundles under a .../VST3/ or .../AU/ path segment;
+      # the clap-first resonance-suppressor (wrapper VST3 + AUv2) lands them FLAT in
+      # build/<slug>_assets/ on macOS (no VST3/ or AU/ segment), so the discovery
+      # matches BOTH shapes. (The native .clap is validated by clap.yml's Linux
+      # clap-validator, not pluginval.)
       - name: Validate plugins (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -153,14 +164,14 @@ jobs:
           mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
           while IFS= read -r c; do
             cp -R "$c" "$HOME/Library/Audio/Plug-Ins/Components/"
-          done < <(find build -type d -path '*/AU/*.component')
+          done < <(find build \( -type d -path '*/AU/*.component' -o -type d -path '*_assets/*.component' \))
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           status=0
           while IFS= read -r p; do
             echo "::group::pluginval $p"
             "$PV" --strictness-level "$PLUGINVAL_STRICTNESS" --skip-gui-tests --validate-in-process --validate "$p" || status=1
             echo "::endgroup::"
-          done < <(find build \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' \))
+          done < <(find build \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' -o -type d -path '*_assets/*.vst3' -o -type d -path '*_assets/*.component' \))
           [ "$status" -eq 0 ]
 
       - name: Validate plugins (Windows)
@@ -170,6 +181,9 @@ jobs:
           Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pv -Force
           $pv = (Get-ChildItem pv -Recurse -Filter pluginval.exe | Select-Object -First 1).FullName
+          # JUCE plugins land under ...\VST3\...; the clap-first resonance-suppressor
+          # wrapper VST3 lands under build\<slug>_assets\VST3\<name>.vst3 (make_clapfirst
+          # nests the Windows VST3 under a VST3\ folder) — both carry the \VST3\ segment.
           $bundles = Get-ChildItem build -Recurse -Directory -Filter *.vst3 |
                      Where-Object { $_.FullName -match '[\\/]VST3[\\/]' }
           $status = 0

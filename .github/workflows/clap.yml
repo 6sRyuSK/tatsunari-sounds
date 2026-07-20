@@ -1,19 +1,18 @@
-# CLAP coexistence CI (Phase P4, chunk 3a) — ADDITIVE, does not touch ci.yml.
+# Linux clap-validator gate for the resonance-suppressor CLAP (3.0.0 cutover).
 #
-# Builds the flag-gated RS CLAP shell (-DFACTORY_RS_CLAP=ON) and gates it with the
-# same validators the shipping VST3 uses: clap-validator on the .clap and
-# pluginval (strictness 5, headless) on the wrapper-built .vst3. Linux is not a
-# shipping target, but it is a valid CI signal for the format-agnostic CLAP code
-# (the DSP core + params/preset/state model are the same on every OS).
+# Post-cutover, RS ships clap-first and ci.yml ALREADY builds it on macOS +
+# Windows and runs pluginval (strictness 5) on the wrapper VST3 + AU there. What
+# ci.yml does NOT run is clap-validator, so this workflow keeps that ONE unique
+# signal: it builds the RS clap-first assembly on Linux (the DSP core + shell +
+# params/preset/state model are OS-agnostic) and validates the native .clap with
+# clap-validator. The Linux pluginval-on-the-wrapper-VST3 leg was dropped as
+# redundant with ci.yml's mac/Windows pluginval.
 #
-# Path-scoped so it only runs when something that can affect the CLAP build
-# changes; the default JUCE gate (ci.yml) is untouched and still owns macOS +
-# Windows + the full sample-rate CTest matrix for the shipping formats.
+# No FACTORY_RS_CLAP flag any more — a default configure builds RS clap-first
+# whenever RS is in the plugin set (here -DFACTORY_PLUGINS=resonance-suppressor).
 #
-# TODO (co-verified session): add macOS + Windows legs once a runner is available
-# to verify them — the wrapper AUv2 sidechain and dynamic-latency-in-a-real-host
-# paths can only be signed off in an actual DAW, so those legs are intentionally
-# NOT added blind here (they would be unverifiable CI theatre).
+# Path-scoped so it only runs when something that can affect the CLAP surface
+# changes; ci.yml remains the primary gate (build + CTest matrix + pluginval).
 
 name: clap
 
@@ -44,7 +43,7 @@ on:
 
 jobs:
   linux-clap:
-    name: RS CLAP shell (Linux, clap-validator + pluginval)
+    name: RS CLAP shell (Linux, clap-validator)
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}   # for `gh release download`
@@ -64,28 +63,26 @@ jobs:
             libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
             libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev ladspa-sdk
 
-      - name: Configure (FACTORY_RS_CLAP=ON)
+      - name: Configure (default — RS is clap-first)
         run: >
           cmake -B build-clap -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DFACTORY_RS_CLAP=ON
           -DFACTORY_PLUGINS=${SLUG}
 
       - name: Build ${SLUG}_all (CLAP + wrapper VST3)
-        # NEVER build `all` — it drags in clap-wrapper's vst3_validator custom
-        # target, which reconfigures the entire VST3 SDK. Build only the aggregate.
+        # The make_clapfirst aggregate builds the CLAP + wrapper VST3 (proving both
+        # assemble on Linux). It is safe: CMake's `default all` excludes the
+        # clap-wrapper vst3_validator custom target, and so does the ${SLUG}_all
+        # aggregate — neither `cmake --build` nor this reconfigures the VST3 SDK.
         run: cmake --build build-clap --target ${SLUG}_all
 
-      - name: Locate built artifacts
+      - name: Locate built .clap
         id: art
         run: |
           CLAP=$(find "$ASSETS" -maxdepth 2 -name '*.clap' | head -1)
-          VST3=$(find "$ASSETS" -maxdepth 2 -name '*.vst3' | head -1)
           echo "clap=$CLAP" >> "$GITHUB_OUTPUT"
-          echo "vst3=$VST3" >> "$GITHUB_OUTPUT"
           echo "Built CLAP: $CLAP"
-          echo "Built VST3: $VST3"
-          test -n "$CLAP" && test -n "$VST3"
+          test -n "$CLAP"
 
       - name: Download clap-validator (prebuilt 0.3.2)
         run: |
@@ -100,21 +97,8 @@ jobs:
           chmod +x "$CV"
           echo "CLAP_VALIDATOR=$CV" >> "$GITHUB_ENV"
 
-      - name: Download pluginval (prebuilt v1.0.4)
-        run: |
-          gh release download v1.0.4 --repo Tracktion/pluginval \
-            --pattern 'pluginval_Linux.zip' --dir pv-dl
-          unzip -o pv-dl/pluginval_Linux.zip -d pv-dl
-          PV=$(find pv-dl -type f -name 'pluginval' | head -1)
-          chmod +x "$PV"
-          echo "PLUGINVAL=$PV" >> "$GITHUB_ENV"
-
       - name: clap-validator (native CLAP)
         # SKIPPED tests (no preset-discovery-factory / no note-ports) are expected
-        # for an audio effect and are not failures; require exit 0.
+        # for an audio effect and are not failures; require exit 0. This is the one
+        # signal ci.yml does not cover (it runs pluginval, not clap-validator).
         run: '"$CLAP_VALIDATOR" validate "${{ steps.art.outputs.clap }}"'
-
-      - name: pluginval strictness 5 (wrapper VST3)
-        run: >
-          "$PLUGINVAL" --strictness-level 5 --skip-gui-tests --validate-in-process
-          --validate "${{ steps.art.outputs.vst3 }}"

@@ -35,7 +35,7 @@
 #include "RsCore.h"                  // rs_core::RsCore / RsParamSnapshot (plugin root on the include path)
 #include "Source/Params.h"          // resonance_suppressor_params::buildRsParams()
 #include "Source/FactoryPresets.h"  // resonance_suppressor_presets::bank / kExclude
-#include "Source/DetailParam.h"     // resonance_suppressor_detail::detailFromLegacy()
+#include "Source/StateMigration.h"  // resonance_suppressor_state::cleanBreakMigrate() (3.0.0 clean break)
 
 #include <cstdint>
 #include <cstring>
@@ -205,16 +205,14 @@ namespace
             return (d.flags & factory_params::kFlagLegacyJuceOnly) == 0;
         }
 
-        // v2.0.x -> v2.1: a state lacking "detail" carries the legacy sharpness/
-        // selectivity pair; inject detail = their mean (DetailParam.h) — the same
-        // migration the JUCE setStateInformation performs.
+        // 3.0.0 CLEAN BREAK: RS does not import legacy/foreign session state. A
+        // version-0 (JUCE-era / pre-versioned / foreign) blob is reset to defaults;
+        // a genuine StateCodec state (stateVersion >= 1) passes through untouched.
+        // See Source/StateMigration.h for the full rationale. (This replaces the old
+        // v2.0.x -> v2.1 detail-from-legacy injection, which WAS a legacy import.)
         static void migrateState (factory_presets::StateModel& m)
         {
-            if (m.find ("detail") != nullptr)
-                return;
-            const double sharp = m.get ("sharpness", 50.0);
-            const double sel   = m.get ("selectivity", 50.0);
-            m.set ("detail", resonance_suppressor_detail::detailFromLegacy (sharp, sel));
+            resonance_suppressor_state::cleanBreakMigrate (m);
         }
 
         static void prepare (Core& core, double sampleRate, std::uint32_t maxFrames)
