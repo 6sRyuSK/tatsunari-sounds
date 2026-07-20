@@ -28,6 +28,29 @@ target_include_directories(gallery PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
 )
 
+# --- rs-editor: the Phase P3 resonance-suppressor editor, JUCE-free, bound to the
+#     shared design system + a synthetic feed + preset/A-B mocks (same harness
+#     pattern as the gallery). It composes the RS-specific UI in
+#     plugins/resonance-suppressor/ui/ (JUCE-free) with the REAL 64-param table
+#     from that plugin's Source/Params.h.
+set(RS_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/resonance-suppressor)
+
+add_executable(rs-editor
+  rs-editor/main.cpp
+  rs-editor/RsBridge.cpp
+  ${RS_PLUGIN_DIR}/ui/RsEditor.cpp
+  ${RS_PLUGIN_DIR}/ui/RsSuppressionCurveView.cpp
+  ${RS_PLUGIN_DIR}/ui/RsNodePanel.cpp
+)
+target_link_libraries(rs-editor PRIVATE factory_ui_visage)
+target_include_directories(rs-editor PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/rs-editor
+  ${RS_PLUGIN_DIR}/ui
+  ${RS_PLUGIN_DIR}/Source            # Params.h (buildRsParams — JUCE-free)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+)
+
 if(EMSCRIPTEN)
   set(FACTORY_UI_DEV_SHELL ${CMAKE_CURRENT_SOURCE_DIR}/shell.html)
 
@@ -49,7 +72,23 @@ if(EMSCRIPTEN)
     OUTPUT_NAME "index"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web"
   )
+
+  target_link_options(rs-editor PRIVATE
+    --shell-file ${FACTORY_UI_DEV_SHELL}
+    -sGL_ENABLE_GET_PROC_ADDRESS
+    -sALLOW_MEMORY_GROWTH
+    --bind
+    "-sEXPORTED_FUNCTIONS=['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_rect','_ui_set_font','_ui_font','_rs_select_node','_rs_selected_node','_rs_node_x','_rs_node_y','_rs_listen_node','_rs_display_smooth','_rs_ab_slot','_rs_set_ab','_rs_copy_ab','_rs_preset_index','_rs_preset_load','_rs_ui_edit','_rs_undo','_rs_redo','_rs_can_undo','_rs_can_redo','_rs_set_clock','_rs_pump','_rs_open_dropdown','_rs_dropdown_open','_rs_dropdown_count','_rs_dropdown_x','_rs_dropdown_row_y','_rs_plot_rect','_rs_set_size','_rs_profile_db_at','_rs_mini_knob_tip']"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
+  )
+  set_target_properties(rs-editor PROPERTIES LINK_DEPENDS ${FACTORY_UI_DEV_SHELL})
+  # rs-editor lands in <build>/web-rs so it never collides with the gallery's web/.
+  set_target_properties(rs-editor PROPERTIES
+    SUFFIX ".html"
+    OUTPUT_NAME "index"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web-rs"
+  )
 else()
-  message(WARNING "gallery is a WASM target; configure with `emcmake cmake ...` "
+  message(WARNING "gallery/rs-editor are WASM targets; configure with `emcmake cmake ...` "
                   "(this non-Emscripten configure will not produce a runnable page).")
 endif()

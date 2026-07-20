@@ -46,8 +46,10 @@ target_link_libraries(MultibandEnhancer
     juce::juce_recommended_warning_flags)
 
 # ---------------------------------------------------------------- DSP tests
+# The concurrency gate (G26, issue #117) spawns a std::thread, so link Threads.
+find_package(Threads REQUIRED)
 add_executable(multiband_enhancer_dsp_test tests/dsp_test.cpp)
-target_link_libraries(multiband_enhancer_dsp_test PRIVATE factory_core)
+target_link_libraries(multiband_enhancer_dsp_test PRIVATE factory_core Threads::Threads)
 target_compile_features(multiband_enhancer_dsp_test PRIVATE cxx_std_20)
 
 foreach(_fs 44100 48000 88200 96000 176400 192000)

@@ -32,6 +32,7 @@ namespace factory_ui_visage
         std::uint32_t track        = 0xfff2ddd4; // grid / outline
         std::uint32_t accent       = 0xffff7a6b; // coral
         std::uint32_t accentDim    = 0xffffd6cd; // pale coral
+        std::uint32_t positive     = 0xff45b8ac; // teal — "on / positive" (toggles, GR, reduction)
         std::uint32_t text         = 0xff6b5750; // soft cocoa
         std::uint32_t textSecondary= 0xff8f7a72; // caption mid-tone (labels on cards)
         std::uint32_t textDim      = 0xffb9a39b; // muted
@@ -48,24 +49,25 @@ namespace factory_ui_visage
         } };
     };
 
-    // Rotary-knob geometry, all ratios of the knob radius unless noted. Mirrors
-    // FactoryLookAndFeel::drawRotarySlider exactly.
+    // Rotary-knob geometry — the "donut + needle" dial (design reference 2026-07-17):
+    // a flat conic value ring (accent fill 0→value, accentDim remainder, panelLo
+    // dead zone) around a radial-gradient white body with a rounded needle bar. All
+    // ratios are of the knob radius unless the field name says px.
     struct KnobMetrics
     {
-        float boundsInset      = 6.0f;   // px inset of the drawing bounds (JUCE reduced(6))
-        float lineWidthRatio   = 0.18f;  // stroke width = radius * this
-        float glowWidthFactor  = 1.9f;   // value-arc glow stroke = lineW * this
-        float glowAlpha        = 0.25f;  // glow accent alpha
-        float bodyInsetFactor  = 1.7f;   // body radius = radius - lineW * this
-        float shadowBlurFactor = 0.5f;   // body shadow blur = max(3, bodyR * this)
-        float shadowOffsetX    = 0.0f;   // body shadow offset
-        float shadowOffsetY    = 2.0f;
-        float pointerDotFactor = 0.55f;  // dot radius = max(2, lineW * this)
-        float pointerPosFactor = 0.62f;  // dot sits at bodyR * this from centre
-        // Rotary sweep — JUCE Slider defaults (juce_Slider.cpp): 1.2*pi .. 2.8*pi,
-        // measured clockwise from 12 o'clock. Stored in radians.
-        float arcStart         = 3.769911184307752f; // 1.2 * pi
-        float arcEnd           = 8.796459430051420f; // 2.8 * pi
+        float boundsInset      = 6.0f;   // px inset of the drawing bounds
+        float lineWidthRatio   = 0.30f;  // ring band thickness = radius * this (donut)
+        float bodyInsetFactor  = 1.0f;   // body radius = radius - band * this
+        float shadowBlurFactor = 10.0f;  // outer drop-shadow blur (rgba taupe .16, 0 4px 10px)
+        float shadowOffsetX    = 0.0f;   // outer drop-shadow offset
+        float shadowOffsetY    = 4.0f;
+        float needleWidthPx    = 3.0f;   // rounded needle bar width (px)
+        float needleLengthRatio= 0.9f;   // needle length = body radius * this (from centre out)
+        // Value ring sweep — 270° from -135° (design reference: CSS `from 225deg`),
+        // measured clockwise from 12 o'clock. Stored in radians; the 90° remainder
+        // to 360° is the panelLo dead zone at the bottom.
+        float arcStart         = 3.926990816987f; // 225°
+        float arcEnd           = 8.639379797371f; // 495° (225° + 270°)
     };
 
     // Pill-toggle geometry. Mirrors FactoryLookAndFeel::drawToggleButton.
@@ -182,6 +184,16 @@ namespace factory_ui_visage
         // colours HARD-FAIL. Returns false and fills `error` (with a human message,
         // no exceptions) on any failure — safe to call from the wasm bridge.
         static bool tryParse (const std::string& jsonText, Theme& out, std::string& error);
+
+        // Overlay a JSON theme document onto THIS theme: identical to tryParse but
+        // SEEDED FROM THE CURRENT VALUES instead of defaults(), so a plugin can
+        // layer a small partial override (every key optional — additive) on top of
+        // the shared theme, "shared theme + plugin overlay merged at load". A
+        // top-level "rs" object is reserved for plugin-specific extras and is
+        // IGNORED here (the plugin's own theme model consumes it, e.g.
+        // plugins/resonance-suppressor/ui/RsTheme). Strict within every recognized
+        // block; returns false + fills `error` on malformed input (no exceptions).
+        bool applyOverlay (const std::string& jsonText, std::string& error);
 
         // Convenience wrappers for host tools/tests (these THROW std::runtime_error
         // on malformed input). Do not call from the exception-free wasm path.

@@ -9,33 +9,10 @@
 
 namespace factory_ui_visage
 {
-    namespace
-    {
-        constexpr float kPi = 3.14159265358979323846f;
-
-        // Stroke a circular arc with rounded caps, in JUCE's angle convention:
-        // angle 0 points at 12 o'clock and grows clockwise, so a point at angle a
-        // is (cx + r*sin a, cy - r*cos a). The caller sets the brush/colour first.
-        void strokeArc (visage::Canvas& canvas, float cx, float cy, float r,
-                        float a0, float a1, float strokeWidth)
-        {
-            const float sweep = a1 - a0;
-            const float stepRad = 2.0f * kPi / 180.0f; // ~2 degrees per segment
-            const int steps = std::max (2, static_cast<int> (std::ceil (std::abs (sweep) / stepRad)));
-
-            visage::Path path;
-            for (int i = 0; i <= steps; ++i)
-            {
-                const float a = a0 + sweep * (static_cast<float> (i) / static_cast<float> (steps));
-                const visage::Point p (cx + r * std::sin (a), cy - r * std::cos (a));
-                if (i == 0)
-                    path.moveTo (p);
-                else
-                    path.lineTo (p);
-            }
-            canvas.fill (path.stroke (strokeWidth, visage::Path::Join::Round, visage::Path::EndCap::Round));
-        }
-    } // namespace
+    // fillArcBand (the tiled flatArc donut band) now lives in Knob.h so the
+    // NodePanel mini-knobs share the SAME value-ring arc convention as this Knob
+    // (round-3 fix 6). constexpr kTwoPi kept for the dead-zone sweep below.
+    namespace { constexpr float kTwoPi = 6.28318530717958648f; }
 
     Knob::Knob (factory_params::ParamStore& store, int paramIndex, const Theme& theme, int decimals)
         : store_ (store), index_ (paramIndex), theme_ (theme), decimals_ (decimals),
@@ -59,78 +36,109 @@ namespace factory_ui_visage
     void Knob::draw (visage::Canvas& canvas)
     {
         const KnobMetrics& m = theme_.knob;
+        const Palette& p = theme_.palette;
         const factory_params::ParamDesc& desc = store_.desc (index_);
+        const std::uint32_t accent = accentOverride_ != 0 ? accentOverride_ : p.accent;
 
-        // Layout: dial square on top, two text rows (value, name) below.
-        const float textH = 18.0f;
-        const float knobAreaH = std::max (0.0f, height() - 2.0f * textH);
+        // Layout (design reference): name row (top), dial (middle), value row (bottom).
+        // Row heights + dial inset follow the per-instance profile when set (RS "big"
+        // vs "small" match the JUCE RsKnob; default reproduces the gallery look).
+        const float textTop = textTopPx_    >= 0.0f ? textTopPx_    : 16.0f;
+        const float textBot = textBottomPx_ >= 0.0f ? textBottomPx_ : 16.0f;
+        const float nameFontPx  = nameFontPx_  >= 0.0f ? nameFontPx_  : theme_.font.label;
+        const float valueFontPx = valueFontPx_ >= 0.0f ? valueFontPx_ : theme_.font.label;
+        const float dialTop = textTop;
+        const float dialH = std::max (0.0f, height() - textTop - textBot);
 
-        const float inset = m.boundsInset;
+        const float inset = dialInsetPx_ >= 0.0f ? dialInsetPx_ : m.boundsInset;
         const float bw = width() - 2.0f * inset;
-        const float bh = knobAreaH - 2.0f * inset;
-        const float radius = std::min (bw, bh) * 0.5f;
+        const float bh = dialH - 2.0f * inset;
+        const float R = std::min (bw, bh) * 0.5f;
         const float cx = width() * 0.5f;
-        const float cy = inset + bh * 0.5f;
+        const float cy = dialTop + inset + bh * 0.5f;
 
-        const float lineW = radius * m.lineWidthRatio;
-        const float arcR = radius - lineW * 0.5f;
+        const float band = R * m.lineWidthRatio;   // donut ring thickness
+        const float arcR = R - band * 0.5f;         // ring centreline
         const float pos = currentNorm();
-        const float toAngle = m.arcStart + pos * (m.arcEnd - m.arcStart);
+        const float toAngle = knobAngleForNorm (m, pos);
 
-        // Track arc.
-        canvas.setColor (visage::Color (theme_.palette.track));
-        strokeArc (canvas, cx, cy, arcR, m.arcStart, m.arcEnd, lineW);
+        // NB: no outer drop shadow behind the whole knob — v2.1.0's RsLookAndFeel
+        // knob has none (the pale taupe ring it composited over the #fff4ee card
+        // read as an unwanted #e7dbd5 halo). Only the inner body shadow (below)
+        // is kept, matching v2.1.0's face treatment.
 
-        // Value arc (soft glow underlay + solid accent).
-        if (pos > 0.0f)
-        {
-            canvas.setColor (visage::Color (theme_.palette.accent).withAlpha (m.glowAlpha));
-            strokeArc (canvas, cx, cy, arcR, m.arcStart, toAngle, lineW * m.glowWidthFactor);
-            canvas.setColor (visage::Color (theme_.palette.accent));
-            strokeArc (canvas, cx, cy, arcR, m.arcStart, toAngle, lineW);
-        }
+        // Full 360° flat donut in three solid zones of identical thickness `band`:
+        //   (a) accent (per-knob colour) from the sweep start (−135°) to the value,
+        //   (b) accentDim remainder from the value to the sweep end (+135°),
+        //   (c) panelLo across the bottom 90° dead zone (+135° → +225°).
+        // Each zone is tiled from small flatArc pieces (see fillArcBand) so a wide
+        // zone renders as a clean solid band instead of collapsing.
+        canvas.setColor (visage::Color (accent));
+        fillArcBand (canvas, cx, cy, arcR, m.arcStart, toAngle, band);
+        canvas.setColor (visage::Color (p.accentDim));
+        fillArcBand (canvas, cx, cy, arcR, toAngle, m.arcEnd, band);
+        canvas.setColor (visage::Color (p.panelLo));
+        fillArcBand (canvas, cx, cy, arcR, m.arcEnd, m.arcStart + kTwoPi, band);
 
-        // Knob body: soft drop shadow, top-lit gradient, thin track outline.
-        const float bodyR = radius - lineW * m.bodyInsetFactor;
-        const float bodyD = bodyR * 2.0f;
-        const float bodyX = cx - bodyR;
-        const float bodyY = cy - bodyR;
-        const float blur = std::max (3.0f, bodyR * m.shadowBlurFactor);
+        // 1px track ring at the outer edge (inset hairline).
+        canvas.setColor (visage::Color (p.track));
+        canvas.ring (cx - R, cy - R, 2.0f * R, 1.0f);
 
-        canvas.setColor (visage::Color (theme_.palette.shadow));
-        canvas.roundedRectangleShadow (bodyX + m.shadowOffsetX, bodyY + m.shadowOffsetY,
-                                       bodyD, bodyD, bodyR, blur);
+        // Inner body: small drop shadow + radial-gradient white->panelLo, the light
+        // centred high (50% / 36%) like the reference's inset highlight.
+        const float bodyR = std::max (2.0f, R - band * m.bodyInsetFactor);
+        canvas.setColor (visage::Color (0x246b5750)); // taupe .14
+        canvas.roundedRectangleShadow (cx - bodyR, cy - bodyR + 1.0f, 2.0f * bodyR, 2.0f * bodyR, bodyR, 3.0f);
+        canvas.setColor (visage::Brush::radial (visage::Color (0xffffffff), visage::Color (p.panelLo),
+                                                visage::Point (cx, cy - bodyR * 0.28f), bodyR * 1.15f, bodyR * 1.15f));
+        canvas.circle (cx - bodyR, cy - bodyR, 2.0f * bodyR);
 
-        canvas.setColor (visage::Brush::vertical (visage::Color (0xffffffff),
-                                                  visage::Color (theme_.palette.panelLo)));
-        canvas.circle (bodyX, bodyY, bodyD);
+        // Needle: a rounded bar from the centre outward, in the knob's accent.
+        const float len = bodyR * m.needleLengthRatio;
+        const visage::Point tip = knobNeedleTip (cx, cy, len, toAngle);
+        canvas.setColor (visage::Color (accent));
+        canvas.segment (cx, cy, tip.x, tip.y, m.needleWidthPx, true);
 
-        canvas.setColor (visage::Color (theme_.palette.track));
-        canvas.ring (bodyX, bodyY, bodyD, 1.0f);
+        // Name above (muted, bold), value below (accent, bold). Font sizes follow
+        // the profile (JUCE RsKnob: big 12/13, small 10/11); default theme.font.label.
+        canvas.setColor (visage::Color (p.textSecondary));
+        canvas.text (nameOverride_.empty() ? desc.name : nameOverride_,
+                     boldFont (nameFontPx), visage::Font::kCenter, 0.0f, 0.0f, width(), textTop);
+        // Value readout, spaces stripped for the demo's tight "62%" / "120ms" look
+        // (v2.1.0 RsKnob does the same: getTextFromValue(...).removeCharacters(" ")).
+        std::string valueText = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        valueText.erase (std::remove (valueText.begin(), valueText.end(), ' '), valueText.end());
+        canvas.setColor (visage::Color (accent));
+        canvas.text (valueText, boldFont (valueFontPx), visage::Font::kCenter, 0.0f, height() - textBot, width(), textBot);
+    }
 
-        // Pointer dot near the rim.
-        const float dotR = std::max (2.0f, lineW * m.pointerDotFactor);
-        const float pr = bodyR * m.pointerPosFactor;
-        const float dotX = cx + pr * std::sin (toAngle);
-        const float dotY = cy - pr * std::cos (toAngle);
-        canvas.setColor (visage::Color (theme_.palette.accent));
-        canvas.circle (dotX - dotR, dotY - dotR, dotR * 2.0f);
-
-        // Value + name text below the dial.
-        canvas.setColor (visage::Color (theme_.palette.text));
-        canvas.text (factory_params::formatValue (desc, store_.value (index_), decimals_),
-                     regularFont (theme_.font.label), visage::Font::kCenter,
-                     0.0f, knobAreaH, width(), textH);
-        canvas.text (desc.name, regularFont (theme_.font.label), visage::Font::kCenter,
-                     0.0f, knobAreaH + textH, width(), textH);
+    // The bottom value read-out row height (px) — the profile's textBottom, else the
+    // widget default. The rotary excludes this row (like the JUCE RsKnob), so double-
+    // clicking here edits the value instead of dragging / resetting the dial.
+    float Knob::valueRowHeight() const
+    {
+        return textBottomPx_ >= 0.0f ? textBottomPx_ : 16.0f;
     }
 
     void Knob::mouseDown (const visage::MouseEvent& e)
     {
-        // Double-click restores the default value. A single click is repeat count
-        // 1 in visage (a double-click is 2), so the threshold must be >= 2 — else
-        // every press would reset instead of starting a drag.
-        if (e.repeatClickCount() >= 2)
+        // Value read-out row: with text entry wired (requestValueEntry set), a double-
+        // click there opens the entry and a single click is a no-op — the JUCE RsKnob's
+        // rotary excludes the value area, so it can't compete with a dial drag. Without
+        // it wired (the gallery), the value row is NOT intercepted, so double-click-to-
+        // reset still works there — the gallery is unaffected.
+        if (requestValueEntry && e.position.y >= height() - valueRowHeight())
+        {
+            if (e.repeatClickCount() >= 2) openValueEntry();
+            return;
+        }
+
+        // Alt-click OR double-click restores the default value (round-3 fix 5:
+        // alt-click reset on every knob, matching the JUCE editor; Shift, not Alt,
+        // is fine-drag, so resetting on alt-down never conflicts with a drag). A
+        // single click is repeat count 1 in visage (a double-click is 2), so the
+        // double-click threshold must be >= 2 — else every press would reset.
+        if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             const factory_params::ParamDesc& desc = store_.desc (index_);
             store_.beginGesture (index_);
@@ -185,5 +193,39 @@ namespace factory_ui_visage
         writeNorm (norm);
         store_.endGesture (index_);
         return true;
+    }
+
+    void Knob::openValueEntry()
+    {
+        if (! requestValueEntry) return;
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        // Pre-fill with the drawn read-out (spaces stripped, as in draw()) reduced to
+        // a bare number, so the user edits "62" not "62%".
+        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
+        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end());
+
+        const float rowH = valueRowHeight();
+        const visage::Point o = positionInWindow();
+        ValueEntryRequest req;
+        req.x = o.x; req.y = o.y + height() - rowH; req.w = width(); req.h = rowH;
+        req.prefill = stripLeadingNumber (disp);
+        req.fontPx  = valueFontPx_ >= 0.0f ? valueFontPx_ : theme_.font.label;
+        req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
+        requestValueEntry (req);
+    }
+
+    void Knob::commitValueEntry (const std::string& text)
+    {
+        const factory_params::ParamDesc& desc = store_.desc (index_);
+        float real = 0.0f;
+        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle
+        // (getValueFromText("") == 0 -> clamp-to-min). Invalid / empty input REVERTS
+        // (no gesture, no write, label unchanged) rather than snapping to the minimum
+        // — user request. A valid-but-out-of-range number still commits + clamps.
+        if (! factory_params::tryParseValue (desc, text, real)) return;
+        store_.beginGesture (index_);
+        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
+        store_.endGesture (index_);
+        redraw();
     }
 }

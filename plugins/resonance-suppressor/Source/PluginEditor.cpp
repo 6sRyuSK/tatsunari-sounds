@@ -6,6 +6,11 @@
 ResonanceSuppressorAudioProcessorEditor::ResonanceSuppressorAudioProcessorEditor (ResonanceSuppressorAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), presetController (*this, p), curve (p, p.apvts)
 {
+    // The analyser is now on screen: let the processor publish display spectra +
+    // run display-time smoothing again (both are skipped while no editor is
+    // attached -- see setEditorActive). Cleared in the destructor.
+    processor.setEditorActive (true);
+
     setLookAndFeel (&rsLnf);
 
     // ------------------------------------------------------------ Header
@@ -138,6 +143,7 @@ ResonanceSuppressorAudioProcessorEditor::~ResonanceSuppressorAudioProcessorEdito
 {
     stopTimer();
     processor.setListenNode (-1); // never leave a node soloed after the editor closes (preserved)
+    processor.setEditorActive (false); // stop publishing display spectra + smoothing while closed (perf)
     setLookAndFeel (nullptr);
 }
 

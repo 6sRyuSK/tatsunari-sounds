@@ -68,6 +68,7 @@ add_library(factory_ui_visage STATIC
   src/Segmented.cpp
   src/IconButton.cpp
   src/ValueSetting.cpp
+  src/ValueEntry.cpp
   src/LinkSlider.cpp
   src/SpectrumModel.cpp
   src/SpectrumView.cpp
@@ -85,6 +86,9 @@ target_include_directories(factory_ui_visage PUBLIC
 
 target_link_libraries(factory_ui_visage PUBLIC
   visage
+  VisageWidgets   # ValueEntry uses visage::TextEditor (visage_widgets); make the
+                  # link explicit rather than relying on the visage meta-target's
+                  # PRIVATE deps propagating through the static archive.
   factory_ui_visage_fonts
 )
 

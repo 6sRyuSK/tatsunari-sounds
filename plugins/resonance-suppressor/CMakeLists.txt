@@ -88,3 +88,33 @@ target_link_libraries(resonance_suppressor_preset_test
     juce::juce_recommended_warning_flags)
 
 add_test(NAME resonance_suppressor_preset COMMAND resonance_suppressor_preset_test)
+
+# --------------------------------------------------- RsCore equivalence (drift guard)
+# JUCE-linked console app: drives the REAL processor (the oracle) and the extracted,
+# framework-free rs_core::RsCore side by side with identical input + parameters and
+# asserts BYTE-IDENTICAL output + published spectra across the full rate matrix. Links
+# JUCE because it instantiates the processor as the oracle; heap-allocates it like
+# preset_test. The plugin ROOT dir is on the include path for RsCore.h / ui/RsFeed*.h;
+# Source/ for PluginProcessor.h + the shared DetailParam.h. One rate-sweeping case.
+juce_add_console_app(resonance_suppressor_rscore_equiv_test PRODUCT_NAME "resonance_suppressor_rscore_equiv_test")
+target_sources(resonance_suppressor_rscore_equiv_test PRIVATE
+  tests/rscore_equiv_test.cpp
+  Source/PluginProcessor.cpp
+  Source/PluginEditor.cpp)
+target_include_directories(resonance_suppressor_rscore_equiv_test PRIVATE Source ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(resonance_suppressor_rscore_equiv_test PRIVATE cxx_std_20)
+target_compile_definitions(resonance_suppressor_rscore_equiv_test PUBLIC
+  JUCE_WEB_BROWSER=0
+  JUCE_USE_CURL=0)
+target_link_libraries(resonance_suppressor_rscore_equiv_test
+  PRIVATE
+    factory_core
+    factory_ui
+    factory_presets
+    factory_params
+    juce::juce_audio_utils
+  PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME resonance_suppressor_rscore_equiv COMMAND resonance_suppressor_rscore_equiv_test)

@@ -1,7 +1,10 @@
 #pragma once
 
 #include "factory_ui_visage/Theme.h"
+#include "factory_ui_visage/Icons.h"
 #include "factory_params/ParamStore.h"
+
+#include <vector>
 
 #include <visage_ui/frame.h>
 
@@ -20,6 +23,14 @@ namespace factory_ui_visage
     public:
         Segmented (factory_params::ParamStore& store, int paramIndex, const Theme& theme);
 
+        // Optional per-segment leading glyph (e.g. the RS MODE Soft/Hard icons).
+        // Empty (the default) draws text-only segments, as the gallery uses.
+        void setGlyphs (std::vector<icons::Glyph> glyphs) { glyphs_ = std::move (glyphs); redraw(); }
+
+        // Override the segment-label font size in px (0 = theme.font.labelBold). The
+        // RS MODE strip sets 12 to match the JUCE RsSegmented (round-3 fix 2).
+        void setLabelFontPx (float px) { labelFontPx_ = px; redraw(); }
+
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
 
@@ -32,5 +43,7 @@ namespace factory_ui_visage
         factory_params::ParamStore& store_;
         int index_;
         const Theme& theme_;
+        std::vector<icons::Glyph> glyphs_;
+        float labelFontPx_ = 0.0f; // 0 == theme.font.labelBold
     };
 }

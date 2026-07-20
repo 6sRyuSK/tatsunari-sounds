@@ -3,3 +3,4 @@ build/
 playwright/node_modules/
 playwright/*.png
 playwright/*.json
+.emsdk/

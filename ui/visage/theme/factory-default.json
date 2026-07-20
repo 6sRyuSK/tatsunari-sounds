@@ -7,6 +7,7 @@
     "track": "#fff2ddd4",
     "accent": "#ffff7a6b",
     "accentDim": "#ffffd6cd",
+    "positive": "#ff45b8ac",
     "text": "#ff6b5750",
     "textSecondary": "#ff8f7a72",
     "textDim": "#ffb9a39b",
@@ -15,16 +16,14 @@
   },
   "knob": {
     "boundsInset": 6,
-    "lineWidthRatio": 0.180000007,
-    "glowWidthFactor": 1.89999998,
-    "glowAlpha": 0.25,
-    "bodyInsetFactor": 1.70000005,
-    "shadowBlurFactor": 0.5,
-    "shadowOffset": [0, 2],
-    "pointerDotFactor": 0.550000012,
-    "pointerPosFactor": 0.620000005,
-    "arcStart": 3.76991129,
-    "arcEnd": 8.7964592
+    "lineWidthRatio": 0.300000012,
+    "bodyInsetFactor": 1,
+    "shadowBlurFactor": 10,
+    "shadowOffset": [0, 4],
+    "needleWidthPx": 3,
+    "needleLengthRatio": 0.899999976,
+    "arcStart": 3.92699075,
+    "arcEnd": 8.6393795
   },
   "toggle": {
     "height": 20,

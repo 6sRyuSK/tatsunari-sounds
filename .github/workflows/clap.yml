@@ -1,0 +1,120 @@
+# CLAP coexistence CI (Phase P4, chunk 3a) — ADDITIVE, does not touch ci.yml.
+#
+# Builds the flag-gated RS CLAP shell (-DFACTORY_RS_CLAP=ON) and gates it with the
+# same validators the shipping VST3 uses: clap-validator on the .clap and
+# pluginval (strictness 5, headless) on the wrapper-built .vst3. Linux is not a
+# shipping target, but it is a valid CI signal for the format-agnostic CLAP code
+# (the DSP core + params/preset/state model are the same on every OS).
+#
+# Path-scoped so it only runs when something that can affect the CLAP build
+# changes; the default JUCE gate (ci.yml) is untouched and still owns macOS +
+# Windows + the full sample-rate CTest matrix for the shipping formats.
+#
+# TODO (co-verified session): add macOS + Windows legs once a runner is available
+# to verify them — the wrapper AUv2 sidechain and dynamic-latency-in-a-real-host
+# paths can only be signed off in an actual DAW, so those legs are intentionally
+# NOT added blind here (they would be unverifiable CI theatre).
+
+name: clap
+
+on:
+  push:
+    paths:
+      - 'shell/**'
+      - 'core/**'
+      - 'presets/**'
+      - 'params/**'
+      - 'plugins/*/shell/**'
+      - 'plugins/*/RsCore.h'
+      - 'plugins/*/Source/Params.h'
+      - 'cmake/**'
+      - '.github/workflows/clap.yml'
+  pull_request:
+    paths:
+      - 'shell/**'
+      - 'core/**'
+      - 'presets/**'
+      - 'params/**'
+      - 'plugins/*/shell/**'
+      - 'plugins/*/RsCore.h'
+      - 'plugins/*/Source/Params.h'
+      - 'cmake/**'
+      - '.github/workflows/clap.yml'
+  workflow_dispatch:
+
+jobs:
+  linux-clap:
+    name: RS CLAP shell (Linux, clap-validator + pluginval)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}   # for `gh release download`
+      SLUG: resonance-suppressor
+      ASSETS: build-clap/resonance-suppressor_assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + validator dependencies
+        run: |
+          sudo apt-get update
+          # ninja + the X11/ALSA/freetype/fontconfig/GL dev headers the VST3 SDK
+          # and pluginval's bundled JUCE need; ladspa-sdk for JUCE's LADSPA format.
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
+            libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev ladspa-sdk
+
+      - name: Configure (FACTORY_RS_CLAP=ON)
+        run: >
+          cmake -B build-clap -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFACTORY_RS_CLAP=ON
+          -DFACTORY_PLUGINS=${SLUG}
+
+      - name: Build ${SLUG}_all (CLAP + wrapper VST3)
+        # NEVER build `all` — it drags in clap-wrapper's vst3_validator custom
+        # target, which reconfigures the entire VST3 SDK. Build only the aggregate.
+        run: cmake --build build-clap --target ${SLUG}_all
+
+      - name: Locate built artifacts
+        id: art
+        run: |
+          CLAP=$(find "$ASSETS" -maxdepth 2 -name '*.clap' | head -1)
+          VST3=$(find "$ASSETS" -maxdepth 2 -name '*.vst3' | head -1)
+          echo "clap=$CLAP" >> "$GITHUB_OUTPUT"
+          echo "vst3=$VST3" >> "$GITHUB_OUTPUT"
+          echo "Built CLAP: $CLAP"
+          echo "Built VST3: $VST3"
+          test -n "$CLAP" && test -n "$VST3"
+
+      - name: Download clap-validator (prebuilt 0.3.2)
+        run: |
+          gh release download 0.3.2 --repo free-audio/clap-validator \
+            --pattern '*ubuntu*' --dir cv-dl || \
+          gh release download 0.3.2 --repo free-audio/clap-validator \
+            --pattern '*linux*' --dir cv-dl
+          # Extract whatever archive shape the release ships and find the binary.
+          find cv-dl -name '*.tar.gz' -exec tar -xzf {} -C cv-dl \; || true
+          find cv-dl -name '*.zip'    -exec unzip -o {} -d cv-dl \; || true
+          CV=$(find cv-dl -type f -name 'clap-validator' | head -1)
+          chmod +x "$CV"
+          echo "CLAP_VALIDATOR=$CV" >> "$GITHUB_ENV"
+
+      - name: Download pluginval (prebuilt v1.0.4)
+        run: |
+          gh release download v1.0.4 --repo Tracktion/pluginval \
+            --pattern 'pluginval_Linux.zip' --dir pv-dl
+          unzip -o pv-dl/pluginval_Linux.zip -d pv-dl
+          PV=$(find pv-dl -type f -name 'pluginval' | head -1)
+          chmod +x "$PV"
+          echo "PLUGINVAL=$PV" >> "$GITHUB_ENV"
+
+      - name: clap-validator (native CLAP)
+        # SKIPPED tests (no preset-discovery-factory / no note-ports) are expected
+        # for an audio effect and are not failures; require exit 0.
+        run: '"$CLAP_VALIDATOR" validate "${{ steps.art.outputs.clap }}"'
+
+      - name: pluginval strictness 5 (wrapper VST3)
+        run: >
+          "$PLUGINVAL" --strictness-level 5 --skip-gui-tests --validate-in-process
+          --validate "${{ steps.art.outputs.vst3 }}"

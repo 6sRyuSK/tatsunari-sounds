@@ -121,34 +121,37 @@ namespace factory_ui_visage
     void PresetSelectorView::draw (visage::Canvas& canvas)
     {
         const Palette& p = theme_.palette;
-        const float h = height();
+        const float h = height(), w = width();
+        const float rad = std::min (11.0f, h * 0.5f); // badgeLg pill
 
-        // Combo box: white panel + hairline outline.
+        // Single white pill with the inner ‹ › arrows flanking the current name
+        // (design reference 2026-07-17).
         canvas.setColor (visage::Color (p.panel));
-        canvas.roundedRectangle (comboX_, 0.0f, comboW_, h, 8.0f);
+        canvas.roundedRectangle (0.0f, 0.0f, w, h, rad);
         canvas.setColor (visage::Color (p.track));
-        canvas.roundedRectangleBorder (comboX_ + 0.5f, 0.5f, comboW_ - 1.0f, h - 1.0f, 8.0f, 1.0f);
+        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, rad, 1.0f);
 
-        // Current name, centred; a caret affordance on the right of the box.
         const Entry* cur = itemAt (selectedItem_);
         canvas.setColor (visage::Color (p.text));
         canvas.text (cur != nullptr ? cur->text : std::string ("—"),
                      boldFont (theme_.font.labelBold), visage::Font::kCenter,
-                     comboX_ + 10.0f, 0.0f, comboW_ - 28.0f, h);
-        canvas.setColor (visage::Color (p.accent));
-        icons::paintGlyph (canvas, icons::caret(), comboX_ + comboW_ - 22.0f, 0.0f, 16.0f, h);
+                     arrowW_, 0.0f, std::max (0.0f, w - 2.0f * arrowW_), h);
 
-        // Prev / next arrows (coral), disabled-dim when no steppable row remains.
-        auto drawArrow = [&] (float x, const char* txt, bool enabled)
-        {
-            canvas.setColor (visage::Color (enabled ? p.accent : p.textDim));
-            canvas.text (txt, boldFont (theme_.font.title), visage::Font::kCenter, x, 0.0f, arrowW_, h);
-        };
         bool canPrev = false, canNext = false;
         for (int i = selectedItem_ - 1; i >= 0; --i) if (isSteppable (i)) { canPrev = true; break; }
         for (int i = selectedItem_ + 1, n = itemRowCount(); i < n; ++i) if (isSteppable (i)) { canNext = true; break; }
-        drawArrow (prevX_, "<", canPrev);
-        drawArrow (nextX_, ">", canNext);
+
+        auto chevron = [&] (float cx, bool left, bool enabled)
+        {
+            canvas.setColor (visage::Color (enabled ? p.textDim : p.accentDim));
+            const float cy = h * 0.5f, s = 3.5f;
+            visage::Path ch;
+            if (left) { ch.moveTo (cx + s, cy - s); ch.lineTo (cx - s, cy); ch.lineTo (cx + s, cy + s); }
+            else      { ch.moveTo (cx - s, cy - s); ch.lineTo (cx + s, cy); ch.lineTo (cx - s, cy + s); }
+            canvas.fill (ch.stroke (1.8f, visage::Path::Join::Round, visage::Path::EndCap::Round));
+        };
+        chevron (prevX_ + arrowW_ * 0.5f, /*left*/ true,  canPrev);
+        chevron (nextX_ + arrowW_ * 0.5f, /*left*/ false, canNext);
     }
 
     void PresetSelectorView::mouseDown (const visage::MouseEvent& e)

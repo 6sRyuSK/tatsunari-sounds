@@ -62,8 +62,11 @@ int main(int argc, char** argv)
     check("palette.shadow",     p.shadow     == 0x33d6a89au, hex(p.shadow));
     check("bandColours[0]",     p.bandColours[0] == 0xffff6f91u, hex(p.bandColours[0]));
     check("bandColours[5]",     p.bandColours[5] == 0xffb79be8u, hex(p.bandColours[5]));
-    check("knob.arcStart≈1.2pi", fileTheme.knob.arcStart > 3.7699f && fileTheme.knob.arcStart < 3.7700f,
+    check("palette.positive",   p.positive   == 0xff45b8acu, hex(p.positive));
+    // Donut dial: 270° sweep from 225° (design reference), and a needle (no glow/dot).
+    check("knob.arcStart≈225°", fileTheme.knob.arcStart > 3.9269f && fileTheme.knob.arcStart < 3.9271f,
           std::to_string(fileTheme.knob.arcStart));
+    check("knob.needleWidthPx==3", fileTheme.knob.needleWidthPx == 3.0f);
     check("card.cornerRadius==10", fileTheme.card.cornerRadius == 10.0f);
     check("font.title==20",        fileTheme.font.title == 20.0f);
 
@@ -81,7 +84,7 @@ int main(int argc, char** argv)
     Theme dummy;
     check("reject truncated JSON",  !Theme::tryParse("{", dummy, err), err);
     check("reject bad colour",      !Theme::tryParse("{\"palette\":{\"accent\":\"zzzzzzzz\"}}", dummy, err), err);
-    check("reject wrong type",      !Theme::tryParse("{\"knob\":{\"glowAlpha\":\"x\"}}", dummy, err), err);
+    check("reject wrong type",      !Theme::tryParse("{\"knob\":{\"needleWidthPx\":\"x\"}}", dummy, err), err);
     check("reject unknown key",     !Theme::tryParse("{\"palette\":{\"nope\":\"#ffffffff\"}}", dummy, err), err);
     check("reject non-object root", !Theme::tryParse("[1,2,3]", dummy, err), err);
     check("reject unknown key in new section",
