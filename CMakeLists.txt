@@ -102,6 +102,18 @@ endforeach()
 # on a configure line (older scripts) neither errors nor changes anything.
 option(FACTORY_RS_CLAP "Legacy no-op: RS is clap-first unconditionally now" OFF)
 if(_rs_configured)
+  # clap-wrapper's AUv2/cocoa glue and visage's macOS windowing are
+  # Objective-C++ (.mm). clap-wrapper does enable_language(OBJC/OBJCXX) only
+  # inside its own FetchContent subdirectory scope, which does not provide
+  # compile rules to SIBLING subdirectories (visage, our shell targets) — the
+  # mac generate step then dies with "Missing variable:
+  # CMAKE_OBJCXX_COMPILE_OBJECT". Enable both at the root scope so every
+  # subdirectory below gets the rules. (JUCE plugins were unaffected because
+  # JUCE handles its own .mm inside its own tree.)
+  if(APPLE)
+    enable_language(OBJC OBJCXX)
+  endif()
+
   # The impl + clap-wrapper's own static libs (base-sdk-vst3, the per-target VST3
   # wrapper glue) are linked into MODULE (shared) libraries, so they must be PIC.
   # Set it here — the root scope — so BOTH add_subdirectory()s below (and the
