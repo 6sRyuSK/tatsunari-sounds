@@ -21,13 +21,27 @@ namespace factory_ui_visage
         canvas.roundedRectangleShadow (x + c.shadowOffsetX, y + c.shadowOffsetY,
                                        width, height, c.cornerRadius, c.shadowBlur);
 
-        // 2) White panel fill.
-        canvas.setColor (visage::Color (theme.palette.panel));
-        canvas.roundedRectangle (x, y, width, height, c.cornerRadius);
+        // 2+3) White panel fill + soft track outline (the shared shell idiom).
+        paintCardShell (canvas, x, y, width, height, c.cornerRadius,
+                        visage::Color (theme.palette.panel), visage::Color (theme.palette.track),
+                        c.outlineWidth);
+    }
 
-        // 3) Soft track outline, inset half a pixel like factory_ui (reduced(0.5)).
-        canvas.setColor (visage::Color (theme.palette.track));
+    void paintCardShell (visage::Canvas& canvas, float x, float y, float width, float height,
+                         float cornerRadius, visage::Color fill, visage::Color border,
+                         float borderPx)
+    {
+        canvas.setColor (fill);
+        canvas.roundedRectangle (x, y, width, height, cornerRadius);
+        paintHairline (canvas, x, y, width, height, cornerRadius, border, borderPx);
+    }
+
+    void paintHairline (visage::Canvas& canvas, float x, float y, float width, float height,
+                        float cornerRadius, visage::Color colour, float borderPx)
+    {
+        // Inset half a pixel like factory_ui (reduced(0.5)).
+        canvas.setColor (colour);
         canvas.roundedRectangleBorder (x + 0.5f, y + 0.5f, width - 1.0f, height - 1.0f,
-                                       c.cornerRadius, c.outlineWidth);
+                                       cornerRadius, borderPx);
     }
 }

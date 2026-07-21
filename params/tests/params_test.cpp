@@ -356,6 +356,31 @@ void checkParamStore()
         check (extra == 0, "drainHostWrites empty after drain");
     }
 
+    // setFromUiGestured == the manual begin/set/end triple: same queue events in
+    // the same order, same snapped value, one gesture-end observed.
+    {
+        ParamStore s5 (storeDescs());
+        const std::uint32_t g0 = s5.gestureEndCount();
+        const std::uint32_t e5 = s5.epoch (1);
+        s5.setFromUiGestured (1, 47.3f);
+        const RangeSpec r1 = makeRange (s5.desc (1));
+        check (bitEqual (s5.value (1), snapToLegalValue (r1, 47.3f)),
+               "setFromUiGestured snaps like setFromUi");
+        check (s5.gestureEndCount() == g0 + 1, "setFromUiGestured bumps gestureEndCount once");
+        check (s5.epoch (1) == e5 + 1, "setFromUiGestured bumps the epoch once (value write only)");
+        std::vector<HostWrite> events;
+        s5.drainHostWrites ([&] (const HostWrite& w) { events.push_back (w); });
+        check (events.size() == 3
+               && events[0].kind == HostWrite::Kind::GestureBegin
+               && events[1].kind == HostWrite::Kind::Value
+               && events[2].kind == HostWrite::Kind::GestureEnd,
+               "setFromUiGestured enqueues GestureBegin/Value/GestureEnd in order");
+        check (events.size() == 3 && events[0].index == 1 && events[1].index == 1 && events[2].index == 1,
+               "setFromUiGestured events carry the parameter index");
+        check (events.size() == 3 && bitEqual (events[1].value, snapToLegalValue (r1, 47.3f)),
+               "setFromUiGestured enqueues the snapped value");
+    }
+
     // Overflow counter increments when the ring is full.
     {
         ParamStore s4 (storeDescs());

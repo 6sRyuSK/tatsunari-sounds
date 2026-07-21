@@ -19,4 +19,17 @@ namespace factory_ui_visage
     // Soft drop shadow + white panel fill + track outline, per the card metrics.
     void paintCard (visage::Canvas& canvas, const Theme& theme,
                     float x, float y, float width, float height);
+
+    // The bare "card + hairline" idiom shared by the small widget shells
+    // (LinkSlider / ValueSetting / RsPillCell / the RS badges + chips): a rounded
+    // fill plus the half-pixel-inset hairline border. Colours are explicit (with
+    // alpha) so per-widget metrics stay at the call site — no theme lookup here.
+    void paintCardShell (visage::Canvas& canvas, float x, float y, float width, float height,
+                         float cornerRadius, visage::Color fill, visage::Color border,
+                         float borderPx = 1.0f);
+
+    // The hairline border alone — for shells whose fill is conditional or a
+    // gradient (drawn by the caller) but whose border is the shared idiom.
+    void paintHairline (visage::Canvas& canvas, float x, float y, float width, float height,
+                        float cornerRadius, visage::Color colour, float borderPx = 1.0f);
 }

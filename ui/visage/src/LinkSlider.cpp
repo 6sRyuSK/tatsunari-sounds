@@ -1,4 +1,5 @@
 #include "factory_ui_visage/LinkSlider.h"
+#include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Fonts.h"
 #include "factory_params/Text.h"
 
@@ -73,10 +74,8 @@ namespace factory_ui_visage
         const float h = height();
 
         // White card + hairline.
-        canvas.setColor (visage::Color (p.panel));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, m.cornerRadius);
-        canvas.setColor (visage::Color (p.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, m.cornerRadius, 1.0f);
+        paintCardShell (canvas, 0.0f, 0.0f, w, h, m.cornerRadius,
+                        visage::Color (p.panel), visage::Color (p.track));
 
         const Layout L = computeLayout();
 
@@ -132,9 +131,7 @@ namespace factory_ui_visage
         // — otherwise every press resets instead of dragging.
         if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, store_.desc (index_).defaultValue);
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, store_.desc (index_).defaultValue);
             dragging_ = false;
             redraw();
             return;
@@ -169,15 +166,11 @@ namespace factory_ui_visage
     void LinkSlider::openValueEntry()
     {
         if (! requestValueEntry) return;
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
-        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end()); // match the drawn read-out
-
         const Layout L = computeLayout();
         const visage::Point o = positionInWindow();
         ValueEntryRequest req;
         req.x = o.x + L.value.x; req.y = o.y + L.value.y; req.w = L.value.w; req.h = L.value.h;
-        req.prefill = stripLeadingNumber (disp);
+        req.prefill = entryPrefillText (store_.desc (index_), store_.value (index_), decimals_);
         req.fontPx  = theme_.font.callout; // the value read-out font (RS: 12 px)
         req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
         requestValueEntry (req);
@@ -185,15 +178,7 @@ namespace factory_ui_visage
 
     void LinkSlider::commitValueEntry (const std::string& text)
     {
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        float real = 0.0f;
-        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle. Invalid /
-        // empty input REVERTS (no gesture, no write) rather than clamping to the
-        // minimum; a valid-but-out-of-range number still commits + clamps (user request).
-        if (! factory_params::tryParseValue (desc, text, real)) return;
-        store_.beginGesture (index_);
-        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
-        store_.endGesture (index_);
-        redraw();
+        if (commitEntryText (store_, index_, text)) // invalid/empty REVERTS (ValueText.h)
+            redraw();
     }
 }

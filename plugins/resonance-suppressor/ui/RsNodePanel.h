@@ -2,6 +2,7 @@
 
 #include "RsTheme.h"
 #include "RsFeed.h"
+#include "RsNodePanelLayout.h"
 #include "RsProfileModel.h"
 
 #include "factory_ui_visage/ValueEntry.h"
@@ -99,6 +100,18 @@ namespace rs_ui
         MiniDial miniKnobDial (const MiniKnob& k) const;
 
         void computeLayout();
+        // The three mini-knob slots in driver order (0=FREQ, 1=SENS, 2=WIDTH) — the
+        // ONE place the member array is enumerated (was rebuilt at every use site).
+        std::array<MiniKnob*, 3>       minis()       { return { &freqK_, &sensK_, &widthK_ }; }
+        std::array<const MiniKnob*, 3> minis() const { return { &freqK_, &sensK_, &widthK_ }; }
+        // Mini `which`, or nullptr when out of range / hidden (the shared driver-
+        // lookup bounds check).
+        const MiniKnob* visibleMini (int which) const
+        {
+            if (which < 0 || which > 2) return nullptr;
+            const MiniKnob* k = minis()[(std::size_t) which];
+            return k->visible ? k : nullptr;
+        }
         void drawMiniKnob (visage::Canvas& canvas, const MiniKnob& k);
         std::string valueText (const MiniKnob& k) const;
         void writeKnob (MiniKnob& k, float norm);

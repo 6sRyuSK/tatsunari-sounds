@@ -1,4 +1,5 @@
 #include "factory_ui_visage/PresetSelectorView.h"
+#include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Icons.h"
 
@@ -126,10 +127,8 @@ namespace factory_ui_visage
 
         // Single white pill with the inner ‹ › arrows flanking the current name
         // (design reference 2026-07-17).
-        canvas.setColor (visage::Color (p.panel));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, rad);
-        canvas.setColor (visage::Color (p.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, rad, 1.0f);
+        paintCardShell (canvas, 0.0f, 0.0f, w, h, rad,
+                        visage::Color (p.panel), visage::Color (p.track));
 
         const Entry* cur = itemAt (selectedItem_);
         canvas.setColor (visage::Color (p.text));

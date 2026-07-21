@@ -141,9 +141,7 @@ namespace factory_ui_visage
         if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             const factory_params::ParamDesc& desc = store_.desc (index_);
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, desc.defaultValue);
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, desc.defaultValue);
             dragging_ = false;
             redraw();
             return;
@@ -198,17 +196,11 @@ namespace factory_ui_visage
     void Knob::openValueEntry()
     {
         if (! requestValueEntry) return;
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        // Pre-fill with the drawn read-out (spaces stripped, as in draw()) reduced to
-        // a bare number, so the user edits "62" not "62%".
-        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
-        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end());
-
         const float rowH = valueRowHeight();
         const visage::Point o = positionInWindow();
         ValueEntryRequest req;
         req.x = o.x; req.y = o.y + height() - rowH; req.w = width(); req.h = rowH;
-        req.prefill = stripLeadingNumber (disp);
+        req.prefill = entryPrefillText (store_.desc (index_), store_.value (index_), decimals_);
         req.fontPx  = valueFontPx_ >= 0.0f ? valueFontPx_ : theme_.font.label;
         req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
         requestValueEntry (req);
@@ -216,16 +208,7 @@ namespace factory_ui_visage
 
     void Knob::commitValueEntry (const std::string& text)
     {
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        float real = 0.0f;
-        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle
-        // (getValueFromText("") == 0 -> clamp-to-min). Invalid / empty input REVERTS
-        // (no gesture, no write, label unchanged) rather than snapping to the minimum
-        // — user request. A valid-but-out-of-range number still commits + clamps.
-        if (! factory_params::tryParseValue (desc, text, real)) return;
-        store_.beginGesture (index_);
-        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
-        store_.endGesture (index_);
-        redraw();
+        if (commitEntryText (store_, index_, text)) // invalid/empty REVERTS (ValueText.h)
+            redraw();
     }
 }
