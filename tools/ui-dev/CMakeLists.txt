@@ -24,6 +24,7 @@ add_executable(gallery
 # params/core includes are also listed here to document the consumer's intent.
 target_link_libraries(gallery PRIVATE factory_ui_visage)
 target_include_directories(gallery PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/common     # BridgeCommon.h (shared bridge bodies)
   ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
   ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
 )
@@ -44,6 +45,7 @@ add_executable(rs-editor
 )
 target_link_libraries(rs-editor PRIVATE factory_ui_visage)
 target_include_directories(rs-editor PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/common     # BridgeCommon.h (shared bridge bodies)
   ${CMAKE_CURRENT_SOURCE_DIR}/rs-editor
   ${RS_PLUGIN_DIR}/ui
   ${RS_PLUGIN_DIR}/Source            # Params.h (buildRsParams — JUCE-free)

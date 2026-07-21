@@ -1,4 +1,5 @@
 #include "Bridge.h"
+#include "BridgeCommon.h" // jsonEscape / jsonRect / paramsListJson / … (shared with rs-editor)
 #include "GalleryFrame.h"
 
 #include "factory_params/ParamDesc.h"
@@ -26,36 +27,6 @@ namespace
     std::string   g_listBuffer;   // ui_list_params() result
     std::string   g_errorBuffer;  // ui_reload_theme() / ui_last_error() message
     std::string   g_rectBuffer;   // ui_widget_rect() result
-
-    std::string jsonEscape (const std::string& s)
-    {
-        std::string out;
-        out.reserve (s.size() + 2);
-        for (char c : s)
-        {
-            switch (c)
-            {
-                case '"':  out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n";  break;
-                case '\t': out += "\\t";  break;
-                case '\r': out += "\\r";  break;
-                default:   out += c;      break;
-            }
-        }
-        return out;
-    }
-
-    const char* typeName (factory_params::ParamType t)
-    {
-        switch (t)
-        {
-            case factory_params::ParamType::Float:  return "float";
-            case factory_params::ParamType::Bool:   return "bool";
-            case factory_params::ParamType::Choice: return "choice";
-        }
-        return "float";
-    }
 }
 
 namespace gallery
@@ -69,29 +40,7 @@ extern "C"
     // default, live value and unit — the JS side's map of the surface.
     KEEPALIVE const char* ui_list_params()
     {
-        std::ostringstream o;
-        o << "[";
-        if (g_gallery != nullptr)
-        {
-            factory_params::ParamStore& store = g_gallery->store();
-            for (int i = 0; i < store.size(); ++i)
-            {
-                const factory_params::ParamDesc& d = store.desc (i);
-                if (i != 0)
-                    o << ",";
-                o << "{\"index\":" << i
-                  << ",\"id\":\"" << jsonEscape (d.id) << "\""
-                  << ",\"name\":\"" << jsonEscape (d.name) << "\""
-                  << ",\"type\":\"" << typeName (d.type) << "\""
-                  << ",\"min\":" << d.minValue
-                  << ",\"max\":" << d.maxValue
-                  << ",\"default\":" << d.defaultValue
-                  << ",\"value\":" << store.value (i)
-                  << ",\"unit\":\"" << jsonEscape (d.unit) << "\"}";
-            }
-        }
-        o << "]";
-        g_listBuffer = o.str();
+        g_listBuffer = g_gallery != nullptr ? ui_dev_bridge::paramsListJson (g_gallery->store()) : "[]";
         return g_listBuffer.c_str();
     }
 
@@ -128,12 +77,7 @@ extern "C"
     // malformed document (message retrievable via ui_last_error).
     KEEPALIVE int ui_reload_theme (const char* jsonText)
     {
-        if (g_gallery == nullptr || jsonText == nullptr)
-            return 0;
-        std::string error;
-        const bool ok = g_gallery->reloadTheme (jsonText, error);
-        g_errorBuffer = ok ? std::string() : error;
-        return ok ? 1 : 0;
+        return ui_dev_bridge::reloadThemeInto (g_gallery, jsonText, g_errorBuffer);
     }
 
     KEEPALIVE const char* ui_last_error() { return g_errorBuffer.c_str(); }
@@ -179,11 +123,7 @@ extern "C"
         {
             float x = 0, y = 0, w = 0, h = 0;
             if (g_gallery->widgetRectInWindow (key, x, y, w, h))
-            {
-                std::ostringstream o;
-                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
-                g_rectBuffer = o.str();
-            }
+                g_rectBuffer = ui_dev_bridge::jsonRect (x, y, w, h);
         }
         return g_rectBuffer.c_str();
     }

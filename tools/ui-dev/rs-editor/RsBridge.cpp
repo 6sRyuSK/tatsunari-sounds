@@ -1,4 +1,5 @@
 #include "RsBridge.h"
+#include "BridgeCommon.h" // jsonEscape / jsonRect / paramsListJson / … (shared with the gallery)
 
 #include "RsEditor.h"
 #include "SyntheticFeed.h"
@@ -34,35 +35,6 @@ namespace
     SyntheticRsFeed* g_feed = nullptr;
     visage::ApplicationWindow* g_app = nullptr;
     std::string g_list, g_error, g_rect, g_plot, g_mini, g_dial, g_ventry, g_mvrect;
-
-    std::string jsonEscape (const std::string& s)
-    {
-        std::string o; o.reserve (s.size() + 2);
-        for (char c : s)
-        {
-            switch (c)
-            {
-                case '"':  o += "\\\""; break;
-                case '\\': o += "\\\\"; break;
-                case '\n': o += "\\n";  break;
-                case '\t': o += "\\t";  break;
-                case '\r': o += "\\r";  break;
-                default:   o += c;      break;
-            }
-        }
-        return o;
-    }
-
-    const char* typeName (factory_params::ParamType t)
-    {
-        switch (t)
-        {
-            case factory_params::ParamType::Float:  return "float";
-            case factory_params::ParamType::Bool:   return "bool";
-            case factory_params::ParamType::Choice: return "choice";
-        }
-        return "float";
-    }
 }
 
 namespace rs_harness
@@ -76,24 +48,8 @@ extern "C"
     // ---- core (window.ui) ------------------------------------------------------
     KEEPALIVE const char* ui_list_params()
     {
-        std::ostringstream o; o << "[";
-        if (g_editor != nullptr)
-        {
-            auto& store = g_editor->store();
-            for (int i = 0; i < store.size(); ++i)
-            {
-                const auto& d = store.desc (i);
-                if (i != 0) o << ",";
-                o << "{\"index\":" << i
-                  << ",\"id\":\"" << jsonEscape (d.id) << "\""
-                  << ",\"name\":\"" << jsonEscape (d.name) << "\""
-                  << ",\"type\":\"" << typeName (d.type) << "\""
-                  << ",\"min\":" << d.minValue << ",\"max\":" << d.maxValue
-                  << ",\"default\":" << d.defaultValue << ",\"value\":" << store.value (i)
-                  << ",\"unit\":\"" << jsonEscape (d.unit) << "\"}";
-            }
-        }
-        o << "]"; g_list = o.str(); return g_list.c_str();
+        g_list = g_editor != nullptr ? ui_dev_bridge::paramsListJson (g_editor->store()) : "[]";
+        return g_list.c_str();
     }
 
     KEEPALIVE double ui_get_param (const char* id)
@@ -120,11 +76,7 @@ extern "C"
 
     KEEPALIVE int ui_reload_theme (const char* jsonText)
     {
-        if (g_editor == nullptr || jsonText == nullptr) return 0;
-        std::string err;
-        const bool ok = g_editor->reloadTheme (jsonText, err);
-        g_error = ok ? std::string() : err;
-        return ok ? 1 : 0;
+        return ui_dev_bridge::reloadThemeInto (g_editor, jsonText, g_error);
     }
 
     KEEPALIVE const char* ui_last_error() { return g_error.c_str(); }
@@ -137,11 +89,7 @@ extern "C"
         {
             float x = 0, y = 0, w = 0, h = 0;
             if (g_editor->widgetRectInWindow (key, x, y, w, h))
-            {
-                std::ostringstream o;
-                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
-                g_rect = o.str();
-            }
+                g_rect = ui_dev_bridge::jsonRect (x, y, w, h);
         }
         return g_rect.c_str();
     }
@@ -186,9 +134,7 @@ extern "C"
         if (g_editor == nullptr || id == nullptr) return;
         const int i = g_editor->store().indexOf (id);
         if (i < 0) return;
-        g_editor->store().beginGesture (i);
-        g_editor->store().setFromUi (i, (float) real);
-        g_editor->store().endGesture (i);
+        g_editor->store().setFromUiGestured (i, (float) real);
         g_editor->pumpGestures();
         g_editor->redrawAll();
     }
@@ -246,11 +192,7 @@ extern "C"
         {
             float cx = 0, cy = 0, tx = 0, ty = 0;
             if (g_editor->miniKnobTipInWindow (which, cx, cy, tx, ty))
-            {
-                std::ostringstream o;
-                o << "{\"cx\":" << cx << ",\"cy\":" << cy << ",\"tx\":" << tx << ",\"ty\":" << ty << "}";
-                g_mini = o.str();
-            }
+                g_mini = ui_dev_bridge::jsonNumObj ({ { "cx", cx }, { "cy", cy }, { "tx", tx }, { "ty", ty } });
         }
         return g_mini.c_str();
     }
@@ -265,11 +207,7 @@ extern "C"
         {
             float cx = 0, cy = 0, arcR = 0;
             if (g_editor->miniKnobDialInWindow (which, cx, cy, arcR))
-            {
-                std::ostringstream o;
-                o << "{\"cx\":" << cx << ",\"cy\":" << cy << ",\"arcR\":" << arcR << "}";
-                g_dial = o.str();
-            }
+                g_dial = ui_dev_bridge::jsonNumObj ({ { "cx", cx }, { "cy", cy }, { "arcR", arcR } });
         }
         return g_dial.c_str();
     }
@@ -293,11 +231,7 @@ extern "C"
         {
             float x = 0, y = 0, w = 0, h = 0;
             if (g_editor->miniValueRectInWindow (which, x, y, w, h))
-            {
-                std::ostringstream o;
-                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
-                g_mvrect = o.str();
-            }
+                g_mvrect = ui_dev_bridge::jsonRect (x, y, w, h);
         }
         return g_mvrect.c_str();
     }
@@ -309,11 +243,7 @@ extern "C"
         {
             float x = 0, y = 0, w = 0, h = 0;
             if (g_editor->plotRectInWindow (x, y, w, h))
-            {
-                std::ostringstream o;
-                o << "{\"x\":" << x << ",\"y\":" << y << ",\"w\":" << w << ",\"h\":" << h << "}";
-                g_plot = o.str();
-            }
+                g_plot = ui_dev_bridge::jsonRect (x, y, w, h);
         }
         return g_plot.c_str();
     }
