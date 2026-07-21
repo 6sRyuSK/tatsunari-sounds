@@ -1,5 +1,6 @@
 #include "RsSuppressionCurveView.h"
 
+#include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Fonts.h"
 
 #include <visage_graphics/canvas.h>
@@ -344,8 +345,8 @@ namespace rs_ui
         canvas.setColor (visage::Brush::vertical (visage::Color (theme_.rs.plotTop),
                                                   visage::Color (theme_.rs.plotBottom)));
         canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusCard);
-        canvas.setColor (visage::Color (theme_.base.palette.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusCard, 1.0f);
+        fuv::paintHairline (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusCard,
+                            visage::Color (theme_.base.palette.track));
     }
 
     void RsSuppressionCurveView::drawGrid (visage::Canvas& canvas)
@@ -674,10 +675,9 @@ namespace rs_ui
     {
         auto chipShell = [&] (const Rect& b)
         {
-            canvas.setColor (visage::Color (theme_.rs.chipBg));
-            canvas.roundedRectangle (b.x, b.y, b.w, b.h, theme_.rs.radiusBadge);
-            canvas.setColor (visage::Color (theme_.base.palette.track));
-            canvas.roundedRectangleBorder (b.x + 0.5f, b.y + 0.5f, b.w - 1.0f, b.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            fuv::paintCardShell (canvas, b.x, b.y, b.w, b.h, theme_.rs.radiusBadge,
+                                 visage::Color (theme_.rs.chipBg),
+                                 visage::Color (theme_.base.palette.track));
         };
 
         // A1: Pre / Post / Both.
@@ -714,10 +714,9 @@ namespace rs_ui
                      freezeChip_.x, freezeChip_.y, freezeChip_.w, freezeChip_.h);
 
         // A3: GR peak-hold badge.
-        canvas.setColor (visage::Color (theme_.rs.grBg));
-        canvas.roundedRectangle (grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h, theme_.rs.radiusBadge);
-        canvas.setColor (visage::Color (theme_.rs.grBorder));
-        canvas.roundedRectangleBorder (grBadge_.x + 0.5f, grBadge_.y + 0.5f, grBadge_.w - 1.0f, grBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+        fuv::paintCardShell (canvas, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h,
+                             theme_.rs.radiusBadge,
+                             visage::Color (theme_.rs.grBg), visage::Color (theme_.rs.grBorder));
         char gr[24]; std::snprintf (gr, sizeof gr, "GR %.1f dB", grPeakDb_);
         canvas.setColor (visage::Color (theme_.rs.grText));
         canvas.text (gr, boldFont (9.5f), visage::Font::kCenter, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h);

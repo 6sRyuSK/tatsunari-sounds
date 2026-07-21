@@ -2,6 +2,7 @@
 
 #include "RsTheme.h"
 
+#include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Icons.h"
 #include "factory_ui_visage/Fonts.h"
 #include "factory_params/ParamStore.h"
@@ -46,12 +47,8 @@ namespace rs_ui
             const bool on = store_.value (index_) > 0.5f;
 
             if (card_)
-            {
-                canvas.setColor (visage::Color (0xffffffff));
-                canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusBadge);
-                canvas.setColor (visage::Color (p.track));
-                canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusBadge, 1.0f);
-            }
+                fuv::paintCardShell (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusBadge,
+                                     visage::Color (0xffffffff), visage::Color (p.track));
 
             const float pillW = 34.0f, pillH = 19.0f, rightInset = 9.0f;
             const float pillX = w - rightInset - pillW, pillY = (h - pillH) * 0.5f;

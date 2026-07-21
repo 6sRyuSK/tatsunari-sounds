@@ -1,6 +1,7 @@
 #include "RsEditor.h"
 
 #include "RsIcons.h"
+#include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Icons.h"
 #include "factory_ui_visage/Fonts.h"
 
@@ -561,10 +562,9 @@ namespace rs_ui
         const Rect& f = footerCard_;
         canvas.setColor (visage::Color (rsTheme_.rs.nodeShadow));
         canvas.roundedRectangleShadow (f.x, f.y + 5.0f, f.w, f.h, rsTheme_.rs.radiusCard, 16.0f);
-        canvas.setColor (visage::Color (rsTheme_.rs.footerBg));
-        canvas.roundedRectangle (f.x, f.y, f.w, f.h, rsTheme_.rs.radiusCard);
-        canvas.setColor (visage::Color (rsTheme_.base.palette.track));
-        canvas.roundedRectangleBorder (f.x + 0.5f, f.y + 0.5f, f.w - 1.0f, f.h - 1.0f, rsTheme_.rs.radiusCard, 1.0f);
+        fuv::paintCardShell (canvas, f.x, f.y, f.w, f.h, rsTheme_.rs.radiusCard,
+                             visage::Color (rsTheme_.rs.footerBg),
+                             visage::Color (rsTheme_.base.palette.track));
 
         // column dividers
         const float dy = f.y + S (14), dh = f.h - 2.0f * S (14);

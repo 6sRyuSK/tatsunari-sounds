@@ -1,4 +1,5 @@
 #include "factory_ui_visage/LinkSlider.h"
+#include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Fonts.h"
 #include "factory_params/Text.h"
 
@@ -73,10 +74,8 @@ namespace factory_ui_visage
         const float h = height();
 
         // White card + hairline.
-        canvas.setColor (visage::Color (p.panel));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, m.cornerRadius);
-        canvas.setColor (visage::Color (p.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, m.cornerRadius, 1.0f);
+        paintCardShell (canvas, 0.0f, 0.0f, w, h, m.cornerRadius,
+                        visage::Color (p.panel), visage::Color (p.track));
 
         const Layout L = computeLayout();
 

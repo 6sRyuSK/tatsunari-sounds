@@ -1,6 +1,7 @@
 #include "RsNodePanel.h"
 #include "RsFreqEntry.h" // parseFreqEntry (Hz/kHz) — shared with rs_ui_pure_test
 
+#include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Knob.h" // shared knobAngleForNorm / knobNeedleTip (A2)
 #include "factory_ui_visage/ValueEntry.h" // stripLeadingNumber + ValueEntryRequest
@@ -287,10 +288,9 @@ namespace rs_ui
         const float w = width(), h = height();
 
         // card
-        canvas.setColor (visage::Color (0xffffffff).withAlpha (0.97f));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusPopover);
-        canvas.setColor (visage::Color (theme_.base.palette.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusPopover, 1.0f);
+        fuv::paintCardShell (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusPopover,
+                             visage::Color (0xffffffff).withAlpha (0.97f),
+                             visage::Color (theme_.base.palette.track));
 
         // header dot
         canvas.setColor (visage::Color (theme_.rs.dotRing));
@@ -307,20 +307,18 @@ namespace rs_ui
             canvas.setColor (visage::Color (on ? theme_.base.palette.positive : theme_.rs.footerBg));
             canvas.roundedRectangle (onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h, theme_.rs.radiusBadge);
             if (! on)
-            {
-                canvas.setColor (visage::Color (theme_.base.palette.track));
-                canvas.roundedRectangleBorder (onBadge_.x + 0.5f, onBadge_.y + 0.5f, onBadge_.w - 1.0f, onBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
-            }
+                fuv::paintHairline (canvas, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h,
+                                    theme_.rs.radiusBadge, visage::Color (theme_.base.palette.track));
             canvas.setColor (visage::Color (on ? 0xffffffff : theme_.base.palette.textSecondary));
             canvas.text (on ? "ON" : "OFF", boldFont (11.0f), visage::Font::kCenter, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h);
         }
 
         // Listen badge
         {
-            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg));
-            canvas.roundedRectangle (listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h, theme_.rs.radiusBadge);
-            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
-            canvas.roundedRectangleBorder (listenBadge_.x + 0.5f, listenBadge_.y + 0.5f, listenBadge_.w - 1.0f, listenBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            fuv::paintCardShell (canvas, listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h,
+                                 theme_.rs.radiusBadge,
+                                 visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg),
+                                 visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
             const float dotD = 7.0f, dotX = listenBadge_.x + 8.0f, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
             canvas.setColor (visage::Color (listenOn_ ? 0xffffffff : theme_.base.palette.textSecondary));
             canvas.circle (dotX, dotY, dotD);
@@ -349,10 +347,8 @@ namespace rs_ui
             canvas.setColor (visage::Color (active ? theme_.base.palette.accent : theme_.rs.footerBg));
             canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f);
             if (! active)
-            {
-                canvas.setColor (visage::Color (theme_.base.palette.track));
-                canvas.roundedRectangleBorder (b.x + 0.5f, b.y + 0.5f, b.w - 1.0f, b.h - 1.0f, 8.0f, 1.0f);
-            }
+                fuv::paintHairline (canvas, b.x, b.y, b.w, b.h, 8.0f,
+                                    visage::Color (theme_.base.palette.track));
             const std::uint32_t fg = active ? 0xffffffff : theme_.rs.iconInactive;
             if (isCut_)
             {
