@@ -47,11 +47,48 @@
 //
 namespace rs_ui
 {
+    // Bottom-right drag handle (JUCE editor parity: setResizable's corner
+    // resizer). Hosts that give a plugin window no OS resize edge — Logic's AU
+    // window — can only resize through an affordance INSIDE the view, so the
+    // editor draws its own. It reports raw drag-proposed sizes (editor-logical
+    // px); the editor snaps/clamps them and relays via onResizeRequest.
+    class RsResizeGrip : public visage::Frame
+    {
+    public:
+        std::function<void (float w, float h)> onDragResize; // raw proposal, logical px
+
+        void setLineColour (std::uint32_t argb) noexcept { lineColour_ = argb; }
+
+        void draw (visage::Canvas& canvas) override;
+        void mouseDown (const visage::MouseEvent& e) override;
+        void mouseDrag (const visage::MouseEvent& e) override;
+
+    private:
+        visage::Point downPos_ {};
+        float startW_ = 0.0f, startH_ = 0.0f;
+        std::uint32_t lineColour_ = 0;
+    };
+
     class RsEditor : public visage::Frame
     {
     public:
+        // Design geometry (logical px): 1069x747 reference layout (k() scales off
+        // the height), resize limits 940x657..1320x922 — the JUCE editor's
+        // setResizeLimits, also mirrored by the CLAP shell's adjustSize.
+        static constexpr float kDesignW = 1069.0f, kDesignH = 747.0f;
+        static constexpr float kMinW = 940.0f, kMinH = 657.0f, kMaxW = 1320.0f, kMaxH = 922.0f;
+
         RsEditor (const RsTheme& theme, factory_params::ParamStore& store, RsFeed& feed,
                   RsPresetModel& presets, RsAbModel& ab);
+
+        // Host-window resize relay (editor-logical px, already aspect-snapped and
+        // clamped to the limits above). Set by the CLAP shell; when unset (the
+        // ui-dev harness) the corner grip is hidden.
+        std::function<void (float w, float h)> onResizeRequest;
+
+        // Snap a proposed size onto the 1069:747 aspect (height-driven) and clamp
+        // it into [kMin .. kMax] — the same maths as the shell's adjustSize.
+        static void snapWindowSize (float& w, float& h);
 
         // --- harness / bridge surface -----------------------------------------
         factory_params::ParamStore&    store() noexcept { return store_; }
@@ -166,7 +203,7 @@ namespace rs_ui
         visage::Frame* widgetForParam (int storeIndex) const;
 
         int    idx (const char* id) const { return store_.indexOf (id); }
-        float  k() const { return height() / 747.0f; }  // uniform design scale
+        float  k() const { return height() / kDesignH; }  // uniform design scale
         int    S (float v) const { return (int) std::round (v * k()); }
 
         RsTheme rsTheme_;                 // owned; mutated in place on hot reload
@@ -189,6 +226,7 @@ namespace rs_ui
         std::unique_ptr<factory_ui_visage::ValueEntry>  valueEntry_; // shared direct-text-entry overlay
         std::unique_ptr<RsSuppressionCurveView>         curve_;
         std::unique_ptr<RsNodePanel>                    nodePanel_;
+        std::unique_ptr<RsResizeGrip>                   grip_;
 
         // undo
         factory_params::UndoStack undo_;

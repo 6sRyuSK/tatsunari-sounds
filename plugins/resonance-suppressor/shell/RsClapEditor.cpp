@@ -62,12 +62,16 @@
 namespace
 {
     // --- design geometry (parity with the JUCE editor) ------------------------
-    // setSize(1069, 747); setResizeLimits(940, 657, 1320, 922); fixed aspect
-    // 1069:747. Height is the layout driver (the editor scales by k()=height/747).
+    // Reference layout 1069x747, resize limits setResizeLimits(940, 657, 1320,
+    // 922), fixed aspect 1069:747. Height is the layout driver (the editor scales
+    // by k()=height/747). The window OPENS at the minimum, not the reference:
+    // 1069x747 logical pt plus host chrome overflows common laptop displays (the
+    // "default window too big" report), and growing from the minimum is one drag.
     constexpr int kDesignW = 1069, kDesignH = 747;
     // Minimum window (used for setMinimumDimensions); the max + aspect snap now live
     // in rs_shell::snapEditorSizeForScale (RsClapEditor.h).
     constexpr int kMinW = 940, kMinH = 657;
+    constexpr int kDefaultW = kMinW, kDefaultH = kMinH;
 
 #if defined(_WIN32)
     constexpr const char* kNativeApi = CLAP_WINDOW_API_WIN32;
@@ -166,8 +170,25 @@ namespace
             app_    = std::make_unique<visage::ApplicationWindow>();
             editor_ = std::make_unique<rs_ui::RsEditor> (theme_, store_, feed_, presets_, ab_);
 
+            // The editor's corner grip proposes sizes in editor-logical px; convert
+            // to host units (identical on macOS, physical px elsewhere) and ask the
+            // host. This is the ONLY resize path a host with no window resize edge
+            // (Logic's AU window) offers the user.
+            editor_->onResizeRequest = [this] (float w, float h)
+            {
+                fetchHostExts();
+                if (hostGui_ == nullptr || hostGui_->request_resize == nullptr) return;
+                float s = 1.0f;
+#if !defined(__APPLE__)
+                if (editor_ != nullptr && editor_->width() > 0.0f)
+                    s = static_cast<float> (pluginWidth()) / editor_->width();
+#endif
+                hostGui_->request_resize (host_, static_cast<std::uint32_t> (std::lround (w * s)),
+                                          static_cast<std::uint32_t> (std::lround (h * s)));
+            };
+
             app_->addChild (*editor_);
-            setPluginDimensions (kDesignW, kDesignH);
+            setPluginDimensions (kDefaultW, kDefaultH);
             layoutEditorToWindow();
             app_->setMinimumDimensions (static_cast<float> (kMinW), static_cast<float> (kMinH));
             app_->setFixedAspectRatio (true); // captures the current 1069:747 ratio
@@ -212,8 +233,8 @@ namespace
                                               static_cast<std::uint32_t> (pluginHeight()));
             };
 
-            curW_ = kDesignW;
-            curH_ = kDesignH;
+            curW_ = kDefaultW;
+            curH_ = kDefaultH;
 
             // The analyser is now live: let the core publish display spectra + run
             // display-time smoothing again (both skipped while no editor is attached
@@ -439,8 +460,8 @@ namespace
 
         std::unique_ptr<visage::ApplicationWindow> app_;
         std::unique_ptr<rs_ui::RsEditor>           editor_;
-        std::uint32_t curW_ = static_cast<std::uint32_t> (kDesignW);
-        std::uint32_t curH_ = static_cast<std::uint32_t> (kDesignH);
+        std::uint32_t curW_ = static_cast<std::uint32_t> (kDefaultW);
+        std::uint32_t curH_ = static_cast<std::uint32_t> (kDefaultH);
     };
 } // namespace
 

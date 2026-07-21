@@ -123,6 +123,19 @@ namespace rs_ui
         nodePanel_->setVisible (false);
         addChild (nodePanel_.get());
 
+        // --- resize grip (bottom-right; hidden when no shell relay is set) ---
+        grip_ = std::make_unique<RsResizeGrip>();
+        grip_->setLineColour (base.palette.textDim);
+        grip_->setCursorStyle (visage::MouseCursor::MultiDirectionalResize);
+        grip_->onDragResize = [this] (float w, float h)
+        {
+            if (! onResizeRequest) return;
+            snapWindowSize (w, h);
+            onResizeRequest (w, h);
+        };
+        grip_->setVisible (false); // resized() shows it once a relay is wired
+        addChild (grip_.get());
+
         // --- shared overlays (on top) ----------------------------------------
         dropdown_ = std::make_unique<fuv::Dropdown> (base);
         dropdown_->setVisible (false);
@@ -417,9 +430,15 @@ namespace rs_ui
         layoutFooterKnobs (cols);
         layoutFooterSettings (fx, fy, fw, fh, cols.modeLeft);
 
-        // node panel (reposition if visible) + dropdown overlay
+        // node panel (reposition if visible) + resize grip + dropdown overlay
         if (nodePanel_ && nodePanel_->isVisible())
             selectNode (curve_->selectedNode());
+        if (grip_)
+        {
+            const float gs = (float) S (18);
+            grip_->setBounds (w - gs, h - gs, gs, gs);
+            grip_->setVisible (onResizeRequest != nullptr);
+        }
         if (dropdown_) dropdown_->setBounds (0.0f, 0.0f, w, h);
     }
 
@@ -537,22 +556,26 @@ namespace rs_ui
 
     void RsEditor::drawBrand (visage::Canvas& canvas)
     {
+        // Everything scales by k(): brandRect_ is S()-scaled in the layout, so a
+        // fixed badge/font would overflow it and clip the wordmark's tail whenever
+        // the window is below the 1069x747 design size (the Cubase-on-a-laptop
+        // report — the host opens the window smaller than the design default).
         const Rect& r = brandRect_;
-        const float sq = 30.0f;
+        const float sq = 30.0f * k();
         const float lx = r.x, ly = r.y + (r.h - sq) * 0.5f;
         canvas.setColor (visage::Color (rsTheme_.rs.glowPink));
-        canvas.roundedRectangleShadow (lx, ly + 4.0f, sq, sq, rsTheme_.rs.radiusBadge, 9.0f);
+        canvas.roundedRectangleShadow (lx, ly + 4.0f * k(), sq, sq, rsTheme_.rs.radiusBadge, 9.0f);
         canvas.setColor (visage::Brush::vertical (visage::Color (rsTheme_.rs.orange), visage::Color (rsTheme_.rs.pink)));
         canvas.roundedRectangle (lx, ly, sq, sq, rsTheme_.rs.radiusBadge);
 
-        const float tx = r.x + sq + 12.0f, tw = r.w - sq - 12.0f;
+        const float tx = r.x + sq + 12.0f * k(), tw = r.w - sq - 12.0f * k();
         // Two-colour wordmark without measuring: draw the whole "Resonance
         // TatSuppressor" in the text colour, then overdraw the "Resonance" prefix in
         // accent at the same origin so its glyphs align exactly.
         canvas.setColor (visage::Color (rsTheme_.base.palette.text));
-        canvas.text ("Resonance TatSuppressor", boldFont (19.0f), visage::Font::kLeft, tx, r.y, tw, r.h);
+        canvas.text ("Resonance TatSuppressor", boldFont (19.0f * k()), visage::Font::kLeft, tx, r.y, tw, r.h);
         canvas.setColor (visage::Color (rsTheme_.base.palette.accent));
-        canvas.text ("Resonance", boldFont (19.0f), visage::Font::kLeft, tx, r.y, tw, r.h);
+        canvas.text ("Resonance", boldFont (19.0f * k()), visage::Font::kLeft, tx, r.y, tw, r.h);
     }
 
     void RsEditor::drawHeaderChrome (visage::Canvas& canvas)
@@ -670,5 +693,53 @@ namespace rs_ui
         const int pi = store_.indexOf (key);
         if (visage::Frame* fr = widgetForParam (pi)) return rectOf (fr);
         return false;
+    }
+
+    // ---- window resizing (grip + snap) --------------------------------------
+
+    void RsEditor::snapWindowSize (float& w, float& h)
+    {
+        // Height-driven aspect snap + limit clamp — the same maths as the CLAP
+        // shell's adjustSize, so a grip drag and a host-edge drag land on
+        // identical sizes.
+        float sh = h < kMinH ? kMinH : (h > kMaxH ? kMaxH : h);
+        float sw = sh * kDesignW / kDesignH;
+        if (sw < kMinW) { sw = kMinW; sh = sw * kDesignH / kDesignW; }
+        if (sw > kMaxW) { sw = kMaxW; sh = sw * kDesignH / kDesignW; }
+        w = std::round (sw);
+        h = std::round (sh);
+    }
+
+    void RsResizeGrip::draw (visage::Canvas& canvas)
+    {
+        // Three diagonal hairlines in the corner (the JUCE corner-resizer glyph).
+        canvas.setColor (visage::Color (lineColour_));
+        const float w = width(), h = height();
+        for (int i = 1; i <= 3; ++i)
+        {
+            const float o = (float) i * w * 0.25f;
+            canvas.segment (w - o, h - 2.0f, w - 2.0f, h - o, 1.5f, true);
+        }
+    }
+
+    void RsResizeGrip::mouseDown (const visage::MouseEvent& e)
+    {
+        downPos_ = e.windowPosition();
+        if (visage::Frame* p = parent())
+        {
+            startW_ = p->width();
+            startH_ = p->height();
+        }
+    }
+
+    void RsResizeGrip::mouseDrag (const visage::MouseEvent& e)
+    {
+        if (! onDragResize || startW_ <= 0.0f) return;
+        const visage::Point p = e.windowPosition();
+        const float dw = p.x - downPos_.x, dh = p.y - downPos_.y;
+        // Corner drag: let whichever axis pulls larger drive the (height-led)
+        // aspect snap, so dragging mostly-right still grows the window.
+        const float hFromW = (startW_ + dw) * RsEditor::kDesignH / RsEditor::kDesignW;
+        onDragResize (startW_ + dw, std::max (startH_ + dh, hFromW));
     }
 }
