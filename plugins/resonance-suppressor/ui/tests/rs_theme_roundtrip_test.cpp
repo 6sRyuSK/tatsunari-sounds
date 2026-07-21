@@ -10,10 +10,13 @@
 // asserts both, and that the OLD demo-look keys (dashed profile / from-top curtain)
 // are gone.
 //
-//   c++ -std=c++17 -I ../.. -I ../../../../ui/visage/include \
+//   c++ -std=c++17 -I .. -I ../../../../ui/visage/include \
 //       -I ../../../../params/include -I ../../../../core/include \
 //       rs_theme_roundtrip_test.cpp ../../../../ui/visage/src/Theme.cpp -o t \
 //   && ./t ../theme-rs.json
+//
+// Also registered with CTest (resonance_suppressor_theme_roundtrip) from the
+// plugin CMakeLists, so `ctest` runs it on every RS-inclusive native configure.
 //
 #include "RsTheme.h"
 
