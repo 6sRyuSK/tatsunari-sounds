@@ -15,7 +15,7 @@ UI は JUCE 非依存の Visage 製です。
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
 | Dynamic Tatsunari EQ | EQ | 1.2.0 | VST3, AU | FabFilter Pro-Q 4 |
-| Resonance TatSuppressor | EQ | 3.0.1 | VST3, AU | oeksound soothe2 |
+| Resonance TatSuppressor | EQ | 3.0.2 | VST3, AU | oeksound soothe2 |
 
 
 ### In progress (9)
