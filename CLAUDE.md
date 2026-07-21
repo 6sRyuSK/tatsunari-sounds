@@ -29,15 +29,19 @@ sources (or re-read workflow files / ui headers) to copy patterns:
 - `add-param` — end-to-end wiring for a new parameter on an existing plugin.
 - `add-preset` — end-to-end wiring for factory presets on an existing plugin.
 - `write-dsp-test` — test structure, `DspInvariants.h` API, oracle rules.
-- `factory-ui` — the design-system API and editor conventions.
+- `factory-ui` — the design-system API and editor conventions (JUCE editors).
+- `visage-ui` — the Visage layer: `factory_ui_visage` (`ui/visage/`), the RS
+  editor conventions, theme JSON, the visage core API, and the `tools/ui-dev`
+  loop.
 - `core-primitives` — catalog of `core/` primitives to compose from.
 - `release` — versioning + release/installer pipeline mechanics.
 - `pluginval-debug` — diagnosing CI pluginval failures.
 - `installer-dev` — the Go TUI installer module.
 
-No skill covers the Visage/CLAP layers yet: for `ui/visage/`, `shell/`, and
-`tools/ui-dev/` read that layer's own headers / `tools/ui-dev/README.md`, plus
-`docs/migration/s1-wasm-loop.md` / `s2-clap-first.md` (SDK pins and gotchas).
+No skill covers the CLAP shell layer yet: for `shell/` read that layer's own
+headers plus `docs/migration/s2-clap-first.md` (SDK pins and gotchas);
+`docs/migration/s1-wasm-loop.md` keeps the WASM-loop pins the `visage-ui`
+skill builds on.
 
 ## Repository layout
 - `core/include/factory_core/` — shared, spec'd DSP primitives, **header-only**,
