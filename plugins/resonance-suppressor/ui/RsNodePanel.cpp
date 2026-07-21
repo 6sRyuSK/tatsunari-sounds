@@ -132,45 +132,23 @@ namespace rs_ui
 
     void RsNodePanel::computeLayout()
     {
-        const float w = width(), h = height();
-        closeBtn_ = { w - 28.0f, 8.0f, 18.0f, 18.0f };
-
-        // inner reduced(14,12)
-        float rx = 14.0f, ry = 12.0f, rw = w - 28.0f, rh = h - 24.0f;
-
-        // right knob column
-        const float knobW = 52.0f, kgap = 10.0f;
-        const float knobsW = isCut_ ? knobW : knobW * 3 + kgap * 2;
-        float knobsX = rx + rw - knobsW;
-        rw -= (knobsW + 16.0f);
-        const float knobsY = ry + 18.0f, knobsH = rh - 18.0f;
-        freqK_.area = { knobsX, knobsY, knobW, knobsH };
+        // The arithmetic lives in the pure computeRsNodePanelLayout (headless-
+        // tested); this member just copies the results into the frame's rects.
+        const RsNodePanelLayout L = computeRsNodePanelLayout (width(), height(), isCut_, choiceCount_);
+        auto rect = [] (const RsNodePanelLayout::R& r) { return Rect { r.x, r.y, r.w, r.h }; };
+        closeBtn_    = rect (L.closeBtn);
+        dotRect_     = rect (L.dot);
+        nameRect_    = rect (L.name);
+        onBadge_     = rect (L.onBadge);
+        listenBadge_ = rect (L.listenBadge);
+        captionRect_ = rect (L.caption);
+        for (int i = 0; i < choiceCount_; ++i)
+            choiceBtns_[(std::size_t) i] = rect (L.choice[i]);
+        freqK_.area = rect (L.freqArea);
         if (! isCut_)
         {
-            sensK_.area  = { knobsX + knobW + kgap, knobsY, knobW, knobsH };
-            widthK_.area = { knobsX + 2.0f * (knobW + kgap), knobsY, knobW, knobsH };
-        }
-
-        // header row (26)
-        float hx = rx, hy = ry;
-        dotRect_ = { hx, hy + (26.0f - 14.0f) * 0.5f, 14.0f, 14.0f };
-        hx += 18.0f + 4.0f;
-        nameRect_ = { hx, hy, 76.0f, 26.0f };
-        hx += 76.0f + 8.0f;
-        onBadge_ = { hx, hy + 2.0f, 40.0f, 22.0f };
-        hx += 40.0f + 6.0f;
-        const float listenW = std::min (90.0f, rx + rw - hx);
-        listenBadge_ = { hx, hy + 2.0f, std::max (40.0f, listenW), 22.0f };
-
-        // caption + choice row (at ry + 26 + 18)
-        float cy = ry + 26.0f + 18.0f;
-        captionRect_ = { rx, cy, (isCut_ ? 52.0f : 38.0f), 30.0f };
-        float bx = rx + captionRect_.w + 8.0f;
-        const float bw = isCut_ ? 40.0f : 32.0f, bgap = 4.0f, bh = 27.0f;
-        for (int i = 0; i < choiceCount_; ++i)
-        {
-            choiceBtns_[(std::size_t) i] = { bx, cy + (30.0f - bh) * 0.5f, bw, bh };
-            bx += bw + bgap;
+            sensK_.area  = rect (L.sensArea);
+            widthK_.area = rect (L.widthArea);
         }
     }
 
@@ -222,9 +200,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const MiniDial d = miniKnobDial (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const MiniDial d = miniKnobDial (*k);
         const visage::Point tip = fuv::knobNeedleTip (d.cx, d.cy, d.len, d.toAng);
         const visage::Point o = positionInWindow();
         cx = o.x + d.cx; cy = o.y + d.cy;
@@ -234,9 +212,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const MiniDial d = miniKnobDial (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const MiniDial d = miniKnobDial (*k);
         const visage::Point o = positionInWindow();
         cx = o.x + d.cx; cy = o.y + d.cy; arcR = d.arcR;
         return true;
@@ -391,9 +369,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniValueRectInWindow (int which, float& x, float& y, float& w, float& h) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const Rect r = miniValueRect (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const Rect r = miniValueRect (*k);
         const visage::Point o = positionInWindow();
         x = o.x + r.x; y = o.y + r.y; w = r.w; h = r.h;
         return true;
@@ -468,7 +446,7 @@ namespace rs_ui
             }
 
         // mini-knobs
-        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        const std::array<MiniKnob*, 3> ks = minis();
         for (int i = 0; i < 3; ++i)
             if (ks[i]->visible && ks[i]->area.contains (pos))
             {
@@ -502,8 +480,7 @@ namespace rs_ui
     void RsNodePanel::mouseDrag (const visage::MouseEvent& e)
     {
         if (dragKnob_ < 0) return;
-        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        MiniKnob& k = *ks[dragKnob_];
+        MiniKnob& k = *minis()[(std::size_t) dragKnob_];
         const float fine = e.isShiftDown() ? 0.25f : 1.0f;
         const float dy = dragLast_.y - e.position.y; // up = increase
         const float dx = e.position.x - dragLast_.x;
@@ -516,8 +493,7 @@ namespace rs_ui
     {
         if (dragKnob_ >= 0)
         {
-            MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-            model_.store().endGesture (ks[dragKnob_]->paramIndex);
+            model_.store().endGesture (minis()[(std::size_t) dragKnob_]->paramIndex);
             dragKnob_ = -1;
             if (onGestureEnd) onGestureEnd();
         }
