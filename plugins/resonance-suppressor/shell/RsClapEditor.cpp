@@ -162,7 +162,7 @@ namespace
             editor_ = std::make_unique<rs_ui::RsEditor> (theme_, store_, feed_, presets_, ab_);
 
             app_->addChild (*editor_);
-            app_->setNativeWindowDimensions (kDesignW, kDesignH);
+            setPluginDimensions (kDesignW, kDesignH);
             layoutEditor (kDesignW, kDesignH);
             app_->setMinimumDimensions (static_cast<float> (kMinW), static_cast<float> (kMinH));
             app_->setFixedAspectRatio (true); // captures the current 1069:747 ratio
@@ -179,8 +179,8 @@ namespace
                 if (hostGui_ == nullptr && host_ != nullptr)
                     hostGui_ = static_cast<const clap_host_gui_t*> (host_->get_extension (host_, CLAP_EXT_GUI));
                 if (hostGui_ != nullptr && hostGui_->request_resize != nullptr)
-                    hostGui_->request_resize (host_, static_cast<std::uint32_t> (app_->nativeWidth()),
-                                              static_cast<std::uint32_t> (app_->nativeHeight()));
+                    hostGui_->request_resize (host_, static_cast<std::uint32_t> (pluginWidth()),
+                                              static_cast<std::uint32_t> (pluginHeight()));
             };
 
             curW_ = kDesignW;
@@ -214,6 +214,15 @@ namespace
         bool getSize (std::uint32_t* width, std::uint32_t* height) noexcept override
         {
             if (width == nullptr || height == nullptr) return false;
+            // Prefer the live window size (it moves under a contents-driven resize,
+            // e.g. a DPI change, without passing through setSize); the cache covers
+            // the created-but-not-yet-shown window.
+            if (app_ != nullptr && pluginWidth() > 0 && pluginHeight() > 0)
+            {
+                *width  = static_cast<std::uint32_t> (pluginWidth());
+                *height = static_cast<std::uint32_t> (pluginHeight());
+                return true;
+            }
             *width  = curW_;
             *height = curH_;
             return true;
@@ -250,7 +259,7 @@ namespace
         bool setSize (std::uint32_t width, std::uint32_t height) noexcept override
         {
             if (! app_) return false;
-            app_->setNativeWindowDimensions (static_cast<int> (width), static_cast<int> (height));
+            setPluginDimensions (static_cast<int> (width), static_cast<int> (height));
             layoutEditor (static_cast<int> (width), static_cast<int> (height));
             curW_ = width;
             curH_ = height;
@@ -291,6 +300,42 @@ namespace
         static double clampd (double v, double lo, double hi) noexcept
         {
             return v < lo ? lo : (v > hi ? hi : v);
+        }
+
+        // CLAP/VST3 GUI sizes are LOGICAL points on macOS but PHYSICAL pixels on
+        // Windows/X11, so the visage window must be sized/read through the matching
+        // API per platform (upstream ClapPlugin example's #if __APPLE__ split).
+        // Using the native calls on a Retina mac halves the window relative to the
+        // editor layout — only the top-left quarter of the UI shows (the Cubase 15
+        // on macOS bug).
+        void setPluginDimensions (int width, int height)
+        {
+            if (! app_) return;
+#if __APPLE__
+            app_->setWindowDimensions (width, height);
+#else
+            app_->setNativeWindowDimensions (width, height);
+#endif
+        }
+
+        int pluginWidth() const
+        {
+            if (! app_) return 0;
+#if __APPLE__
+            return static_cast<int> (app_->width());
+#else
+            return app_->nativeWidth();
+#endif
+        }
+
+        int pluginHeight() const
+        {
+            if (! app_) return 0;
+#if __APPLE__
+            return static_cast<int> (app_->height());
+#else
+            return app_->nativeHeight();
+#endif
         }
 
         void layoutEditor (int w, int h)
