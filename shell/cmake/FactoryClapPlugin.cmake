@@ -139,6 +139,10 @@ function(factory_clap_plugin slug)
     AUV2_MANUFACTURER_NAME "Tatsunari Sounds"
     AUV2_MANUFACTURER_CODE Ttsn
     AUV2_SUBTYPE_CODE      ${FCP_AUV2_SUBTYPE_CODE}
+    # clap-wrapper defaults INSTRUMENT_TYPE to "aumu" (Music Device) when omitted,
+    # which makes Logic file the plugin under Instruments (and fail to open it as
+    # one). Every factory plugin is an audio effect, so pin aufx explicitly.
+    AUV2_INSTRUMENT_TYPE   aufx
 
     ASSET_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${slug}_assets
   )
