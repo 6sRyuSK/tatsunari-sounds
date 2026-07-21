@@ -99,6 +99,9 @@ namespace rs_ui
         // --- layers ------------------------------------------------------------
         void computeLayout();
         void snapshotFeed();
+        // dB at frequency `f` from a per-bin snapshot array, linearly interpolated
+        // between bins (the single bin-lookup used by every column resample).
+        float binDbAtFreq (const std::vector<float>& bins, float f) const;
         // Resample a per-bin dB array onto `cols` evenly-spaced plot columns
         // (screen-y out), for the downsampled-primitive spectra (A3).
         void sampleSpectrumColumns (const std::vector<float>& bins, int cols, std::vector<float>& out) const;
@@ -151,6 +154,10 @@ namespace rs_ui
         // Which Pre/Post/Both segment (0=Pre,1=Post,2=Both) a frame-local point is
         // over, or -1 if outside the mode chip. True per-segment hit-testing (fix 8).
         int  modeSegAt (visage::Point pos) const;
+        // Mode-chip segment geometry — the ONE source drawHeaderControls and
+        // modeSegAt share (3 equal segments inside a 3px chip inset).
+        float modeSegWidth() const;
+        float modeSegLeft (int i) const;
 
         // frozen snapshot of the feed (held image)
         std::vector<float> snapPre_, snapPost_, snapRed_;
