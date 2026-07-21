@@ -132,9 +132,7 @@ namespace factory_ui_visage
         // — otherwise every press resets instead of dragging.
         if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, store_.desc (index_).defaultValue);
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, store_.desc (index_).defaultValue);
             dragging_ = false;
             redraw();
             return;

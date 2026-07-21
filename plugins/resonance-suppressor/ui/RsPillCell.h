@@ -80,9 +80,7 @@ namespace rs_ui
         void mouseDown (const visage::MouseEvent&) override
         {
             const bool on = store_.value (index_) > 0.5f;
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, on ? 0.0f : 1.0f);
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, on ? 0.0f : 1.0f);
             redraw();
         }
 

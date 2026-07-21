@@ -141,9 +141,7 @@ namespace factory_ui_visage
         if (e.isAltDown() || e.repeatClickCount() >= 2)
         {
             const factory_params::ParamDesc& desc = store_.desc (index_);
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, desc.defaultValue);
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, desc.defaultValue);
             dragging_ = false;
             redraw();
             return;

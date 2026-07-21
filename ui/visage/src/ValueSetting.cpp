@@ -64,9 +64,7 @@ namespace factory_ui_visage
         requestDropdown (std::move (items), currentIndex(), this,
                          [this] (int chosen)
                          {
-                             store_.beginGesture (index_);
-                             store_.setFromUi (index_, static_cast<float> (chosen));
-                             store_.endGesture (index_);
+                             store_.setFromUiGestured (index_, static_cast<float> (chosen));
                              redraw();
                          });
     }

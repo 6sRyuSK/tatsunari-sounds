@@ -39,9 +39,7 @@ namespace factory_ui_visage
 
     void PillToggle::mouseDown (const visage::MouseEvent&)
     {
-        store_.beginGesture (index_);
-        store_.setFromUi (index_, isOn() ? 0.0f : 1.0f);
-        store_.endGesture (index_);
+        store_.setFromUiGestured (index_, isOn() ? 0.0f : 1.0f);
         redraw();
     }
 }

@@ -790,10 +790,7 @@ namespace rs_ui
     }
     void RsSuppressionCurveView::setParamGestured (int paramIndex, float value)
     {
-        if (paramIndex < 0) return;
-        model_.store().beginGesture (paramIndex);
-        model_.store().setFromUi (paramIndex, value);
-        model_.store().endGesture (paramIndex);
+        if (paramIndex >= 0) model_.store().setFromUiGestured (paramIndex, value);
     }
 
     // Which Pre/Post/Both segment a frame-local point is over (-1 if outside). The

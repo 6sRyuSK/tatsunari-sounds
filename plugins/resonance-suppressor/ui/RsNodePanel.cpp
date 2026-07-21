@@ -452,9 +452,7 @@ namespace rs_ui
         const bool ok = isFreq ? parseFreqEntry (text, desc.minValue, desc.maxValue, real)
                                : factory_params::tryParseValue (desc, text, real);
         if (! ok) return;
-        model_.store().beginGesture (paramIndex);
-        model_.store().setFromUi (paramIndex, real); // snapToLegalValue clamps + snaps
-        model_.store().endGesture (paramIndex);
+        model_.store().setFromUiGestured (paramIndex, real); // snapToLegalValue clamps + snaps
         if (onNodeEdited) onNodeEdited (nodeId_);
         if (onGestureEnd) onGestureEnd();
         redraw();
@@ -469,9 +467,7 @@ namespace rs_ui
         if (onBadge_.contains (pos))
         {
             const bool turningOff = model_.nodeOn (nodeId_);
-            model_.store().beginGesture (model_.idxOn (nodeId_));
-            model_.store().setFromUi (model_.idxOn (nodeId_), turningOff ? 0.0f : 1.0f);
-            model_.store().endGesture (model_.idxOn (nodeId_));
+            model_.store().setFromUiGestured (model_.idxOn (nodeId_), turningOff ? 0.0f : 1.0f);
             if (turningOff && feed_.getListenNode() == nodeId_) { feed_.setListenNode (-1); refreshListen(); }
             if (onNodeEdited) onNodeEdited (nodeId_);
             if (onGestureEnd) onGestureEnd();
@@ -489,9 +485,7 @@ namespace rs_ui
             if (choiceBtns_[(std::size_t) i].contains (pos))
             {
                 const int idx = isCut_ ? model_.idxSlope (nodeId_) : model_.idxType (nodeId_);
-                model_.store().beginGesture (idx);
-                model_.store().setFromUi (idx, (float) i);
-                model_.store().endGesture (idx);
+                model_.store().setFromUiGestured (idx, (float) i);
                 if (onNodeEdited) onNodeEdited (nodeId_);
                 if (onGestureEnd) onGestureEnd();
                 redraw();
@@ -516,9 +510,7 @@ namespace rs_ui
                 if (e.isAltDown() || e.repeatClickCount() >= 2)
                 {
                     const float def = model_.store().desc (ks[i]->paramIndex).defaultValue;
-                    model_.store().beginGesture (ks[i]->paramIndex);
-                    model_.store().setFromUi (ks[i]->paramIndex, def);
-                    model_.store().endGesture (ks[i]->paramIndex);
+                    model_.store().setFromUiGestured (ks[i]->paramIndex, def);
                     if (onNodeEdited) onNodeEdited (nodeId_);
                     if (onGestureEnd) onGestureEnd();
                     redraw();
