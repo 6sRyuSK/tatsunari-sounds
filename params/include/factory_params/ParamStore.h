@@ -113,6 +113,16 @@ namespace factory_params
             pushHostWrite ({ idx, 0.0f, HostWrite::Kind::GestureEnd });
         }
 
+        // One-shot UI edit (click / reset / text-entry commit — anything that is not
+        // a held drag): begin / set / end as a single call. Enqueues exactly the same
+        // three HostWrite events, in the same order, as the manual triple.
+        void setFromUiGestured (int idx, float real) noexcept
+        {
+            beginGesture (idx);
+            setFromUi (idx, real);
+            endGesture (idx);
+        }
+
         // Monotonic count of gesture-ends, as a NON-CONSUMING observer signal
         // (distinct from the single-consumer host-write queue). A gesture-end also
         // enqueues a HostWrite the host driver drains (for CLAP output events), so
