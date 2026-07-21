@@ -128,11 +128,17 @@ jobs:
           echo "plugins=$scope" >> "$GITHUB_OUTPUT"
           if [ -n "$scope" ]; then echo "Building subset: $scope"; else echo "Building all plugins"; fi
 
+      # The OBJCXX launcher matters on macOS: the root CMakeLists enables the
+      # OBJCXX language (3.0.0 cutover), so JUCE's .mm module unities compile
+      # under OBJCXX rules — without this launcher they bypass ccache entirely
+      # (~200 heavy TUs recompiled every run, Build 2min -> 20min). Inert on
+      # Windows, where OBJCXX is never enabled.
       - name: Configure
         run: >
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER_LAUNCHER=${{ matrix.ccache }}
           -DCMAKE_CXX_COMPILER_LAUNCHER=${{ matrix.ccache }}
+          -DCMAKE_OBJCXX_COMPILER_LAUNCHER=${{ matrix.ccache }}
           -DFACTORY_PLUGINS="${{ steps.select.outputs.plugins }}"
 
       # Ninja self-limits to the core count, so peak memory stays in check.
