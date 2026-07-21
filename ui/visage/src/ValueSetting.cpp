@@ -1,4 +1,5 @@
 #include "factory_ui_visage/ValueSetting.h"
+#include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Fonts.h"
 
 #include <algorithm>
@@ -27,10 +28,8 @@ namespace factory_ui_visage
         const float h = height();
 
         // White card + hairline.
-        canvas.setColor (visage::Color (p.panel));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, m.cornerRadius);
-        canvas.setColor (visage::Color (p.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, m.cornerRadius, 1.0f);
+        paintCardShell (canvas, 0.0f, 0.0f, w, h, m.cornerRadius,
+                        visage::Color (p.panel), visage::Color (p.track));
 
         // Icon (left), caption (left of the value), value (right, accent).
         const float pad = m.paddingX;
@@ -64,9 +63,7 @@ namespace factory_ui_visage
         requestDropdown (std::move (items), currentIndex(), this,
                          [this] (int chosen)
                          {
-                             store_.beginGesture (index_);
-                             store_.setFromUi (index_, static_cast<float> (chosen));
-                             store_.endGesture (index_);
+                             store_.setFromUiGestured (index_, static_cast<float> (chosen));
                              redraw();
                          });
     }

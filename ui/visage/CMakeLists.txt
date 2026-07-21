@@ -130,4 +130,15 @@ if(NOT EMSCRIPTEN)
     add_test(NAME factory_ui_visage_spectrum_${_fs}
              COMMAND factory_ui_visage_spectrum_test ${_fs})
   endforeach()
+
+  # ValueText (the visage-free half of the direct value-entry flow) is headers
+  # only — compiling it here with a plain host compiler also proves it stays
+  # visage-free and JUCE-free. Rate-independent, one case.
+  add_executable(factory_ui_visage_value_text_test tests/value_text_test.cpp)
+  target_include_directories(factory_ui_visage_value_text_test PRIVATE
+    include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  )
+  target_compile_features(factory_ui_visage_value_text_test PRIVATE cxx_std_17)
+  add_test(NAME factory_ui_visage_value_text COMMAND factory_ui_visage_value_text_test)
 endif()

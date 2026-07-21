@@ -1,5 +1,7 @@
 #include "RsNodePanel.h"
+#include "RsFreqEntry.h" // parseFreqEntry (Hz/kHz) — shared with rs_ui_pure_test
 
+#include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Knob.h" // shared knobAngleForNorm / knobNeedleTip (A2)
 #include "factory_ui_visage/ValueEntry.h" // stripLeadingNumber + ValueEntryRequest
@@ -20,32 +22,7 @@ namespace rs_ui
 
     namespace
     {
-        // Parse a FREQ text entry to raw Hz, mirroring the shipped JUCE NodePanel
-        // freq valueFromTextFunction: the display is Hz/kHz, so a trailing k/kHz
-        // (case/space tolerant) means kHz, and a bare number below the parameter
-        // minimum whose *1000 lands in range is treated as kHz ("2.6" against a
-        // "2.6kHz" display). Returns false (REVERT) when there is no leading number
-        // after trimming + stripping the k/kHz suffix ("abc", "", "kHz") — the round
-        // #4 follow-up (invalid reverts, not clamp-to-min). setFromUi clamps a valid
-        // result to the range.
-        bool parseFreqEntry (const std::string& text, double lo, double hi, float& out)
-        {
-            std::string t = text;
-            auto isSpace = [] (char c) { return std::isspace ((unsigned char) c) != 0; };
-            while (! t.empty() && isSpace (t.front())) t.erase (t.begin());
-            while (! t.empty() && isSpace (t.back()))  t.pop_back();
-            std::string low = t;
-            for (char& c : low) c = (char) std::tolower ((unsigned char) c);
-            bool asK = false;
-            if (low.size() >= 3 && low.compare (low.size() - 3, 3, "khz") == 0) { t.resize (t.size() - 3); asK = true; }
-            else if (! low.empty() && low.back() == 'k')                        { t.resize (t.size() - 1); asK = true; }
-            double v = 0.0;
-            if (! factory_params::tryParseNumber (t, v)) return false; // no leading number -> revert
-            if (asK) { out = (float) (v * 1000.0); return true; }
-            if (v < lo && v * 1000.0 >= lo && v * 1000.0 <= hi) { out = (float) (v * 1000.0); return true; }
-            out = (float) v;
-            return true;
-        }
+        // (parseFreqEntry moved to RsFreqEntry.h so the headless test can share it.)
 
         // (The mini-knob sweep endpoints now come from the shared KnobMetrics —
         // theme_.base.knob.arcStart/arcEnd — via fuv::knobAngleForNorm, and the value
@@ -155,45 +132,23 @@ namespace rs_ui
 
     void RsNodePanel::computeLayout()
     {
-        const float w = width(), h = height();
-        closeBtn_ = { w - 28.0f, 8.0f, 18.0f, 18.0f };
-
-        // inner reduced(14,12)
-        float rx = 14.0f, ry = 12.0f, rw = w - 28.0f, rh = h - 24.0f;
-
-        // right knob column
-        const float knobW = 52.0f, kgap = 10.0f;
-        const float knobsW = isCut_ ? knobW : knobW * 3 + kgap * 2;
-        float knobsX = rx + rw - knobsW;
-        rw -= (knobsW + 16.0f);
-        const float knobsY = ry + 18.0f, knobsH = rh - 18.0f;
-        freqK_.area = { knobsX, knobsY, knobW, knobsH };
+        // The arithmetic lives in the pure computeRsNodePanelLayout (headless-
+        // tested); this member just copies the results into the frame's rects.
+        const RsNodePanelLayout L = computeRsNodePanelLayout (width(), height(), isCut_, choiceCount_);
+        auto rect = [] (const RsNodePanelLayout::R& r) { return Rect { r.x, r.y, r.w, r.h }; };
+        closeBtn_    = rect (L.closeBtn);
+        dotRect_     = rect (L.dot);
+        nameRect_    = rect (L.name);
+        onBadge_     = rect (L.onBadge);
+        listenBadge_ = rect (L.listenBadge);
+        captionRect_ = rect (L.caption);
+        for (int i = 0; i < choiceCount_; ++i)
+            choiceBtns_[(std::size_t) i] = rect (L.choice[i]);
+        freqK_.area = rect (L.freqArea);
         if (! isCut_)
         {
-            sensK_.area  = { knobsX + knobW + kgap, knobsY, knobW, knobsH };
-            widthK_.area = { knobsX + 2.0f * (knobW + kgap), knobsY, knobW, knobsH };
-        }
-
-        // header row (26)
-        float hx = rx, hy = ry;
-        dotRect_ = { hx, hy + (26.0f - 14.0f) * 0.5f, 14.0f, 14.0f };
-        hx += 18.0f + 4.0f;
-        nameRect_ = { hx, hy, 76.0f, 26.0f };
-        hx += 76.0f + 8.0f;
-        onBadge_ = { hx, hy + 2.0f, 40.0f, 22.0f };
-        hx += 40.0f + 6.0f;
-        const float listenW = std::min (90.0f, rx + rw - hx);
-        listenBadge_ = { hx, hy + 2.0f, std::max (40.0f, listenW), 22.0f };
-
-        // caption + choice row (at ry + 26 + 18)
-        float cy = ry + 26.0f + 18.0f;
-        captionRect_ = { rx, cy, (isCut_ ? 52.0f : 38.0f), 30.0f };
-        float bx = rx + captionRect_.w + 8.0f;
-        const float bw = isCut_ ? 40.0f : 32.0f, bgap = 4.0f, bh = 27.0f;
-        for (int i = 0; i < choiceCount_; ++i)
-        {
-            choiceBtns_[(std::size_t) i] = { bx, cy + (30.0f - bh) * 0.5f, bw, bh };
-            bx += bw + bgap;
+            sensK_.area  = rect (L.sensArea);
+            widthK_.area = rect (L.widthArea);
         }
     }
 
@@ -245,9 +200,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniKnobTipInWindow (int which, float& cx, float& cy, float& tx, float& ty) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const MiniDial d = miniKnobDial (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const MiniDial d = miniKnobDial (*k);
         const visage::Point tip = fuv::knobNeedleTip (d.cx, d.cy, d.len, d.toAng);
         const visage::Point o = positionInWindow();
         cx = o.x + d.cx; cy = o.y + d.cy;
@@ -257,9 +212,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniKnobDialInWindow (int which, float& cx, float& cy, float& arcR) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const MiniDial d = miniKnobDial (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const MiniDial d = miniKnobDial (*k);
         const visage::Point o = positionInWindow();
         cx = o.x + d.cx; cy = o.y + d.cy; arcR = d.arcR;
         return true;
@@ -311,10 +266,9 @@ namespace rs_ui
         const float w = width(), h = height();
 
         // card
-        canvas.setColor (visage::Color (0xffffffff).withAlpha (0.97f));
-        canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusPopover);
-        canvas.setColor (visage::Color (theme_.base.palette.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusPopover, 1.0f);
+        fuv::paintCardShell (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusPopover,
+                             visage::Color (0xffffffff).withAlpha (0.97f),
+                             visage::Color (theme_.base.palette.track));
 
         // header dot
         canvas.setColor (visage::Color (theme_.rs.dotRing));
@@ -331,20 +285,18 @@ namespace rs_ui
             canvas.setColor (visage::Color (on ? theme_.base.palette.positive : theme_.rs.footerBg));
             canvas.roundedRectangle (onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h, theme_.rs.radiusBadge);
             if (! on)
-            {
-                canvas.setColor (visage::Color (theme_.base.palette.track));
-                canvas.roundedRectangleBorder (onBadge_.x + 0.5f, onBadge_.y + 0.5f, onBadge_.w - 1.0f, onBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
-            }
+                fuv::paintHairline (canvas, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h,
+                                    theme_.rs.radiusBadge, visage::Color (theme_.base.palette.track));
             canvas.setColor (visage::Color (on ? 0xffffffff : theme_.base.palette.textSecondary));
             canvas.text (on ? "ON" : "OFF", boldFont (11.0f), visage::Font::kCenter, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h);
         }
 
         // Listen badge
         {
-            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg));
-            canvas.roundedRectangle (listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h, theme_.rs.radiusBadge);
-            canvas.setColor (visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
-            canvas.roundedRectangleBorder (listenBadge_.x + 0.5f, listenBadge_.y + 0.5f, listenBadge_.w - 1.0f, listenBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            fuv::paintCardShell (canvas, listenBadge_.x, listenBadge_.y, listenBadge_.w, listenBadge_.h,
+                                 theme_.rs.radiusBadge,
+                                 visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg),
+                                 visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
             const float dotD = 7.0f, dotX = listenBadge_.x + 8.0f, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
             canvas.setColor (visage::Color (listenOn_ ? 0xffffffff : theme_.base.palette.textSecondary));
             canvas.circle (dotX, dotY, dotD);
@@ -373,10 +325,8 @@ namespace rs_ui
             canvas.setColor (visage::Color (active ? theme_.base.palette.accent : theme_.rs.footerBg));
             canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f);
             if (! active)
-            {
-                canvas.setColor (visage::Color (theme_.base.palette.track));
-                canvas.roundedRectangleBorder (b.x + 0.5f, b.y + 0.5f, b.w - 1.0f, b.h - 1.0f, 8.0f, 1.0f);
-            }
+                fuv::paintHairline (canvas, b.x, b.y, b.w, b.h, 8.0f,
+                                    visage::Color (theme_.base.palette.track));
             const std::uint32_t fg = active ? 0xffffffff : theme_.rs.iconInactive;
             if (isCut_)
             {
@@ -419,9 +369,9 @@ namespace rs_ui
 
     bool RsNodePanel::miniValueRectInWindow (int which, float& x, float& y, float& w, float& h) const
     {
-        const MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        if (which < 0 || which > 2 || ! ks[which]->visible) return false;
-        const Rect r = miniValueRect (*ks[which]);
+        const MiniKnob* k = visibleMini (which);
+        if (k == nullptr) return false;
+        const Rect r = miniValueRect (*k);
         const visage::Point o = positionInWindow();
         x = o.x + r.x; y = o.y + r.y; w = r.w; h = r.h;
         return true;
@@ -444,17 +394,18 @@ namespace rs_ui
 
     void RsNodePanel::commitMiniEntry (int paramIndex, bool isFreq, const std::string& text)
     {
-        const factory_params::ParamDesc& desc = model_.store().desc (paramIndex);
-        float real = 0.0f;
-        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle — invalid /
-        // empty input REVERTS (no gesture, no write) rather than clamping to the
-        // minimum, including through the FREQ kHz parser ("abc" reverts). (User request.)
-        const bool ok = isFreq ? parseFreqEntry (text, desc.minValue, desc.maxValue, real)
-                               : factory_params::tryParseValue (desc, text, real);
-        if (! ok) return;
-        model_.store().beginGesture (paramIndex);
-        model_.store().setFromUi (paramIndex, real); // snapToLegalValue clamps + snaps
-        model_.store().endGesture (paramIndex);
+        auto& store = model_.store();
+        // FREQ routes through the Hz/kHz parser; both branches share the ValueText
+        // revert-on-invalid contract ("abc" reverts — no gesture, no write).
+        if (isFreq)
+        {
+            const factory_params::ParamDesc& desc = store.desc (paramIndex);
+            float real = 0.0f;
+            if (! parseFreqEntry (text, desc.minValue, desc.maxValue, real)) return;
+            store.setFromUiGestured (paramIndex, real); // snapToLegalValue clamps + snaps
+        }
+        else if (! fuv::commitEntryText (store, paramIndex, text))
+            return;
         if (onNodeEdited) onNodeEdited (nodeId_);
         if (onGestureEnd) onGestureEnd();
         redraw();
@@ -469,9 +420,7 @@ namespace rs_ui
         if (onBadge_.contains (pos))
         {
             const bool turningOff = model_.nodeOn (nodeId_);
-            model_.store().beginGesture (model_.idxOn (nodeId_));
-            model_.store().setFromUi (model_.idxOn (nodeId_), turningOff ? 0.0f : 1.0f);
-            model_.store().endGesture (model_.idxOn (nodeId_));
+            model_.store().setFromUiGestured (model_.idxOn (nodeId_), turningOff ? 0.0f : 1.0f);
             if (turningOff && feed_.getListenNode() == nodeId_) { feed_.setListenNode (-1); refreshListen(); }
             if (onNodeEdited) onNodeEdited (nodeId_);
             if (onGestureEnd) onGestureEnd();
@@ -489,9 +438,7 @@ namespace rs_ui
             if (choiceBtns_[(std::size_t) i].contains (pos))
             {
                 const int idx = isCut_ ? model_.idxSlope (nodeId_) : model_.idxType (nodeId_);
-                model_.store().beginGesture (idx);
-                model_.store().setFromUi (idx, (float) i);
-                model_.store().endGesture (idx);
+                model_.store().setFromUiGestured (idx, (float) i);
                 if (onNodeEdited) onNodeEdited (nodeId_);
                 if (onGestureEnd) onGestureEnd();
                 redraw();
@@ -499,7 +446,7 @@ namespace rs_ui
             }
 
         // mini-knobs
-        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
+        const std::array<MiniKnob*, 3> ks = minis();
         for (int i = 0; i < 3; ++i)
             if (ks[i]->visible && ks[i]->area.contains (pos))
             {
@@ -516,9 +463,7 @@ namespace rs_ui
                 if (e.isAltDown() || e.repeatClickCount() >= 2)
                 {
                     const float def = model_.store().desc (ks[i]->paramIndex).defaultValue;
-                    model_.store().beginGesture (ks[i]->paramIndex);
-                    model_.store().setFromUi (ks[i]->paramIndex, def);
-                    model_.store().endGesture (ks[i]->paramIndex);
+                    model_.store().setFromUiGestured (ks[i]->paramIndex, def);
                     if (onNodeEdited) onNodeEdited (nodeId_);
                     if (onGestureEnd) onGestureEnd();
                     redraw();
@@ -535,8 +480,7 @@ namespace rs_ui
     void RsNodePanel::mouseDrag (const visage::MouseEvent& e)
     {
         if (dragKnob_ < 0) return;
-        MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-        MiniKnob& k = *ks[dragKnob_];
+        MiniKnob& k = *minis()[(std::size_t) dragKnob_];
         const float fine = e.isShiftDown() ? 0.25f : 1.0f;
         const float dy = dragLast_.y - e.position.y; // up = increase
         const float dx = e.position.x - dragLast_.x;
@@ -549,8 +493,7 @@ namespace rs_ui
     {
         if (dragKnob_ >= 0)
         {
-            MiniKnob* ks[] = { &freqK_, &sensK_, &widthK_ };
-            model_.store().endGesture (ks[dragKnob_]->paramIndex);
+            model_.store().endGesture (minis()[(std::size_t) dragKnob_]->paramIndex);
             dragKnob_ = -1;
             if (onGestureEnd) onGestureEnd();
         }

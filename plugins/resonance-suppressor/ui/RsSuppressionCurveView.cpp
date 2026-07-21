@@ -1,5 +1,6 @@
 #include "RsSuppressionCurveView.h"
 
+#include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Fonts.h"
 
 #include <visage_graphics/canvas.h>
@@ -193,6 +194,20 @@ namespace rs_ui
             buildAreaToBaseline (area, x0, w, screenY, baselineY);
             if (area.numPoints() >= 2) canvas.fill (area);
         }
+
+        // Fill `out` with yAtX(x) at `cols` evenly-spaced plot columns spanning
+        // [plotX, plotX + plotW] — the ONE column loop every resample (spectra,
+        // reduction curtain, profile curves) runs through.
+        template <class YAtX>
+        void fillColumnsY (float plotX, float plotW, int cols, std::vector<float>& out, YAtX&& yAtX)
+        {
+            out.resize ((std::size_t) cols);
+            for (int i = 0; i < cols; ++i)
+            {
+                const float x = plotX + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plotW;
+                out[(std::size_t) i] = yAtX (x);
+            }
+        }
     } // namespace
 
     RsSuppressionCurveView::RsSuppressionCurveView (const RsTheme& theme, RsProfileModel& model, RsFeed& feed)
@@ -344,8 +359,8 @@ namespace rs_ui
         canvas.setColor (visage::Brush::vertical (visage::Color (theme_.rs.plotTop),
                                                   visage::Color (theme_.rs.plotBottom)));
         canvas.roundedRectangle (0.0f, 0.0f, w, h, theme_.rs.radiusCard);
-        canvas.setColor (visage::Color (theme_.base.palette.track));
-        canvas.roundedRectangleBorder (0.5f, 0.5f, w - 1.0f, h - 1.0f, theme_.rs.radiusCard, 1.0f);
+        fuv::paintHairline (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusCard,
+                            visage::Color (theme_.base.palette.track));
     }
 
     void RsSuppressionCurveView::drawGrid (visage::Canvas& canvas)
@@ -370,24 +385,25 @@ namespace rs_ui
         }
     }
 
-    // Resample a per-bin dB array onto `cols` evenly-spaced plot COLUMNS (the
-    // non-uniform log-frequency axis means bins aren't evenly spaced in x), with
-    // linear interpolation between bins, returning screen-y per column.
+    // dB at `f` from a per-bin snapshot, linearly interpolated between bins (bins
+    // aren't evenly spaced on the non-uniform log-frequency axis, so every column
+    // resample maps x -> freq -> fractional bin through this ONE lookup).
+    float RsSuppressionCurveView::binDbAtFreq (const std::vector<float>& bins, float f) const
+    {
+        const int   n  = 2 * (snapBins_ - 1);
+        const float kf = f * (float) n / (float) snapSr_;
+        const int   k0 = std::clamp ((int) std::floor (kf), 1, snapBins_ - 2);
+        const float t  = std::clamp (kf - (float) k0, 0.0f, 1.0f);
+        return bins[(std::size_t) k0] * (1.0f - t) + bins[(std::size_t) (k0 + 1)] * t;
+    }
+
+    // Resample a per-bin dB array onto `cols` evenly-spaced plot COLUMNS,
+    // returning screen-y per column.
     void RsSuppressionCurveView::sampleSpectrumColumns (const std::vector<float>& bins,
                                                         int cols, std::vector<float>& out) const
     {
-        const int n = 2 * (snapBins_ - 1);
-        out.resize ((std::size_t) cols);
-        for (int i = 0; i < cols; ++i)
-        {
-            const float x  = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
-            const float f  = xToFreq (x);
-            const float kf = f * (float) n / (float) snapSr_;
-            const int   k0 = std::clamp ((int) std::floor (kf), 1, snapBins_ - 2);
-            const float t  = std::clamp (kf - (float) k0, 0.0f, 1.0f);
-            const float db = bins[(std::size_t) k0] * (1.0f - t) + bins[(std::size_t) (k0 + 1)] * t;
-            out[(std::size_t) i] = dbToY (db);
-        }
+        fillColumnsY (plot_.x, plot_.w, cols, out,
+                      [&] (float x) { return dbToY (binDbAtFreq (bins, xToFreq (x))); });
     }
 
     // PRE = FilledArea (kV201Style): a vertical-gradient fill (muted taupe #b9a39b,
@@ -434,18 +450,11 @@ namespace rs_ui
         const float zeroY = dbToY (0.0f);
         const int   cols  = columnCount (plot_.w, kStepSpectrumPx);
         std::vector<float>& colY = scratchColumns();
-        colY.resize ((std::size_t) cols);
-        for (int i = 0; i < cols; ++i)
+        fillColumnsY (plot_.x, plot_.w, cols, colY, [&] (float x)
         {
-            const float x   = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
-            const float f   = xToFreq (x);
-            const float kf  = f * (float) n / (float) snapSr_;
-            const int   k0  = std::clamp ((int) std::floor (kf), 1, snapBins_ - 2);
-            const float t   = std::clamp (kf - (float) k0, 0.0f, 1.0f);
-            const float red = std::clamp (snapRed_[(std::size_t) k0] * (1.0f - t) + snapRed_[(std::size_t) (k0 + 1)] * t,
-                                          -60.0f, 0.0f);
-            colY[(std::size_t) i] = dbToY (red); // red <= 0 -> at/below the 0 dB line
-        }
+            const float red = std::clamp (binDbAtFreq (snapRed_, xToFreq (x)), -60.0f, 0.0f);
+            return dbToY (red); // red <= 0 -> at/below the 0 dB line
+        });
 
         canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (theme_.rs.curtainFillAlpha));
         fillAreaToBaseline (canvas, plot_.x, plot_.w, colY, zeroY); // from the 0 dB line down
@@ -573,12 +582,8 @@ namespace rs_ui
 
         auto sampleProfile = [&] (const factory_core::ReductionNodes& cfg, int cols)
         {
-            curveY.resize ((std::size_t) cols);
-            for (int i = 0; i < cols; ++i)
-            {
-                const float x = plot_.x + (cols > 1 ? (float) i / (float) (cols - 1) : 0.0f) * plot_.w;
-                curveY[(std::size_t) i] = sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), cfg));
-            }
+            fillColumnsY (plot_.x, plot_.w, cols, curveY, [&] (float x)
+            { return sensToY ((float) factory_core::reductionProfileDbAt (xToFreq (x), cfg)); });
         };
         const int colsNode     = columnCount (plot_.w, kStepProfilePx);
         const int colsCombined = columnCount (plot_.w, kStepCombinedPx);
@@ -674,10 +679,9 @@ namespace rs_ui
     {
         auto chipShell = [&] (const Rect& b)
         {
-            canvas.setColor (visage::Color (theme_.rs.chipBg));
-            canvas.roundedRectangle (b.x, b.y, b.w, b.h, theme_.rs.radiusBadge);
-            canvas.setColor (visage::Color (theme_.base.palette.track));
-            canvas.roundedRectangleBorder (b.x + 0.5f, b.y + 0.5f, b.w - 1.0f, b.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+            fuv::paintCardShell (canvas, b.x, b.y, b.w, b.h, theme_.rs.radiusBadge,
+                                 visage::Color (theme_.rs.chipBg),
+                                 visage::Color (theme_.base.palette.track));
         };
 
         // A1: Pre / Post / Both.
@@ -685,10 +689,10 @@ namespace rs_ui
         {
             const char* names[] = { "Pre", "Post", "Both" };
             const AnalyzerMode modes[] = { AnalyzerMode::Pre, AnalyzerMode::Post, AnalyzerMode::Both };
-            const float segW = (modeChip_.w - 6.0f) / 3.0f;
+            const float segW = modeSegWidth();
             for (int i = 0; i < 3; ++i)
             {
-                const float sx = modeChip_.x + 3.0f + (float) i * segW;
+                const float sx = modeSegLeft (i);
                 const bool active = (analyzerMode_ == modes[i]);
                 if (active)
                 {
@@ -714,10 +718,9 @@ namespace rs_ui
                      freezeChip_.x, freezeChip_.y, freezeChip_.w, freezeChip_.h);
 
         // A3: GR peak-hold badge.
-        canvas.setColor (visage::Color (theme_.rs.grBg));
-        canvas.roundedRectangle (grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h, theme_.rs.radiusBadge);
-        canvas.setColor (visage::Color (theme_.rs.grBorder));
-        canvas.roundedRectangleBorder (grBadge_.x + 0.5f, grBadge_.y + 0.5f, grBadge_.w - 1.0f, grBadge_.h - 1.0f, theme_.rs.radiusBadge, 1.0f);
+        fuv::paintCardShell (canvas, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h,
+                             theme_.rs.radiusBadge,
+                             visage::Color (theme_.rs.grBg), visage::Color (theme_.rs.grBorder));
         char gr[24]; std::snprintf (gr, sizeof gr, "GR %.1f dB", grPeakDb_);
         canvas.setColor (visage::Color (theme_.rs.grText));
         canvas.text (gr, boldFont (9.5f), visage::Font::kCenter, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h);
@@ -790,23 +793,23 @@ namespace rs_ui
     }
     void RsSuppressionCurveView::setParamGestured (int paramIndex, float value)
     {
-        if (paramIndex < 0) return;
-        model_.store().beginGesture (paramIndex);
-        model_.store().setFromUi (paramIndex, value);
-        model_.store().endGesture (paramIndex);
+        if (paramIndex >= 0) model_.store().setFromUiGestured (paramIndex, value);
     }
 
-    // Which Pre/Post/Both segment a frame-local point is over (-1 if outside). The
-    // segment geometry mirrors drawHeaderControls: 3 equal segments inside a 3px
-    // inset. True per-segment hit-testing so a click lands on the segment under the
+    // Mode-chip segment geometry: 3 equal segments inside a 3px chip inset — the
+    // ONE source both the draw and the hit-test share.
+    float RsSuppressionCurveView::modeSegWidth() const  { return (modeChip_.w - 6.0f) / 3.0f; }
+    float RsSuppressionCurveView::modeSegLeft (int i) const { return modeChip_.x + 3.0f + (float) i * modeSegWidth(); }
+
+    // Which Pre/Post/Both segment a frame-local point is over (-1 if outside).
+    // True per-segment hit-testing so a click lands on the segment under the
     // cursor instead of cycling the mode (round-3 fix 8).
     int RsSuppressionCurveView::modeSegAt (visage::Point pos) const
     {
         if (pos.x < modeChip_.x || pos.x >= modeChip_.x + modeChip_.w
             || pos.y < modeChip_.y || pos.y >= modeChip_.y + modeChip_.h)
             return -1;
-        const float segW = (modeChip_.w - 6.0f) / 3.0f;
-        const int seg = (int) std::floor ((pos.x - (modeChip_.x + 3.0f)) / std::max (1.0f, segW));
+        const int seg = (int) std::floor ((pos.x - modeSegLeft (0)) / std::max (1.0f, modeSegWidth()));
         return std::clamp (seg, 0, 2);
     }
 

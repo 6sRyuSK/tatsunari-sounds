@@ -116,3 +116,18 @@ target_compile_features(resonance_suppressor_theme_roundtrip_test PRIVATE cxx_st
 add_test(NAME resonance_suppressor_theme_roundtrip
          COMMAND resonance_suppressor_theme_roundtrip_test
                  ${CMAKE_CURRENT_SOURCE_DIR}/ui/theme-rs.json)
+
+# ------------------------------------------------------- pure-UI helper test
+# Host-compiler console app (no JUCE, no visage): the RS editor's pure UI
+# functions — the FREQ Hz/kHz entry parser (RsFreqEntry.h) and the extracted
+# layout computations — against hand-computed oracles. Headers only, so it also
+# proves those headers stay visage-free. Rate-independent, one case.
+add_executable(resonance_suppressor_ui_pure_test ui/tests/rs_ui_pure_test.cpp)
+target_include_directories(resonance_suppressor_ui_pure_test PRIVATE
+  ui
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../ui/visage/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include)
+target_compile_features(resonance_suppressor_ui_pure_test PRIVATE cxx_std_17)
+
+add_test(NAME resonance_suppressor_ui_pure COMMAND resonance_suppressor_ui_pure_test)

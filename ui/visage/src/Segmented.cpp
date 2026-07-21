@@ -89,9 +89,7 @@ namespace factory_ui_visage
                                     0, n - 1);
         if (seg != currentIndex())
         {
-            store_.beginGesture (index_);
-            store_.setFromUi (index_, static_cast<float> (seg));
-            store_.endGesture (index_);
+            store_.setFromUiGestured (index_, static_cast<float> (seg));
             redraw();
         }
     }
