@@ -444,15 +444,18 @@ namespace rs_ui
 
     void RsNodePanel::commitMiniEntry (int paramIndex, bool isFreq, const std::string& text)
     {
-        const factory_params::ParamDesc& desc = model_.store().desc (paramIndex);
-        float real = 0.0f;
-        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle — invalid /
-        // empty input REVERTS (no gesture, no write) rather than clamping to the
-        // minimum, including through the FREQ kHz parser ("abc" reverts). (User request.)
-        const bool ok = isFreq ? parseFreqEntry (text, desc.minValue, desc.maxValue, real)
-                               : factory_params::tryParseValue (desc, text, real);
-        if (! ok) return;
-        model_.store().setFromUiGestured (paramIndex, real); // snapToLegalValue clamps + snaps
+        auto& store = model_.store();
+        // FREQ routes through the Hz/kHz parser; both branches share the ValueText
+        // revert-on-invalid contract ("abc" reverts — no gesture, no write).
+        if (isFreq)
+        {
+            const factory_params::ParamDesc& desc = store.desc (paramIndex);
+            float real = 0.0f;
+            if (! parseFreqEntry (text, desc.minValue, desc.maxValue, real)) return;
+            store.setFromUiGestured (paramIndex, real); // snapToLegalValue clamps + snaps
+        }
+        else if (! fuv::commitEntryText (store, paramIndex, text))
+            return;
         if (onNodeEdited) onNodeEdited (nodeId_);
         if (onGestureEnd) onGestureEnd();
         redraw();

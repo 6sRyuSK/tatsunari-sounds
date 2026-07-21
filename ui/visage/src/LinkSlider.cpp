@@ -167,15 +167,11 @@ namespace factory_ui_visage
     void LinkSlider::openValueEntry()
     {
         if (! requestValueEntry) return;
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        std::string disp = factory_params::formatValue (desc, store_.value (index_), decimals_);
-        disp.erase (std::remove (disp.begin(), disp.end(), ' '), disp.end()); // match the drawn read-out
-
         const Layout L = computeLayout();
         const visage::Point o = positionInWindow();
         ValueEntryRequest req;
         req.x = o.x + L.value.x; req.y = o.y + L.value.y; req.w = L.value.w; req.h = L.value.h;
-        req.prefill = stripLeadingNumber (disp);
+        req.prefill = entryPrefillText (store_.desc (index_), store_.value (index_), decimals_);
         req.fontPx  = theme_.font.callout; // the value read-out font (RS: 12 px)
         req.commit  = [this] (const std::string& t) { commitValueEntry (t); };
         requestValueEntry (req);
@@ -183,15 +179,7 @@ namespace factory_ui_visage
 
     void LinkSlider::commitValueEntry (const std::string& text)
     {
-        const factory_params::ParamDesc& desc = store_.desc (index_);
-        float real = 0.0f;
-        // Round #4 follow-up: DELIBERATE deviation from the JUCE oracle. Invalid /
-        // empty input REVERTS (no gesture, no write) rather than clamping to the
-        // minimum; a valid-but-out-of-range number still commits + clamps (user request).
-        if (! factory_params::tryParseValue (desc, text, real)) return;
-        store_.beginGesture (index_);
-        store_.setFromUi (index_, real); // snapToLegalValue clamps + snaps to the range
-        store_.endGesture (index_);
-        redraw();
+        if (commitEntryText (store_, index_, text)) // invalid/empty REVERTS (ValueText.h)
+            redraw();
     }
 }
