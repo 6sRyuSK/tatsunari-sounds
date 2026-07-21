@@ -194,17 +194,21 @@ It writes `gallery.png`, `gallery2.png` (extended, frozen), `dropdown.png`,
 
 **Native tests** (visage-free/JUCE-free, host compiler — like the theme test):
 ```bash
-# theme model + JSON parser round-trip
+# theme model + JSON parser round-trip (pass the document path — the built-in
+# "../theme/factory-default.json" fallback assumes cwd == ui/visage/tests)
 c++ -std=c++17 -I ../../ui/visage/include \
-    ../../ui/visage/tests/theme_roundtrip_test.cpp ../../ui/visage/src/Theme.cpp -o t && ./t
+    ../../ui/visage/tests/theme_roundtrip_test.cpp ../../ui/visage/src/Theme.cpp -o t \
+  && ./t ../../ui/visage/theme/factory-default.json
 # SpectrumModel: on-bin sinusoid -> peak bin + dB (independent Hann-gain oracle),
 # across the full 44.1–192 kHz rate matrix
 c++ -std=c++17 -I ../../ui/visage/include -I ../../core/include \
     ../../ui/visage/tests/spectrum_model_test.cpp ../../ui/visage/src/SpectrumModel.cpp -o s && ./s
 ```
-(Both are also registered as CMake targets `factory_ui_visage_theme_test` /
-`factory_ui_visage_spectrum_test`, built only under a native — non-Emscripten —
-configure.)
+(Both are also CTest cases on any native — non-Emscripten — configure that
+includes RS: `factory_ui_visage_theme` and `factory_ui_visage_spectrum_<rate>`
+across the standard rate matrix, registered by `ui/visage/CMakeLists.txt`; the
+RS overlay's `resonance_suppressor_theme_roundtrip` registers from the RS
+plugin CMakeLists. The wasm gallery build still skips them.)
 
 **Font comparison.** `font_compare.js` renders the identical frozen gallery in each
 candidate typeface (`ui.setFont`) → `font-quicksand.png` / `font-nunito.png` /

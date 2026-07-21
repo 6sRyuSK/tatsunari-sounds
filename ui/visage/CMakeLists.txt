@@ -104,6 +104,13 @@ if(NOT EMSCRIPTEN)
   target_include_directories(factory_ui_visage_theme_test PRIVATE include)
   target_compile_features(factory_ui_visage_theme_test PRIVATE cxx_std_17)
 
+  # CTest case (rate-independent, one case). The shipped default document is
+  # passed explicitly: the exe's built-in "../theme/factory-default.json"
+  # fallback is relative to a manual-run cwd, not the ctest working directory.
+  add_test(NAME factory_ui_visage_theme
+           COMMAND factory_ui_visage_theme_test
+                   ${CMAKE_CURRENT_SOURCE_DIR}/theme/factory-default.json)
+
   # SpectrumModel is visage-free AND JUCE-free (pure maths + factory_core::FFT),
   # so its spec/oracle check compiles with a plain host compiler like the theme
   # test — only SpectrumModel.cpp is built (no visage), plus the core headers.
@@ -116,4 +123,11 @@ if(NOT EMSCRIPTEN)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
   )
   target_compile_features(factory_ui_visage_spectrum_test PRIVATE cxx_std_17)
+
+  # Full standard sample-rate matrix (sampleRatesFromArgs), one CTest case per
+  # rate — same shape as a plugin dsp_test (fftOrderForSampleRate is under test).
+  foreach(_fs 44100 48000 88200 96000 176400 192000)
+    add_test(NAME factory_ui_visage_spectrum_${_fs}
+             COMMAND factory_ui_visage_spectrum_test ${_fs})
+  endforeach()
 endif()

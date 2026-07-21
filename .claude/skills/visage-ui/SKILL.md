@@ -157,13 +157,12 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
 - JS ブリッジ(`window.ui` / `window.rs`)で param 駆動・freeze・rect 取得・dropdown
   開閉ができる — 決定的スクリーンショットは `freeze` + 固定フレーム注入で撮る。
   ブリッジ一覧と emsdk/FreeType の pin・sandbox 回避は `tools/ui-dev/README.md`。
-- ネイティブテスト(visage 不要): `factory_ui_visage_theme_test` /
-  `factory_ui_visage_spectrum_test` は非 Emscripten configure でビルドされる exe だが
-  **CTest 未登録** — `ctest` では走らないので直接実行する。RS の
-  `rs_theme_roundtrip_test.cpp` は CMake ターゲット自体が無く、ソース冒頭コメントの
-  コンパイル行で手動ビルド(`tools/ui-dev/README.md` に全コマンド)。widget の
-  **見た目**の検証はハーネスの Playwright 側で、gallery に載せる widget は
-  `tools/ui-dev/gallery/GalleryFrame.{h,cpp}` に追加する。
+- ネイティブテスト(visage 不要、RS を含む非 Emscripten configure で CTest 登録):
+  `factory_ui_visage_theme`(1 case)/ `factory_ui_visage_spectrum_<fs>`(全レート)/
+  RS の `resonance_suppressor_theme_roundtrip`(theme-rs.json 同期検査)— `ctest` で
+  走る。手動実行は各ソース冒頭のコンパイル行(theme 系は JSON パスを引数で渡す —
+  既定の相対パスは cwd 依存)。widget の**見た目**の検証はハーネスの Playwright 側で、
+  gallery に載せる widget は `tools/ui-dev/gallery/GalleryFrame.{h,cpp}` に追加する。
 - CI: `clap.yml` が Linux で RS clap-first(GUI 込み)をビルド + clap-validator、
   `ci.yml` が macOS/Windows ビルド + pluginval。ui-dev ハーネス自体は CI 外。
 

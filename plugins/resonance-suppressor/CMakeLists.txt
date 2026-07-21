@@ -93,3 +93,26 @@ target_link_libraries(resonance_suppressor_rscore_equiv_test
     juce::juce_recommended_warning_flags)
 
 add_test(NAME resonance_suppressor_rscore_equiv COMMAND resonance_suppressor_rscore_equiv_test)
+
+# ------------------------------------------------------ RS theme roundtrip test
+# Host-compiler console app (no JUCE, no visage): asserts the compiled
+# RsExtras::defaults() carry the v2.1.0 analyser roles AND that theme-rs.json's
+# shared-schema overlay parses + its rs.* mirror stays in sync with the compiled
+# defaults (see ui/tests/rs_theme_roundtrip_test.cpp). Compiles the shared
+# Theme.cpp directly — independent of FACTORY_RS_CLAP_GUI and of the visage
+# fetch, so it runs on every RS configure. Rate-independent, one case; the
+# theme-rs.json path is passed explicitly (the exe's "../theme-rs.json" fallback
+# assumes a manual-run cwd, not the ctest working directory).
+add_executable(resonance_suppressor_theme_roundtrip_test
+  ui/tests/rs_theme_roundtrip_test.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../ui/visage/src/Theme.cpp)
+target_include_directories(resonance_suppressor_theme_roundtrip_test PRIVATE
+  ui
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../ui/visage/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include)
+target_compile_features(resonance_suppressor_theme_roundtrip_test PRIVATE cxx_std_17)
+
+add_test(NAME resonance_suppressor_theme_roundtrip
+         COMMAND resonance_suppressor_theme_roundtrip_test
+                 ${CMAKE_CURRENT_SOURCE_DIR}/ui/theme-rs.json)
