@@ -362,12 +362,33 @@ namespace rs_ui
         const float w = width(), h = height();
         const int mx = S (20);
         const float ix = (float) mx, iw = w - 2.0f * mx;
-
-        // header
         const float headerY = (float) mx, headerH = (float) S (44);
-        float hx = ix, hw = iw;
 
-        // right cluster (right-to-left)
+        const float presetRight = layoutHeaderRight (ix, iw, headerY, headerH);
+        layoutHeaderBrandAndPreset (ix, headerY, headerH, presetRight);
+        layoutCurveAndFooterCard (ix, iw, headerY, headerH, h, mx);
+
+        // footer inner columns — the three-column algebra is the pure
+        // computeRsFooterColumns (headless-tested); see RsFooterLayout.h for the
+        // settled design + the round-#4 uniform-gap derivation.
+        const float fx = footerCard_.x + S (14), fy = footerCard_.y + S (14);
+        const float fw = footerCard_.w - 2.0f * S (14), fh = footerCard_.h - 2.0f * S (14);
+        const RsFooterColumns cols = computeRsFooterColumns (fx, fy, fw, fh, k());
+        footerDiv1_ = cols.div1;
+        footerDiv2_ = cols.div2;
+        layoutFooterKnobs (cols);
+        layoutFooterSettings (fx, fy, fw, fh, cols.modeLeft);
+
+        // node panel (reposition if visible) + dropdown overlay
+        if (nodePanel_ && nodePanel_->isVisible())
+            selectNode (curve_->selectedNode());
+        if (dropdown_) dropdown_->setBounds (0.0f, 0.0f, w, h);
+    }
+
+    // header right cluster (right-to-left); returns the right bound left for the
+    // preset pill.
+    float RsEditor::layoutHeaderRight (float ix, float iw, float headerY, float headerH)
+    {
         const float bypassBoxW = (float) S (118);
         Rect bypassBox { ix + iw - bypassBoxW, headerY, bypassBoxW, headerH };
         bypass_->setBounds (bypassBox.x, bypassBox.y + (headerH - S (24)) * 0.5f, bypassBox.w, (float) S (24));
@@ -376,16 +397,22 @@ namespace rs_ui
         undoBtn_->setBounds (rx - S (30), headerY + (headerH - S (30)) * 0.5f, (float) S (30), (float) S (30)); rx -= S (30) + S (14);
         copyBtn_->setBounds (rx - S (44), headerY + (headerH - S (30)) * 0.5f, (float) S (44), (float) S (30)); rx -= S (44) + S (10);
         abStrip_ = { rx - (float) S (74), headerY + (headerH - S (26)) * 0.5f, (float) S (74), (float) S (26) }; rx -= S (74) + S (14);
+        return rx;
+    }
 
+    void RsEditor::layoutHeaderBrandAndPreset (float ix, float headerY, float headerH, float presetRight)
+    {
         brandRect_ = { ix, headerY, (float) S (300), headerH };
 
         // preset pill fills the centre gap between brand and the right cluster.
         const float presetLeft = ix + S (300) + S (14);
-        const float presetRight = rx;
         const float presetGap = std::max (0.0f, presetRight - presetLeft);
         const float pw = std::min (presetGap, (float) S (320));
         preset_->setBounds (presetLeft + (presetGap - pw) * 0.5f, headerY + (headerH - S (30)) * 0.5f, pw, (float) S (30));
+    }
 
+    void RsEditor::layoutCurveAndFooterCard (float ix, float iw, float headerY, float headerH, float h, int mx)
+    {
         // footer
         const float footerH = (float) S (226);
         const float footerY = (h - mx) - footerH;
@@ -395,88 +422,44 @@ namespace rs_ui
         const float curveY = headerY + headerH + S (16);
         Rect curveRect { ix, curveY, iw, std::max (1.0f, footerY - curveY) };
         curve_->setBounds (curveRect.x, curveRect.y, curveRect.w, curveRect.h);
+    }
 
-        // footer inner columns
-        const float fx = footerCard_.x + S (14), fy = footerCard_.y + S (14);
-        const float fw = footerCard_.w - 2.0f * S (14), fh = footerCard_.h - 2.0f * S (14);
-        // Footer knob layout (settled design). Size-contrast ratio 1.8: big DEPTH/
-        // DETAIL dial 104 px, mini ATK/REL/TILT dial 57 px. 8 px vertical label gaps
-        // on BOTH groups — big cell = name16 + 8 + dial104 + 8 + value17 = 153, mini
-        // cell = name14 + 8 + dial57 + 8 + value14 = 101 (the gap falls out of the
-        // dial being width-limited inside the taller cell, so each dial is centred
-        // with an 8 px band above/below). Horizontal edge-to-edge dial gaps: DEPTH↔
-        // DETAIL 40, ATK↔REL↔TILT 20 (LOCKED). Each cell is exactly the dial width so
-        // the cell-to-cell gap IS the edge-to-edge dial gap.
-        //
-        // Round #4 fix (uniform section↔divider spacing): every section-content↔
-        // divider gap is a SINGLE value P — left-card-edge↔DEPTH, DEPTH/DETAIL-right↔
-        // footerDiv1, footerDiv1↔ATK, TILT↔footerDiv2 and footerDiv2↔MODE-card-left
-        // all equal — instead of the old col2 = trio + 12 pad that left the minis
-        // hugging both dividers at only 6 px while the big pair had ~65 px to div1.
-        // The MODE card (col3) is UNCHANGED: its left edge stays at the old
-        // fx + 0.60*fw + S(10), so only the two dividers move to equalise. P falls out
-        // of the width budget (bigs centred in col1 with P margins, minis in col2):
-        //   modeLeft = fx + P + bigPairW + P + P + miniTrioW + P + P
-        //   => P = ((modeLeft - fx) - bigPairW - miniTrioW) / 5.
-        // All lengths scale with S().
-        const float bigDia = (float) S (104), miniDia = (float) S (57);
-        const float bigCellH = (float) S (153), miniCellH = (float) S (101);
-        const float bigGap = (float) S (40), miniGap = (float) S (20); // edge-to-edge dial gaps (locked)
-        const float bigPairW = 2.0f * bigDia + bigGap;
-        const float miniTrioW = 3.0f * miniDia + 2.0f * miniGap;
-        const float modeLeft = fx + fw * 0.60f + (float) S (10);       // MODE card left — unchanged (== old col3 cx)
-        const float gapP = ((modeLeft - fx) - bigPairW - miniTrioW) / 5.0f; // the single uniform gap
-        footerDiv1_ = fx + gapP + bigPairW + gapP;                     // bigs centred in col1 with P margins
-        footerDiv2_ = footerDiv1_ + gapP + miniTrioW + gapP;           // minis centred in col2 (== modeLeft - P)
-        const float chFull = fh - 2.0f * S (6);
-        const float cyBig = fy + S (6) + (chFull - bigCellH) * 0.5f;   // stacks vertically centred
-        const float cyMini = fy + S (6) + (chFull - miniCellH) * 0.5f;
-
+    void RsEditor::layoutFooterKnobs (const RsFooterColumns& c)
+    {
         // col1: 2 big knobs — pair centred in col1 (gapP from the left card edge + gapP to footerDiv1).
-        {
-            const float pairLeft = fx + gapP;
-            for (int i = 0; i < 2; ++i)
-                knobs_[(std::size_t) i]->setBounds (pairLeft + (float) i * (bigDia + bigGap), cyBig, bigDia, bigCellH);
-        }
+        for (int i = 0; i < 2; ++i)
+            knobs_[(std::size_t) i]->setBounds (c.pairLeft + (float) i * (c.bigDia + c.bigGap), c.cyBig, c.bigDia, c.bigCellH);
         // col2: 3 mini knobs — trio centred in col2 (gapP from footerDiv1 + gapP to footerDiv2).
-        {
-            const float trioLeft = footerDiv1_ + gapP;
-            for (int i = 0; i < 3; ++i)
-                knobs_[(std::size_t) (2 + i)]->setBounds (trioLeft + (float) i * (miniDia + miniGap), cyMini, miniDia, miniCellH);
-        }
-        // col3: MODE + 5 setting rows (UNCHANGED — anchored at modeLeft == old cx).
-        {
-            const float cx = modeLeft, cy = fy + S (6);
-            const float cw = (fx + fw) - cx - S (10), ch = fh - 2.0f * S (6);
-            const float rowGap = (float) S (6), cellGap = (float) std::max (4, S (6));
+        for (int i = 0; i < 3; ++i)
+            knobs_[(std::size_t) (2 + i)]->setBounds (c.trioLeft + (float) i * (c.miniDia + c.miniGap), c.cyMini, c.miniDia, c.miniCellH);
+    }
 
-            modeCell_ = { cx, cy, cw, (float) S (32) };
-            {
-                const float mx2 = modeCell_.x + S (8) + S (52);
-                const float segW = std::min (modeCell_.w - S (8) - S (52) - S (8), (float) S (140));
-                modeSeg_->setBounds (modeCell_.x + modeCell_.w - S (8) - segW, modeCell_.y + (modeCell_.h - S (24)) * 0.5f, segW, (float) S (24));
-                (void) mx2;
-            }
-            float ry = cy + S (32) + rowGap;
-            const float rowsTotal = ch - (S (32) + rowGap);
-            const float rowH = std::max ((float) S (20), (rowsTotal - 4.0f * rowGap) / 5.0f);
-            auto splitRow = [&] (float y, visage::Frame* left, visage::Frame* right)
-            {
-                const float half = (cw - cellGap) / 2.0f;
-                left->setBounds (cx, y, half, rowH);
-                right->setBounds (cx + half + cellGap, y, half, rowH);
-            };
-            splitRow (ry, pills_[0].get(), pills_[1].get()); ry += rowH + rowGap; // DELTA | S-CHAIN
-            splitRow (ry, qualitySet_.get(), chSet_.get());  ry += rowH + rowGap; // QUALITY | CH
-            splitRow (ry, pills_[2].get(), pills_[3].get());  ry += rowH + rowGap; // SC LISTEN | LINK
-            linkAmt_->setBounds (cx, ry, cw, rowH);           ry += rowH + rowGap; // STEREO LINK
-            splitRow (ry, mix_.get(), out_.get());                                 // MIX | OUT
-        }
+    // col3: MODE + 5 setting rows (anchored at modeLeft == the old col3 cx).
+    void RsEditor::layoutFooterSettings (float fx, float fy, float fw, float fh, float modeLeft)
+    {
+        const float cx = modeLeft, cy = fy + S (6);
+        const float cw = (fx + fw) - cx - S (10), ch = fh - 2.0f * S (6);
+        const float rowGap = (float) S (6), cellGap = (float) std::max (4, S (6));
 
-        // node panel (reposition if visible) + dropdown overlay
-        if (nodePanel_ && nodePanel_->isVisible())
-            selectNode (curve_->selectedNode());
-        if (dropdown_) dropdown_->setBounds (0.0f, 0.0f, w, h);
+        modeCell_ = { cx, cy, cw, (float) S (32) };
+        {
+            const float segW = std::min (modeCell_.w - S (8) - S (52) - S (8), (float) S (140));
+            modeSeg_->setBounds (modeCell_.x + modeCell_.w - S (8) - segW, modeCell_.y + (modeCell_.h - S (24)) * 0.5f, segW, (float) S (24));
+        }
+        float ry = cy + S (32) + rowGap;
+        const float rowsTotal = ch - (S (32) + rowGap);
+        const float rowH = std::max ((float) S (20), (rowsTotal - 4.0f * rowGap) / 5.0f);
+        auto splitRow = [&] (float y, visage::Frame* left, visage::Frame* right)
+        {
+            const float half = (cw - cellGap) / 2.0f;
+            left->setBounds (cx, y, half, rowH);
+            right->setBounds (cx + half + cellGap, y, half, rowH);
+        };
+        splitRow (ry, pills_[0].get(), pills_[1].get()); ry += rowH + rowGap; // DELTA | S-CHAIN
+        splitRow (ry, qualitySet_.get(), chSet_.get());  ry += rowH + rowGap; // QUALITY | CH
+        splitRow (ry, pills_[2].get(), pills_[3].get());  ry += rowH + rowGap; // SC LISTEN | LINK
+        linkAmt_->setBounds (cx, ry, cw, rowH);           ry += rowH + rowGap; // STEREO LINK
+        splitRow (ry, mix_.get(), out_.get());                                 // MIX | OUT
     }
 
     bool RsEditor::plotRectInWindow (float& x, float& y, float& w, float& h) const

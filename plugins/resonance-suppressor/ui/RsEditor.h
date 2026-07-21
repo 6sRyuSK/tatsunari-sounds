@@ -2,6 +2,7 @@
 
 #include "RsTheme.h"
 #include "RsFeed.h"
+#include "RsFooterLayout.h"
 #include "RsModels.h"
 #include "RsProfileModel.h"
 #include "RsPillCell.h"
@@ -133,6 +134,16 @@ namespace rs_ui
         void   presentDropdown (std::vector<factory_ui_visage::Dropdown::Item> items, int sel,
                                 visage::Frame* anchor, std::function<void (int)> onSelect);
         void   onValueEntryRequest (const factory_ui_visage::ValueEntryRequest& req); // window->local, open
+
+        // resized() steps, in call order (each moves the same code it replaced —
+        // no arithmetic changes). layoutHeaderRight returns the running right
+        // bound the preset pill may extend to.
+        float  layoutHeaderRight (float ix, float iw, float headerY, float headerH);
+        void   layoutHeaderBrandAndPreset (float ix, float headerY, float headerH, float presetRight);
+        void   layoutCurveAndFooterCard (float ix, float iw, float headerY, float headerH, float h, int mx);
+        void   layoutFooterKnobs (const RsFooterColumns& c);
+        void   layoutFooterSettings (float fx, float fy, float fw, float fh, float modeLeft);
+
         void   drawBrand (visage::Canvas& canvas);
         void   drawHeaderChrome (visage::Canvas& canvas);
         void   drawFooterChrome (visage::Canvas& canvas);
