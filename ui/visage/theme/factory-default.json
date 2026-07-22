@@ -1,0 +1,90 @@
+{
+  "palette": {
+    "background": "#fffdf6f2",
+    "backgroundLo": "#fffbeae2",
+    "panel": "#ffffffff",
+    "panelLo": "#fffff4ee",
+    "track": "#fff2ddd4",
+    "accent": "#ffff7a6b",
+    "accentDim": "#ffffd6cd",
+    "positive": "#ff45b8ac",
+    "text": "#ff6b5750",
+    "textSecondary": "#ff8f7a72",
+    "textDim": "#ffb9a39b",
+    "shadow": "#33d6a89a",
+    "bandColours": ["#ffff6f91", "#ffff9472", "#ffffba6b", "#ff7fd1ae", "#ff79b8ef", "#ffb79be8"]
+  },
+  "knob": {
+    "boundsInset": 6,
+    "lineWidthRatio": 0.300000012,
+    "bodyInsetFactor": 1,
+    "shadowBlurFactor": 10,
+    "shadowOffset": [0, 4],
+    "needleWidthPx": 3,
+    "needleLengthRatio": 0.899999976,
+    "arcStart": 3.92699075,
+    "arcEnd": 8.6393795
+  },
+  "toggle": {
+    "height": 20,
+    "widthFactor": 1.70000005,
+    "knobInset": 4,
+    "cornerRadiusFactor": 0.5,
+    "textGap": 8
+  },
+  "card": {
+    "cornerRadius": 10,
+    "outlineWidth": 1.20000005,
+    "shadowBlur": 16,
+    "shadowOffset": [0, 5]
+  },
+  "font": {
+    "label": 13,
+    "labelBold": 13,
+    "title": 20,
+    "callout": 14,
+    "caption": 11
+  },
+  "segmented": {
+    "height": 28,
+    "cornerRadius": 9,
+    "pillInset": 3,
+    "pillCornerRadius": 7
+  },
+  "dropdown": {
+    "rowHeight": 26,
+    "cornerRadius": 10,
+    "paddingX": 10,
+    "paddingY": 6,
+    "separatorInset": 10,
+    "shadowBlur": 16,
+    "shadowOffsetY": 6
+  },
+  "iconButton": {
+    "cornerRadius": 9,
+    "glyphInsetFactor": 0.280000001
+  },
+  "valueSetting": {
+    "cornerRadius": 9,
+    "paddingX": 9,
+    "iconSize": 16
+  },
+  "linkSlider": {
+    "cornerRadius": 9,
+    "paddingX": 9,
+    "trackHeight": 7,
+    "trackCorner": 3.5,
+    "captionColumn": 76,
+    "valueColumn": 52,
+    "glyphSize": 16
+  },
+  "spectrum": {
+    "cornerRadius": 12,
+    "topDb": 0,
+    "bottomDb": -100,
+    "traceWidth": 2,
+    "peakWidth": 1.39999998,
+    "fillTopAlpha": 0.330000013,
+    "fillBottomAlpha": 0.0199999996
+  }
+}

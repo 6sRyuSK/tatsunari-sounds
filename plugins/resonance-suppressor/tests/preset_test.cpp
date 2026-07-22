@@ -33,19 +33,37 @@
 //      sharpness/selectivity, no detail) loads detail at (sharp% + sel%)/2;
 //      a new-format state (detail present) is taken verbatim. check 7 also
 //      asserts the migration value against its v1.2.0 fixture.
+//  10. (Phase P1) factory_params ParamDesc table parity: the APVTS layout is now
+//      GENERATED from resonance_suppressor_params::buildRsParams() via
+//      factory_params::buildApvtsLayout(). This checks the generated layout is
+//      BIT-IDENTICAL to what the parameters expose — table size + host-visible
+//      order (positional paramID match), per-param id resolvable/name/label,
+//      getDefaultValue() bit-equal to normalizedDefault, Float range conversions
+//      (convertFrom0to1 257-pt sweep, convertTo0to1 real-value sweep, snapToLegal
+//      for stepped ranges) bit-equal with NO tolerance, Choice count+labels, and
+//      uid uniqueness. A failure means fix Range.h/ApvtsAdapter/Params.h — never
+//      loosen the comparison (CLAUDE.md hard rule).
 //
 #include "PluginProcessor.h"
 #include "FactoryPresets.h"
+#include "Params.h"
 #include "factory_presets/UserPresetStore.h"
+#include "factory_params/ParamDesc.h"
+#include "factory_params/Range.h"
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
     int g_failures = 0;
     void fail (const std::string& m) { std::printf ("  FAIL: %s\n", m.c_str()); ++g_failures; }
+
+    // Bit-exact float comparison (no tolerance) for the paramdesc parity check.
+    bool bitEqual (float a, float b) { return std::memcmp (&a, &b, sizeof (float)) == 0; }
 
     bool isExcluded (const juce::String& id)
     {
@@ -532,6 +550,119 @@ namespace
                       + " (expected the stored 33)");
         }
     }
+
+    // ------------------------------------------------------------------------
+    // check 10 — factory_params ParamDesc table parity with the live APVTS layout
+    // (Phase P1). The APVTS layout is now GENERATED from resonance_suppressor_params
+    // ::buildRsParams() via factory_params::buildApvtsLayout(); this proves the
+    // generated layout is BIT-IDENTICAL to what the parameters actually expose, so
+    // the migration is a pure refactor with zero behaviour change.
+    //
+    // The oracle is the live juce parameter objects. Comparisons that must be exact
+    // (default, and the Float range conversions) use ==/memcmp with NO tolerance —
+    // per CLAUDE.md, if any of these fail the fix is in Range.h/ApvtsAdapter/Params.h,
+    // never a loosened comparison here.
+    void check10_paramdesc_parity (ResonanceSuppressorAudioProcessor& p)
+    {
+        std::printf ("10. factory_params ParamDesc table parity with the live APVTS layout\n");
+
+        const auto table = resonance_suppressor_params::buildRsParams();
+        const auto& params = p.getParameters();
+
+        if ((int) table.size() != params.size())
+            fail ("table size " + std::to_string (table.size()) + " != live parameter count "
+                  + std::to_string (params.size()));
+
+        const int n = juce::jmin ((int) table.size(), params.size());
+        for (int i = 0; i < n; ++i)
+        {
+            const auto& d = table[(size_t) i];
+            auto* base = params[i];
+            auto* rp = dynamic_cast<juce::RangedAudioParameter*> (base);
+            if (rp == nullptr) { fail ("param index " + std::to_string (i) + " is not a RangedAudioParameter"); continue; }
+
+            // Host-visible ORDER: table id == the id at the same positional index.
+            if (rp->getParameterID() != juce::String (d.id))
+            {
+                fail ("order mismatch at index " + std::to_string (i) + ": table '" + d.id
+                      + "' vs live '" + rp->getParameterID().toStdString() + "'");
+                continue; // positional desync — the remaining per-field checks would be noise
+            }
+
+            // Resolvable by id, and it is the same object as the positional one.
+            auto* byId = p.apvts.getParameter (juce::String (d.id));
+            if (byId == nullptr) { fail ("id '" + d.id + "' not resolvable via apvts.getParameter"); continue; }
+            if (byId != base)     fail ("apvts.getParameter('" + d.id + "') != positional parameter");
+
+            // Display name + label (label == desc.unit; empty for bool/choice).
+            if (rp->getName (512) != juce::String (d.name))
+                fail ("name mismatch for '" + d.id + "': live '" + rp->getName (512).toStdString()
+                      + "' vs table '" + d.name + "'");
+            if (rp->getLabel() != juce::String (d.unit))
+                fail ("label mismatch for '" + d.id + "': live '" + rp->getLabel().toStdString()
+                      + "' vs table unit '" + d.unit + "'");
+
+            // Default: BIT-equal to normalizedDefault.
+            if (! bitEqual (rp->getDefaultValue(), factory_params::normalizedDefault (d)))
+                fail ("getDefaultValue() not bit-equal to normalizedDefault for '" + d.id + "'");
+
+            if (d.type == factory_params::ParamType::Float)
+            {
+                const auto& nr = rp->getNormalisableRange();
+                const auto spec = factory_params::makeRange (d);
+
+                // convertFrom0to1: 257-point normalised sweep, bit-equal.
+                for (int k = 0; k <= 256; ++k)
+                {
+                    const float pr = (float) k / 256.0f;
+                    if (! bitEqual (nr.convertFrom0to1 (pr), factory_params::convertFrom0to1 (spec, pr)))
+                    { fail ("convertFrom0to1 not bit-equal for '" + d.id + "' at p=" + std::to_string (pr)); break; }
+                }
+
+                // convertTo0to1: real-value sweep (min, max, default, skew centre,
+                // + 64 interior points), bit-equal.
+                std::vector<float> probes { d.minValue, d.maxValue, d.defaultValue };
+                if (d.skewCentre > 0.0f) probes.push_back (d.skewCentre);
+                for (int k = 0; k <= 64; ++k)
+                    probes.push_back (d.minValue + (d.maxValue - d.minValue) * (float) k / 64.0f);
+                for (float v : probes)
+                    if (! bitEqual (nr.convertTo0to1 (v), factory_params::convertTo0to1 (spec, v)))
+                    { fail ("convertTo0to1 not bit-equal for '" + d.id + "' at v=" + std::to_string (v)); break; }
+
+                // snapToLegalValue: bit-equal for stepped ranges on probe values.
+                if (d.interval > 0.0f)
+                {
+                    const float sp[] = { d.minValue, d.maxValue, d.defaultValue,
+                                         d.minValue + 0.333f * (d.maxValue - d.minValue),
+                                         d.minValue + 0.777f * (d.maxValue - d.minValue) };
+                    for (float v : sp)
+                        if (! bitEqual (nr.snapToLegalValue (v), factory_params::snapToLegalValue (spec, v)))
+                        { fail ("snapToLegalValue not bit-equal for '" + d.id + "' at v=" + std::to_string (v)); break; }
+                }
+            }
+            else if (d.type == factory_params::ParamType::Choice)
+            {
+                auto* ch = dynamic_cast<juce::AudioParameterChoice*> (base);
+                if (ch == nullptr) { fail ("choice '" + d.id + "' is not a juce::AudioParameterChoice"); continue; }
+                if (ch->choices.size() != (int) d.choices.size())
+                    fail ("choice count mismatch for '" + d.id + "': live " + std::to_string (ch->choices.size())
+                          + " vs table " + std::to_string (d.choices.size()));
+                else
+                    for (int c = 0; c < ch->choices.size(); ++c)
+                        if (ch->choices[c] != juce::String (d.choices[(size_t) c]))
+                            fail ("choice label mismatch for '" + d.id + "' at index " + std::to_string (c)
+                                  + ": live '" + ch->choices[c].toStdString() + "' vs table '"
+                                  + d.choices[(size_t) c] + "'");
+            }
+            // Bool: default / name / label already checked above.
+        }
+
+        // uid uniqueness across the whole table.
+        for (size_t i = 0; i < table.size(); ++i)
+            for (size_t j = i + 1; j < table.size(); ++j)
+                if (table[i].uid == table[j].uid)
+                    fail ("uid collision between '" + table[i].id + "' and '" + table[j].id + "'");
+    }
 }
 
 int main()
@@ -556,6 +687,7 @@ int main()
     check7_v120_state_compat();
     check8_user_preset_store();
     check9_detail_migration();
+    check10_paramdesc_parity (*processor);
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

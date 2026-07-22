@@ -43,6 +43,14 @@ namespace factory_core
         static constexpr double kRingSeconds     = 34.0;
         static constexpr double kHorizonSeconds  = 33.0;
 
+        // Box Size is geometric: the box's scale relative to the REFERENCE box is
+        // boxSize / kReferenceBoxSizeSeconds, and SlotParams::ballSize is an
+        // ABSOLUTE radius (a fraction of the reference box's circumradius). The
+        // world stays normalized to circumradius 1, so growing the box shrinks
+        // the ball's normalized radius (see ballRadius()) — flight distance and
+        // hit rate genuinely follow Box Size instead of a pure time rescale.
+        static constexpr double kReferenceBoxSizeSeconds = 0.40;
+
         enum class Shape   { Triangle, Square, Pentagon, Hexagon, Octagon, Circle };
         enum class PanMode { Physics, Center, Random };
 
@@ -447,8 +455,12 @@ namespace factory_core
 
         double ballRadius (const SlotParams& sp) const noexcept
         {
+            // ballSize is absolute (fraction of the reference box's circumradius);
+            // dividing by the box's geometric scale converts it into this box's
+            // normalized world. Clamped so the ball always fits the box.
             const double inradius = isCircle ? 1.0 : std::cos (kPi / (double) shapeN);
-            return std::clamp (sp.ballSize, 0.002, 0.4 * inradius);
+            const double boxScale = std::max (boxSizeS, 0.02) / kReferenceBoxSizeSeconds;
+            return std::clamp (sp.ballSize / boxScale, 0.002, 0.4 * inradius);
         }
 
         // ------------------------------------------------------------------ onset

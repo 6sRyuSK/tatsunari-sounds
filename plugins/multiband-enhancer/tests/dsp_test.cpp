@@ -42,12 +42,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <mutex>
+#include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -1612,6 +1616,132 @@ namespace
             }
         }
     }
+
+    // ==========================================================================
+    // G26 — concurrent reconfiguration safety (issue #117: AU Abort trap 6)
+    // ==========================================================================
+    // pluginval's Automation test re-prepares the plugin between (sr,bs) iterations.
+    // JUCE's AU wrapper runs prepareToPlay OFF the message thread, so it executes
+    // CONCURRENTLY with a pending linear-phase FIR redesign on the message thread
+    // (handleAsyncUpdate -> engine.redesignFir). engine.prepare() reallocates the very
+    // FIR buffers (LinearPhaseCrossover5 designScratch / partitioned-convolver kernels)
+    // that redesignFir() writes -> heap-buffer-overflow / use-after-free -> Abort trap 6.
+    // AU only: the VST3 host bounces prepareToPlay onto the message thread, serialising
+    // the two, which is why the same run's VST3 passed while the AU crashed.
+    //
+    // The processor fixes this with engineConfigLock, serialising engine.prepare()
+    // against engine.redesignFir() (both are non-real-time; processBlock never locks and
+    // keeps reading the FIR through the existing lock-free kernel A/B handoff). This gate
+    // mirrors that contract headlessly: a background thread redesigns while the main
+    // thread re-prepares ACROSS ALL RATES (each rate has a different tap count, so
+    // designScratch is reallocated to a DIFFERENT size — the exact worst case that
+    // overflowed) and processes, all under one mutex. It asserts the run stays finite and
+    // — the independent oracle — that after the churn a linear-phase enh-0 impulse still
+    // reconstructs to a FLAT 0 dB pure delay (a corrupted redesign would not).
+    //
+    // Reproduce #117 directly: build this test with -fsanitize=address and delete the
+    // std::lock_guard lines below — the concurrent prepare/redesign then aborts.
+    //
+    // Self-contained over the WHOLE standard rate matrix (not the single argv rate a
+    // ctest case passes): re-preparing across DIFFERENT rates is the trigger, because
+    // each rate has a different FIR tap count, so designScratch is reallocated to a
+    // different size — exactly what overflowed. Runs once per invocation regardless of
+    // the argv rate, so every rate's ctest case exercises the full cross-rate churn.
+    void g26_concurrent_reconfig()
+    {
+        std::printf ("G26 concurrent reconfiguration safety (issue #117)\n");
+        const std::vector<double>& allRates = factory_core::testing::kStandardSampleRates();
+
+        ME eng;
+        eng.prepare (allRates.front(), 1024);
+        eng.setPhaseMode (ME::Phase::Linear);
+        eng.setQuality (ME::Quality::HQ);
+
+        std::mutex cfg;                          // mirrors the processor's engineConfigLock
+        std::atomic<bool>   stop { false };
+        std::atomic<bool>   nonFinite { false };
+        std::atomic<bool>   pending { false };
+        std::atomic<double> reqHz[4] { {130.0}, {700.0}, {2200.0}, {7500.0} };
+
+        // "Message thread": services FIR redesigns, serialised against prepare().
+        std::thread msg ([&]
+        {
+            while (! stop.load (std::memory_order_relaxed))
+            {
+                if (pending.exchange (false, std::memory_order_acquire))
+                {
+                    std::lock_guard<std::mutex> lk (cfg);
+                    eng.redesignFir (reqHz[0].load(), reqHz[1].load(), reqHz[2].load(), reqHz[3].load());
+                }
+                std::this_thread::yield();
+            }
+        });
+
+        const int blocks[5] = { 64, 128, 256, 512, 1024 };
+        std::mt19937 rng (20260717u);
+        auto uf = [&] (double lo, double hi) { return lo + (hi - lo) * (double) rng() / (double) rng.max(); };
+        std::vector<float> L (1024), R (1024), dL (1024), dR (1024);
+
+        const int kReprep = 90;                  // cycles the full rate matrix many times
+        for (int it = 0; it < kReprep && ! nonFinite.load(); ++it)
+        {
+            // Move the crossovers and request a redesign (serviced on the msg thread).
+            const double f1 = uf (40, 300), f2 = uf (200, 1200), f3 = uf (800, 5000), f4 = uf (3000, 18000);
+            reqHz[0].store (f1); reqHz[1].store (f2); reqHz[2].store (f3); reqHz[3].store (f4);
+            eng.setCrossovers (f1, f2, f3, f4);
+            pending.store (true, std::memory_order_release);
+
+            // Process a few 32-sample sub-blocks (RT path stays lock-free).
+            for (int blk = 0; blk < 4; ++blk)
+            {
+                for (int i = 0; i < 32; ++i) { L[(size_t) i] = (float) uf (-1, 1); R[(size_t) i] = (float) uf (-1, 1); }
+                eng.processBlock (L.data(), R.data(), 32, dL.data(), dR.data());
+                for (int i = 0; i < 32; ++i)
+                    if (! std::isfinite (L[(size_t) i]) || ! std::isfinite (dL[(size_t) i])) nonFinite.store (true);
+            }
+
+            // Re-prepare across the full rate matrix (rate change => different tap count
+            // => designScratch/kernel reallocation, the worst case) + block sizes,
+            // serialised against the concurrent redesign.
+            {
+                std::lock_guard<std::mutex> lk (cfg);
+                eng.prepare (allRates[(size_t) it % allRates.size()], blocks[it % 5]);
+                eng.setPhaseMode (ME::Phase::Linear);
+                eng.setQuality (ME::Quality::HQ);
+            }
+        }
+
+        stop.store (true);
+        msg.join();
+        if (nonFinite.load()) fail ("G26 non-finite output during concurrent reconfiguration");
+
+        // Independent oracle: after the churn a fixed-config linear-phase enh-0 impulse
+        // still reconstructs to a flat 0 dB pure delay (a corrupted FIR would not).
+        const double fs = allRates.front();
+        const int Dhost = ME::firDelayHostSamples (fs);
+        const int order = 15, Nfft = 1 << order;
+        factory_core::FFT fft; fft.prepare (order);
+        eng.prepare (fs, 256);
+        configFlat (eng);
+        eng.setQuality (ME::Quality::HQ);
+        eng.setPhaseMode (ME::Phase::Linear);
+        eng.setMix (100.0);
+        warmup (eng, fs, 0.4);
+        std::vector<double> in ((size_t) (Nfft + Dhost), 0.0), inR, oL, oR, ddL, ddR;
+        in[0] = 1.0; inR = in;
+        runEngine (eng, in, inR, oL, oR, ddL, ddR);
+        std::vector<double> seg (oL.begin() + Dhost, oL.begin() + Dhost + Nfft);
+        std::vector<double> magDb; magSpectrum (seg, order, fft, magDb);
+        double maxDev = 0.0;
+        for (int k = 1; k < Nfft / 2; ++k)
+        {
+            const double f = freqOfBin (k, fs, order);
+            if (f < 20.0 || f > 0.42 * fs) continue;
+            maxDev = std::max (maxDev, std::abs (magDb[(size_t) k]));
+        }
+        if (g_verbose) std::printf ("   post-churn linear enh0 flatness dev=%.4f dB\n", maxDev);
+        if (maxDev > 0.25) fail ("G26 post-churn linear reconstruction not flat (" + std::to_string (maxDev) + " dB)");
+    }
 }
 
 int main (int argc, char** argv)
@@ -1649,6 +1779,10 @@ int main (int argc, char** argv)
         g24_delta_listen_routing (fs);
         g25_standard_extreme_hi (fs);
     }
+
+    // Concurrency gate (issue #117) — self-contained over the whole rate matrix
+    // (re-prepare across rates is the trigger), independent of the argv rate.
+    g26_concurrent_reconfig();
 
     if (g_failures == 0) { std::printf ("OK: all checks passed.\n"); return 0; }
     std::printf ("FAILED: %d check(s).\n", g_failures);

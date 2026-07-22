@@ -5,9 +5,23 @@
 // exercise headless. No allocation, locks, or syscalls in the audio path.
 //
 #include <cmath>
+#include <limits>
 
 namespace factory_core
 {
+    // Flush a subnormal (denormalized) value to zero with pure arithmetic that is
+    // INDEPENDENT of the CPU's FTZ/DAZ rounding mode. A stable IIR fed a decaying
+    // tail into digital silence otherwise pins its feedback state in the subnormal
+    // range, where every multiply is microcoded and costs ~80x a normal op. Only
+    // values that are ALREADY subnormal (|x| < the smallest normal double) are
+    // touched, so every normal-range result — and thus every existing oracle — is
+    // bit-identical; the guard just stops a decaying feedback node from getting
+    // stuck churning denormals. See docs/regression-policy.md class V (denormal storm).
+    inline double flushDenormalToZero (double x) noexcept
+    {
+        return (std::abs (x) < std::numeric_limits<double>::min()) ? 0.0 : x;
+    }
+
     // Biquad coefficients, already normalized so that a0 == 1.
     struct BiquadCoeffs
     {
@@ -61,8 +75,13 @@ namespace factory_core
         inline double processSample (double x) noexcept
         {
             const double y = coeffs.b0 * x + z1;
-            z1 = coeffs.b1 * x - coeffs.a1 * y + z2;
-            z2 = coeffs.b2 * x - coeffs.a2 * y;
+            // Flush the feedback state (z1, z2) when it decays into the subnormal
+            // range, so a tail fading into silence cannot pin the filter in a
+            // denormal storm on hosts that do not set FTZ around the callback.
+            // No effect on any normal-range signal (bit-identical): see
+            // flushDenormalToZero above.
+            z1 = flushDenormalToZero (coeffs.b1 * x - coeffs.a1 * y + z2);
+            z2 = flushDenormalToZero (coeffs.b2 * x - coeffs.a2 * y);
             return y;
         }
 

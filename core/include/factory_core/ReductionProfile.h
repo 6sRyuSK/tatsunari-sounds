@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 namespace factory_core
 {
@@ -133,5 +134,74 @@ namespace factory_core
                                             double lo = 0.0, double hi = 4.0) noexcept
     {
         return std::clamp (std::pow (10.0, reductionProfileDbAt (f, n) / 20.0), lo, hi);
+    }
+
+    // ---- prepared-nodes fast path (rasteriser hoist) ------------------------
+    // A rasteriser evaluates the profile at MANY frequencies (every FFT bin)
+    // against the SAME node set. reductionProfileDbAt recomputes each band's
+    // centre log-frequency, std::log(freqHz), on every call -- loop-invariant
+    // across the sweep. prepareBandLogF computes those eight logs ONCE; the
+    // *Prepared variants below then reuse them. The result is BIT-IDENTICAL to
+    // the per-call form (same inputs, same deterministic std::log, same band
+    // iteration/accumulation order), just fewer transcendental calls -- proven by
+    // the DSP test's profilePreparedHoistIdentityTest (tolerance 0). Single-
+    // frequency callers keep using reductionProfileDbAt / reductionProfileLinearAt.
+    using BandLogF = std::array<double, 8>;
+
+    inline void prepareBandLogF (const ReductionNodes& n, BandLogF& out) noexcept
+    {
+        for (int b = 0; b < 8; ++b)
+            out[(size_t) b] = std::log (std::max (1.0e-6, n.bands[(size_t) b].freqHz));
+    }
+
+    inline double reductionProfileDbAtPrepared (double f, const ReductionNodes& n,
+                                                const BandLogF& bandLogF) noexcept
+    {
+        const double lf = std::log (std::max (1.0e-6, f));
+        double db = 0.0;
+
+        if (n.lowCut.on)  db += detail::cutDb (f, n.lowCut.freqHz,  n.lowCut.slopeDbPerOct,  true);
+        if (n.highCut.on) db += detail::cutDb (f, n.highCut.freqHz, n.highCut.slopeDbPerOct, false);
+
+        for (int b = 0; b < 8; ++b)
+        {
+            const auto& bn = n.bands[(size_t) b];
+            if (bn.on)
+                db += detail::bandDb (bn.type, lf - bandLogF[(size_t) b], bn.sensDb, bn.widthOct);
+        }
+        return db;
+    }
+
+    inline double reductionProfileLinearAtPrepared (double f, const ReductionNodes& n,
+                                                    const BandLogF& bandLogF,
+                                                    double lo = 0.0, double hi = 4.0) noexcept
+    {
+        return std::clamp (std::pow (10.0, reductionProfileDbAtPrepared (f, n, bandLogF) / 20.0), lo, hi);
+    }
+
+    // Bit-exact equality of two node sets -- the KEY of the rasterisation cache
+    // (a plugin re-rasterises only when this changes). memcmp on each double
+    // sidesteps -Wfloat-equal and never touches struct padding; bools/enums use
+    // integral ==. Identical params (read from the same source unchanged) compare
+    // equal to the bit, so the cache can never skip a genuine change; a changed
+    // bit (any edit) always re-rasterises. Shared so the JUCE processor and RsCore
+    // key their caches identically (the byte-equivalence gate proves parity).
+    inline bool reductionNodesIdentical (const ReductionNodes& a, const ReductionNodes& b) noexcept
+    {
+        auto sameD = [] (double x, double y) noexcept { return std::memcmp (&x, &y, sizeof (double)) == 0; };
+        auto sameCut = [&] (const ReductionNodes::Cut& x, const ReductionNodes::Cut& y) noexcept
+        {
+            return x.on == y.on && sameD (x.freqHz, y.freqHz) && sameD (x.slopeDbPerOct, y.slopeDbPerOct);
+        };
+        if (! sameCut (a.lowCut, b.lowCut) || ! sameCut (a.highCut, b.highCut)) return false;
+        for (int b_ = 0; b_ < 8; ++b_)
+        {
+            const auto& x = a.bands[(size_t) b_];
+            const auto& y = b.bands[(size_t) b_];
+            if (x.on != y.on || x.type != y.type
+                || ! sameD (x.freqHz, y.freqHz) || ! sameD (x.sensDb, y.sensDb) || ! sameD (x.widthOct, y.widthOct))
+                return false;
+        }
+        return true;
     }
 } // namespace factory_core

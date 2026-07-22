@@ -93,6 +93,12 @@ void MultibandEnhancerAudioProcessor::prepareToPlay (double sampleRate, int samp
     currentSampleRate = sampleRate;
     const int maxBlock = juce::jmax (1, samplesPerBlock);
 
+    // Hold engineConfigLock across the whole engine (re)configuration so a message-
+    // thread FIR redesign (handleAsyncUpdate) cannot run while engine.prepare()
+    // reallocates the linear-phase FIR buffers. A host may call prepareToPlay off the
+    // message thread (JUCE's AU wrapper does — issue #117), so the two would otherwise
+    // race and corrupt the heap. Non-real-time path, so locking is allowed.
+    const juce::ScopedLock sl (engineConfigLock);
     engine.prepare (sampleRate, maxBlock);
 
     deltaL.assign ((size_t) maxBlock, 0.0f);
@@ -260,11 +266,17 @@ void MultibandEnhancerAudioProcessor::handleAsyncUpdate()
     // Rebuild the linear-phase FIR kernels off the audio thread (draggable crossover)
     // before republishing latency. redesignFir allocates + does the design FFTs here
     // on the message thread and hands the result to the audio thread lock-free.
+    // engineConfigLock serialises this against prepareToPlay's engine.prepare(), which
+    // reallocates the very buffers redesignFir writes — the host may re-prepare off the
+    // message thread concurrently with this callback (issue #117).
     if (firRedesignPending.exchange (false, std::memory_order_acquire))
+    {
+        const juce::ScopedLock sl (engineConfigLock);
         engine.redesignFir (firReqHz[0].load (std::memory_order_relaxed),
                             firReqHz[1].load (std::memory_order_relaxed),
                             firReqHz[2].load (std::memory_order_relaxed),
                             firReqHz[3].load (std::memory_order_relaxed));
+    }
 
     setLatencySamples (reportedLatency.load (std::memory_order_relaxed));
     updateHostDisplay();

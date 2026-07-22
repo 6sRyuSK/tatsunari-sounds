@@ -94,7 +94,18 @@ TumbleDelayAudioProcessor::createParameterLayout()
     // ---- Globals (15) ----
     addC ("boxShape", "Shape",
           SA { "Triangle", "Square", "Pentagon", "Hexagon", "Octagon", "Circle" }, 1);
-    addF ("boxSize", "Box Size", logRange (0.05f, 4.0f, 0.001f), 0.40f, " s");
+    // Box Size stores seconds (state / presets / Size Sync unchanged) but
+    // DISPLAYS the geometric scale of the reference box: 0.40 s = 1.00x.
+    {
+        constexpr float ref = (float) factory_core::TumbleDelay::kReferenceBoxSizeSeconds;
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { "boxSize", 1 }, "Box Size",
+            logRange (0.05f, 4.0f, 0.001f), 0.40f,
+            juce::AudioParameterFloatAttributes()
+                .withLabel ("x")
+                .withStringFromValueFunction ([] (float v, int) { return juce::String (v / ref, 2); })
+                .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue() * ref; })));
+    }
     addC ("boxSizeSync", "Size Sync", choiceList (kBoxSizeSyncChoices), 0);
     addF ("spin", "Spin", linRange (-2.0f, 2.0f, 0.01f), 0.20f, " rev/s");
     addC ("spinSync", "Spin Sync", choiceList (kSpinSyncChoices), 0);
@@ -257,6 +268,7 @@ void TumbleDelayAudioProcessor::pushParametersToEngine (double bpm) noexcept
             ? factory_core::tempoSyncSeconds (bpm, kBoxSizeSyncBeats[sync - 1])
             : (double) boxSizeParam->load();
         engine.setBoxSizeSeconds (sec);
+        effBoxSizeSec.store (sec, std::memory_order_relaxed);
     }
 
     // Spin: a non-Off sync value is seconds-per-revolution -> rev/s; its sign is

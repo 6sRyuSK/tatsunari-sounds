@@ -12,9 +12,10 @@
 
 //
 // TumbleVisualizer — the physics view. A message-thread mirror of the engine:
-// each timer tick reads snapshotBalls / drainHits / boxAngle (all lock-free) and
-// repaints. It NEVER writes physics state; the only writes back to the processor
-// are pivotX / pivotY parameter edits from dragging the pivot handle. Paints
+// each timer tick reads snapshotBalls / drainHits / boxAngle / boxSizeSeconds
+// (all lock-free) and repaints. It NEVER writes physics state; the only writes
+// back to the processor are pivotX / pivotY parameter edits from dragging the
+// pivot handle. Paints
 // exclusively with the factory_ui palette (slot accents = bandColour 0..3).
 // Header-only, so the plugin's CMakeLists needs no change.
 //
@@ -26,10 +27,9 @@ public:
         : processor (p)
     {
         auto& s = processor.apvts;
-        shapeParam   = s.getRawParameterValue ("boxShape");
-        pivotXParam  = s.getRawParameterValue ("pivotX");
-        pivotYParam  = s.getRawParameterValue ("pivotY");
-        boxSizeParam = s.getRawParameterValue ("boxSize");
+        shapeParam  = s.getRawParameterValue ("boxShape");
+        pivotXParam = s.getRawParameterValue ("pivotX");
+        pivotYParam = s.getRawParameterValue ("pivotY");
 
         static constexpr const char* prefix[4] = { "a", "b", "c", "d" };
         for (int i = 0; i < 4; ++i)
@@ -45,6 +45,7 @@ public:
         pivotXHandle = s.getParameter ("pivotX");
         pivotYHandle = s.getParameter ("pivotY");
 
+        viewFactor = sizeFactorFor ((float) processor.boxSizeSeconds());
         lastTickMs = juce::Time::getMillisecondCounterHiRes();
         startTimerHz (45);
     }
@@ -57,10 +58,11 @@ public:
         factory_ui::paintCard (g, bounds); // opaque fill clears the previous frame + frames the card
 
         // World -> screen: uniform scale, y flipped (world +y is up; gravity pulls
-        // world -y, which must render downward). World span [-1.25,+1.25] fits the
-        // shorter dimension.
-        const Xform x { juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.5f,
-                        bounds.getCentreX(), bounds.getCentreY() };
+        // world -y, which must render downward). The base scale fits world span
+        // [-1.25,+1.25] in the shorter dimension; viewFactor then tracks Box Size,
+        // so the parameter literally reads as the drawn box's size. Balls and
+        // pivot live in box-relative world coords, so they scale along.
+        const Xform x { worldScale(), bounds.getCentreX(), bounds.getCentreY() };
 
         const float px = pivotXParam->load();
         const float py = pivotYParam->load();
@@ -119,6 +121,24 @@ private:
 
     struct Flash { float x = 0, y = 0; int slot = 0; float intensity = 0; float age = 0; bool active = false; };
     static constexpr float kFlashLife = 0.45f;
+
+    // Box Size -> drawn circumradius factor: log-map the knob range [0.05, 4] s
+    // (sync-resolved values are clamped into it) onto [kMinBoxFactor, kMaxBoxFactor].
+    static constexpr float kMinBoxFactor = 0.50f, kMaxBoxFactor = 1.10f;
+    static float sizeFactorFor (float sec) noexcept
+    {
+        const float n = std::log (juce::jlimit (0.05f, 4.0f, sec) / 0.05f)
+                        / std::log (4.0f / 0.05f);
+        return kMinBoxFactor + (kMaxBoxFactor - kMinBoxFactor) * n;
+    }
+
+    // The single world->screen scale everything shares (box, balls, flashes, and
+    // BOTH pivot mappings — the drawn handle and the mouse writeback must agree).
+    float worldScale() const noexcept
+    {
+        const auto b = getLocalBounds().toFloat();
+        return juce::jmin (b.getWidth(), b.getHeight()) / 2.5f * viewFactor;
+    }
 
     static int shapeN (int idx) noexcept // vertex count; 0 == circle
     {
@@ -237,7 +257,7 @@ private:
 
         const int   N       = shapeN (shapeIdx);
         const float apothem = (N == 0) ? 1.0f : std::cos (juce::MathConstants<float>::pi / (float) N);
-        const float boxSec  = juce::jmax (0.001f, boxSizeParam->load());
+        const float boxSec  = juce::jmax (0.001f, (float) processor.boxSizeSeconds());
 
         g.setFont (juce::Font (juce::FontOptions (12.0f)));
 
@@ -251,10 +271,14 @@ private:
 
             const int   count  = (int) std::lround (countParam[(size_t) s]->load());
             const float timeMs = timeParam[(size_t) s]->load();
-            const float ballSz = ballSizeParam[(size_t) s]->load() * 0.01f; // % -> fraction of R
+            const float ballSz = ballSizeParam[(size_t) s]->load() * 0.01f; // % -> fraction of REFERENCE R
             const float speed  = juce::jmax (0.001f, speedParam[(size_t) s]->load());
             const float vRef   = 2.0f / boxSec;                             // 2R / boxSize, R = 1
-            const float flight = juce::jmax (0.0f, apothem - ballSz) / (speed * vRef); // seconds
+            // Ball radius in this box's normalized world (same formula + clamp as
+            // the engine's ballRadius(): absolute size / geometric box scale).
+            const float ref    = (float) factory_core::TumbleDelay::kReferenceBoxSizeSeconds;
+            const float ballR  = juce::jlimit (0.002f, 0.4f * apothem, ballSz * ref / boxSec);
+            const float flight = juce::jmax (0.0f, apothem - ballR) / (speed * vRef); // seconds
 
             int alive = 0;
             for (int i = 0; i < ballCount; ++i)
@@ -296,6 +320,11 @@ private:
             if (f.active && (f.age += dt) >= kFlashLife)
                 f.active = false;
 
+        // Ease the drawn box size toward the sync-resolved Box Size so preset
+        // loads and sync switches zoom smoothly instead of snapping.
+        const float target = sizeFactorFor ((float) processor.boxSizeSeconds());
+        viewFactor += (target - viewFactor) * juce::jmin (1.0f, dt * 12.0f);
+
         repaint();
     }
 
@@ -315,7 +344,7 @@ private:
     juce::Point<float> pivotScreen() const
     {
         const auto b = getLocalBounds().toFloat();
-        const float scale = juce::jmin (b.getWidth(), b.getHeight()) / 2.5f;
+        const float scale = worldScale();
         return { b.getCentreX() + pivotXParam->load() * scale,
                  b.getCentreY() - pivotYParam->load() * scale };
     }
@@ -323,7 +352,7 @@ private:
     void writePivotFromMouse (const juce::MouseEvent& e)
     {
         const auto b = getLocalBounds().toFloat();
-        const float scale = juce::jmax (1.0f, juce::jmin (b.getWidth(), b.getHeight()) / 2.5f);
+        const float scale = juce::jmax (1.0f, worldScale());
         const float wx = juce::jlimit (-1.0f, 1.0f, (e.position.x - b.getCentreX()) / scale);
         const float wy = juce::jlimit (-1.0f, 1.0f, -(e.position.y - b.getCentreY()) / scale);
         if (pivotXHandle != nullptr) pivotXHandle->setValueNotifyingHost (pivotXHandle->convertTo0to1 (wx));
@@ -333,10 +362,9 @@ private:
     TumbleDelayAudioProcessor& processor;
 
     // Cached read-only parameter atomics (message-thread reads only).
-    std::atomic<float>* shapeParam   = nullptr;
-    std::atomic<float>* pivotXParam  = nullptr;
-    std::atomic<float>* pivotYParam  = nullptr;
-    std::atomic<float>* boxSizeParam = nullptr;
+    std::atomic<float>* shapeParam  = nullptr;
+    std::atomic<float>* pivotXParam = nullptr;
+    std::atomic<float>* pivotYParam = nullptr;
     std::array<std::atomic<float>*, 4> onParam {}, countParam {}, timeParam {}, ballSizeParam {}, speedParam {};
 
     // Pivot edit handles (the only writable path, via APVTS gestures).
@@ -348,6 +376,7 @@ private:
     std::array<Flash, 64> flashes {};
 
     double lastTickMs = 0.0;
+    float viewFactor = 1.0f; // eased sizeFactorFor(boxSize); scales the whole world view
     bool draggingPivot = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TumbleVisualizer)

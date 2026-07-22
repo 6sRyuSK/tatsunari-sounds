@@ -1,0 +1,104 @@
+# Linux clap-validator gate for the resonance-suppressor CLAP (3.0.0 cutover).
+#
+# Post-cutover, RS ships clap-first and ci.yml ALREADY builds it on macOS +
+# Windows and runs pluginval (strictness 5) on the wrapper VST3 + AU there. What
+# ci.yml does NOT run is clap-validator, so this workflow keeps that ONE unique
+# signal: it builds the RS clap-first assembly on Linux (the DSP core + shell +
+# params/preset/state model are OS-agnostic) and validates the native .clap with
+# clap-validator. The Linux pluginval-on-the-wrapper-VST3 leg was dropped as
+# redundant with ci.yml's mac/Windows pluginval.
+#
+# No FACTORY_RS_CLAP flag any more — a default configure builds RS clap-first
+# whenever RS is in the plugin set (here -DFACTORY_PLUGINS=resonance-suppressor).
+#
+# Path-scoped so it only runs when something that can affect the CLAP surface
+# changes; ci.yml remains the primary gate (build + CTest matrix + pluginval).
+
+name: clap
+
+on:
+  push:
+    paths:
+      - 'shell/**'
+      - 'core/**'
+      - 'presets/**'
+      - 'params/**'
+      - 'plugins/*/shell/**'
+      - 'plugins/*/RsCore.h'
+      - 'plugins/*/Source/Params.h'
+      - 'cmake/**'
+      - '.github/workflows/clap.yml'
+  pull_request:
+    paths:
+      - 'shell/**'
+      - 'core/**'
+      - 'presets/**'
+      - 'params/**'
+      - 'plugins/*/shell/**'
+      - 'plugins/*/RsCore.h'
+      - 'plugins/*/Source/Params.h'
+      - 'cmake/**'
+      - '.github/workflows/clap.yml'
+  workflow_dispatch:
+
+jobs:
+  linux-clap:
+    name: RS CLAP shell (Linux, clap-validator)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}   # for `gh release download`
+      SLUG: resonance-suppressor
+      ASSETS: build-clap/resonance-suppressor_assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + validator dependencies
+        run: |
+          sudo apt-get update
+          # ninja + the X11/ALSA/freetype/fontconfig/GL dev headers the VST3 SDK
+          # and pluginval's bundled JUCE need; ladspa-sdk for JUCE's LADSPA format.
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
+            libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev ladspa-sdk
+
+      - name: Configure (default — RS is clap-first)
+        run: >
+          cmake -B build-clap -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DFACTORY_PLUGINS=${SLUG}
+
+      - name: Build ${SLUG}_all (CLAP + wrapper VST3)
+        # The make_clapfirst aggregate builds the CLAP + wrapper VST3 (proving both
+        # assemble on Linux). It is safe: CMake's `default all` excludes the
+        # clap-wrapper vst3_validator custom target, and so does the ${SLUG}_all
+        # aggregate — neither `cmake --build` nor this reconfigures the VST3 SDK.
+        run: cmake --build build-clap --target ${SLUG}_all
+
+      - name: Locate built .clap
+        id: art
+        run: |
+          CLAP=$(find "$ASSETS" -maxdepth 2 -name '*.clap' | head -1)
+          echo "clap=$CLAP" >> "$GITHUB_OUTPUT"
+          echo "Built CLAP: $CLAP"
+          test -n "$CLAP"
+
+      - name: Download clap-validator (prebuilt 0.3.2)
+        run: |
+          gh release download 0.3.2 --repo free-audio/clap-validator \
+            --pattern '*ubuntu*' --dir cv-dl || \
+          gh release download 0.3.2 --repo free-audio/clap-validator \
+            --pattern '*linux*' --dir cv-dl
+          # Extract whatever archive shape the release ships and find the binary.
+          find cv-dl -name '*.tar.gz' -exec tar -xzf {} -C cv-dl \; || true
+          find cv-dl -name '*.zip'    -exec unzip -o {} -d cv-dl \; || true
+          CV=$(find cv-dl -type f -name 'clap-validator' | head -1)
+          chmod +x "$CV"
+          echo "CLAP_VALIDATOR=$CV" >> "$GITHUB_ENV"
+
+      - name: clap-validator (native CLAP)
+        # SKIPPED tests (no preset-discovery-factory / no note-ports) are expected
+        # for an audio effect and are not failures; require exit 0. This is the one
+        # signal ci.yml does not cover (it runs pluginval, not clap-validator).
+        run: '"$CLAP_VALIDATOR" validate "${{ steps.art.outputs.clap }}"'

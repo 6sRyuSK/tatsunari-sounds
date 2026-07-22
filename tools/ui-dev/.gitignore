@@ -1,0 +1,6 @@
+# Local wasm build output + Playwright deliverables (not source).
+build/
+playwright/node_modules/
+playwright/*.png
+playwright/*.json
+.emsdk/

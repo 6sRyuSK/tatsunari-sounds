@@ -1,0 +1,81 @@
+{
+  "_comment": "RS plugin theme overlay. Top-level keys are the shared factory_ui_visage schema, applied to the shared Theme via Theme::applyOverlay (LIVE hot-reload). The shared 'donut + needle' knob (design reference 2026-07-17) is now the factory-wide default, so no knob overlay is needed here — only the 16px card radius. The 'rs' object is RS-specific extras consumed by rs_ui::RsTheme (see RsTheme.h RsExtras). The 'rs.analyzer.*' values follow the design reference (they supersede the earlier kV201Style transcription) — a human still signs off on them.",
+
+  "card": {
+    "cornerRadius": 16
+  },
+
+  "rs": {
+    "palette": {
+      "plotTop": "#fffffaf7",
+      "plotBottom": "#fffff4ee",
+      "chipBg": "#fffffdfb",
+      "footerBg": "#fffff4ee",
+      "segTrackBg": "#fffff1ec",
+      "modeBoxTop": "#fffff6f3",
+      "modeBoxBorder": "#ffffcabf",
+      "borderLight": "#fff7e7e0",
+      "linkTrack": "#fff4e3db",
+      "linkFillStart": "#ffffb0a3",
+      "toggleOffBg": "#ffe7d3ca",
+      "orange": "#ffff9472",
+      "pink": "#ffff6f91",
+      "amber": "#ffffba6b",
+      "mint": "#ff7fd1ae",
+      "highCutRing": "#ff79b8ef",
+      "iconInactive": "#ff9c857c",
+      "textFaint": "#ffc9b3aa",
+      "glowPink": "#66ff6f91",
+      "shadowTaupe": "#246b5750",
+      "nodeShadow": "#476b5750",
+      "dotRing": "#ffffe4db",
+      "typeCaption": "#ffc39a8c",
+      "grBg": "#ffeafaf7",
+      "grBorder": "#ffb8e8e2",
+      "grText": "#ff2f9488",
+      "_note_teal": "teal (#45b8ac) is now the shared palette.positive (ON toggles / Listen / GR / reduction curtain)"
+    },
+    "radius": {
+      "outer": 22,
+      "card": 16,
+      "popover": 18,
+      "box": 12,
+      "badge": 9,
+      "badgeLg": 11,
+      "cutHandle": 4
+    },
+    "spacing": {
+      "panelPad": 20,
+      "panelGap": 16,
+      "bigKnobGap": 22,
+      "smallKnobGap": 18
+    },
+    "node": {
+      "bandDot": 15,
+      "bandDotSel": 20,
+      "cutHandle": 13,
+      "cutHandleSel": 18,
+      "hitRadius": 14
+    },
+    "analyzer": {
+      "_signoff": "PENDING — v2.1.0 (AnalyzerStyle.h kV201Style, transcribed from SuppressionCurveComponent.h). Teal curtain hangs from the 0 dB gridline (AreaFromZero) with a 0.8/1px stroke; PRE = muted-taupe filled area (0.22->0.02), no line; POST = thin solid coral line; combined reduction PROFILE = SOLID coral (2.2px) + soft glow (0.22/5px) through the node dots; per-node = translucent fill (0.12) + stroke (0.7) under the glow.",
+      "curtainFillAlpha": 0.28,
+      "curtainStrokeAlpha": 0.8,
+      "curtainStrokeWidth": 1.0,
+      "preColour": "#ffb9a39b",
+      "preFillTopAlpha": 0.22,
+      "preFillBotAlpha": 0.02,
+      "postColour": "#ffff7a6b",
+      "postLineWidth": 1.4,
+      "postLineAlpha": 0.85,
+      "profileColour": "#ffff7a6b",
+      "profileGlowAlpha": 0.22,
+      "profileGlowWidth": 5.0,
+      "profileStrokeWidth": 2.2,
+      "profileStrokeAlpha": 1.0,
+      "perNodeFillAlpha": 0.12,
+      "perNodeStrokeAlpha": 0.7,
+      "displaySmoothMs": 50.0
+    }
+  }
+}
