@@ -86,7 +86,8 @@ cd playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node rs.spec.js http:
 
 The rs-editor canvas is fixed at the **max** resize size (1320×922) and the editor
 frame renders into its top-left sub-rect; `rs.setSize(w,h)` re-lays-out at
-940×657 / 1069×747 / 1320×922 (fixed design aspect) and the driver clips the
+471×329 (min) / 706×493 (default) / 1069×747 (design) / 1320×922 (max) — fixed
+design aspect, uniform-scaled by k()=height/747 — and the driver clips the
 screenshot to `(w,h)` — the native window can't be resized under Emscripten
 (`computeWindowBounds` isn't linkable), so only the editor frame resizes.
 

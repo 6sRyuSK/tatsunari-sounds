@@ -131,6 +131,17 @@ if(NOT EMSCRIPTEN)
              COMMAND factory_ui_visage_spectrum_test ${_fs})
   endforeach()
 
+  # ThemeScale (the runtime px-metric scaler, ThemeScale.h) is header-only and
+  # visage-free/JUCE-free — checked against the Theme model with a plain host
+  # compiler (Theme.cpp for defaults() + operator==). Rate-independent, one case.
+  add_executable(factory_ui_visage_theme_scale_test
+    tests/theme_scale_test.cpp
+    src/Theme.cpp
+  )
+  target_include_directories(factory_ui_visage_theme_scale_test PRIVATE include)
+  target_compile_features(factory_ui_visage_theme_scale_test PRIVATE cxx_std_17)
+  add_test(NAME factory_ui_visage_theme_scale COMMAND factory_ui_visage_theme_scale_test)
+
   # ValueText (the visage-free half of the direct value-entry flow) is headers
   # only — compiling it here with a plain host compiler also proves it stays
   # visage-free and JUCE-free. Rate-independent, one case.

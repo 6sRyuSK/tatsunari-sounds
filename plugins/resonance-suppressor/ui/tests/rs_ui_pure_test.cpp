@@ -100,12 +100,12 @@ void checkParseFreqEntry()
 // Footer columns: the round-#4 invariant is that EVERY section-content <->
 // divider gap equals the single value P — the native version of the Playwright
 // test-19 divider-gap guard. Checked at the design scale (k=1, 1069x747) and at
-// the minimum size's fractional scale (k=657/747).
+// the new minimum + default fractional scales (k=329/747 and 493/747).
 void checkFooterColumns()
 {
     std::printf ("2. computeRsFooterColumns (uniform divider gaps)\n");
 
-    for (const float k : { 1.0f, 657.0f / 747.0f })
+    for (const float k : { 1.0f, 329.0f / 747.0f, 493.0f / 747.0f })
     {
         auto S = [k] (float v) { return (float) (int) std::round (v * k); }; // the editor's scale idiom
         // The footer inner rect exactly as RsEditor::resized derives it at design
@@ -142,32 +142,43 @@ void checkFooterColumns()
 // left-anchored TYPE/SLOPE buttons, and the Listen chip keeps its floor width.
 void checkNodePanelLayout()
 {
-    std::printf ("3. computeRsNodePanelLayout (intrinsic widths, no collision)\n");
-    constexpr float h = 112.0f; // RsNodePanel::kHeight
+    std::printf ("3. computeRsNodePanelLayout (intrinsic widths, no collision, scaled)\n");
     constexpr float tol = 1.0e-3f;
 
-    struct Case { float w; bool isCut; int choices; const char* name; };
-    const Case cases[] = { { 350.0f, true, 4, "cut(350)" }, { 500.0f, false, 6, "band(500)" } };
-    for (const Case& cs : cases)
+    // Same invariants at design scale AND at the new min / default fractional scales
+    // (k = 329/747, 493/747): the panel size + every inner metric scale with k(), so
+    // the right-anchored knob column, the collision-clearance and the Listen floor all
+    // hold proportionally at a shrunk window.
+    struct Case { float wDesign; bool isCut; int choices; const char* name; };
+    const Case cases[] = { { 350.0f, true, 4, "cut" }, { 500.0f, false, 6, "band" } };
+    for (const float k : { 1.0f, 329.0f / 747.0f, 493.0f / 747.0f })
     {
-        const rs_ui::RsNodePanelLayout L = rs_ui::computeRsNodePanelLayout (cs.w, h, cs.isCut, cs.choices);
-        const std::string at = std::string (" [") + cs.name + "]";
+        for (const Case& cs : cases)
+        {
+            // The editor passes the panel its ALREADY-SCALED (w, h) — preferredWidth()
+            // = round(intrinsic * k), preferredHeight() = round(112 * k).
+            const float w = std::round (cs.wDesign * k);
+            const float h = std::round (112.0f * k);
+            const rs_ui::RsNodePanelLayout L =
+                rs_ui::computeRsNodePanelLayout (w, h, cs.isCut, cs.choices, k);
+            const std::string at =
+                std::string (" [") + cs.name + " k=" + std::to_string (k) + "]";
 
-        // Knob column right-anchored to the 14px inner inset.
-        const rs_ui::RsNodePanelLayout::R& lastKnob = cs.isCut ? L.freqArea : L.widthArea;
-        checkNear (lastKnob.x + lastKnob.w, cs.w - 14.0f, tol, "knob column right-anchored" + at);
+            // Knob column right-anchored to the (scaled) 14px inner inset.
+            const rs_ui::RsNodePanelLayout::R& lastKnob = cs.isCut ? L.freqArea : L.widthArea;
+            checkNear (lastKnob.x + lastKnob.w, w - 14.0f * k, tol, "knob column right-anchored" + at);
 
-        // The last choice button must clear the knob column (the reported
-        // TYPE-button-under-knob overlap class).
-        const rs_ui::RsNodePanelLayout::R& lastBtn = L.choice[cs.choices - 1];
-        check (lastBtn.x + lastBtn.w <= L.freqArea.x + tol, "choice row clears the knob column" + at);
+            // The last choice button must clear the knob column (the reported
+            // TYPE-button-under-knob overlap class).
+            const rs_ui::RsNodePanelLayout::R& lastBtn = L.choice[cs.choices - 1];
+            check (lastBtn.x + lastBtn.w <= L.freqArea.x + tol, "choice row clears the knob column" + at);
 
-        // Listen chip keeps its floor width (the \"Lis…\" clip class) and the
-        // header row stays ordered.
-        check (L.listenBadge.w >= 40.0f - tol, "listen badge >= 40px" + at);
-        check (L.dot.x < L.name.x && L.name.x < L.onBadge.x && L.onBadge.x < L.listenBadge.x,
-               "header rects ordered" + at);
-        check (L.closeBtn.x + L.closeBtn.w <= cs.w, "close X inside the panel" + at);
+            // Listen chip keeps its (scaled) floor width and the header row stays ordered.
+            check (L.listenBadge.w >= 40.0f * k - tol, "listen badge >= 40px*k" + at);
+            check (L.dot.x < L.name.x && L.name.x < L.onBadge.x && L.onBadge.x < L.listenBadge.x,
+                   "header rects ordered" + at);
+            check (L.closeBtn.x + L.closeBtn.w <= w + tol, "close X inside the panel" + at);
+        }
     }
 }
 

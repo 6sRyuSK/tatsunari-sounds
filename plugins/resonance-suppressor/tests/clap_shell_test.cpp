@@ -526,7 +526,7 @@ int main()
         // scale 1.0 (macOS logical, or a 1x display): logical == native.
         snap (1.0, 1069, 747, w, h);   check (w == 1069 && h == 747, "snap 1.0: 1069x747 is a fixed point");
         snap (1.0, 10000, 10000, w, h); check (w == 1320 && h == 922, "snap 1.0: huge -> max 1320x922");
-        snap (1.0, 1, 1, w, h);         check (w == 940 && h == 657, "snap 1.0: tiny -> min 940x657");
+        snap (1.0, 1, 1, w, h);         check (w == 471 && h == 329, "snap 1.0: tiny -> min 471x329");
 
         // Aspect invariant for arbitrary inputs: |w*747 - h*1069| <= 747 (< ~1 logical px).
         for (std::uint32_t in : { 700u, 950u, 1100u, 1200u, 1319u, 2000u })
@@ -537,9 +537,10 @@ int main()
             check (d <= 747, "snap 1.0: aspect within 1px for a square input");
         }
 
-        // scale 1.5: the design proposal (native px) is ~713 logical wide -> min clamp
-        // -> logical 940x657 -> native 1410x986 (940*1.5, round(657*1.5)=round(985.5)).
-        snap (1.5, 1069, 747, w, h); check (w == 1410 && h == 986, "snap 1.5: native design proposal -> min -> 1410x986");
+        // scale 1.5: the design proposal (native px) is ~713 logical wide, which is now
+        // WITHIN the [471..1320] logical width band (no clamp) — aspect-correct it to
+        // logical 713x498, then back to native: round(713*1.5)=1070, round(498*1.5)=747.
+        snap (1.5, 1069, 747, w, h); check (w == 1070 && h == 747, "snap 1.5: native design proposal -> 1070x747");
 
         // scale 2.0: a huge square proposal -> logical max 1320x922 -> native 2640x1844.
         snap (2.0, 5000, 5000, w, h); check (w == 2640 && h == 1844, "snap 2.0: huge -> native max 2640x1844");

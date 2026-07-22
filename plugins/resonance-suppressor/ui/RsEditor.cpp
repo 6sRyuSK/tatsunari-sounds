@@ -4,6 +4,7 @@
 #include "factory_ui_visage/Chrome.h" // paintCardShell / paintHairline
 #include "factory_ui_visage/Icons.h"
 #include "factory_ui_visage/Fonts.h"
+#include "factory_ui_visage/ThemeScale.h" // scaleThemeMetrics (runtime px scaler)
 
 #include <algorithm>
 #include <chrono>
@@ -17,7 +18,7 @@ namespace rs_ui
 
     RsEditor::RsEditor (const RsTheme& theme, factory_params::ParamStore& store, RsFeed& feed,
                         RsPresetModel& presets, RsAbModel& ab)
-        : rsTheme_ (theme), store_ (store), feed_ (feed), presets_ (presets), ab_ (ab), model_ (store),
+        : baseTheme_ (theme), rsTheme_ (theme), store_ (store), feed_ (feed), presets_ (presets), ab_ (ab), model_ (store),
           sweeper_ (store)
     {
         const fuv::Theme& base = rsTheme_.base;
@@ -340,12 +341,12 @@ namespace rs_ui
             // user reported.
             nodePanel_->setNode (id);
             const int w = nodePanel_->preferredWidth();
-            const int h = RsNodePanel::kHeight;
+            const int h = nodePanel_->preferredHeight();
             float px, py, pw, ph;
             plotRectInWindowLocal (px, py, pw, ph); // frame-local plot rect
             float x = px + (pw - (float) w) * 0.5f;
             x = std::clamp (x, px, std::max (px, px + pw - (float) w));
-            const float y = py + ph - (float) h - 6.0f;
+            const float y = py + ph - (float) h - 6.0f * k();
             nodePanel_->setBounds (x, y, (float) w, (float) h);
             nodePanel_->setVisible (true);
         }
@@ -390,9 +391,39 @@ namespace rs_ui
         RsTheme parsed;
         if (! RsTheme::load (overlayJson, parsed, error))
             return false;
-        rsTheme_ = parsed;
+        // Merge onto the UNSCALED baseline, then re-derive the live scaled theme —
+        // widgets keep their const ref to rsTheme_ (mutated in place by applyScale).
+        baseTheme_ = parsed;
+        applyScale();
         redrawAll();
         return true;
+    }
+
+    // Push baseTheme_ * k() into the live rsTheme_ instance the widgets reference, and
+    // re-seed the k()-scaled per-widget px profiles (the ctor seeds them at design
+    // size). Identity at k == 1 (the 1069x747 design size).
+    void RsEditor::applyScale()
+    {
+        const float s = k();
+        rsTheme_.base    = fuv::scaleThemeMetrics (baseTheme_.base, s);
+        rsTheme_.rs      = baseTheme_.rs.scaled (s);
+        rsTheme_.uiScale = s;
+
+        // Per-widget px profiles the shared theme doesn't carry (they are passed to
+        // the widgets, not read from the theme) — the JUCE RsKnob proportions and the
+        // JUCE RsLinkSlider caption columns, scaled by k() so they track the window.
+        if (knobs_.size() >= 5)
+        {
+            knobs_[0]->setDialProfile (16.0f * s, 17.0f * s, 12.0f * s, 13.0f * s, 0.0f);
+            knobs_[1]->setDialProfile (16.0f * s, 17.0f * s, 12.0f * s, 13.0f * s, 0.0f);
+            knobs_[2]->setDialProfile (14.0f * s, 14.0f * s, 10.0f * s, 11.0f * s, 0.0f);
+            knobs_[3]->setDialProfile (14.0f * s, 14.0f * s, 10.0f * s, 11.0f * s, 0.0f);
+            knobs_[4]->setDialProfile (14.0f * s, 14.0f * s, 10.0f * s, 11.0f * s, 0.0f);
+        }
+        if (modeSeg_) modeSeg_->setLabelFontPx (12.0f * s);
+        if (linkAmt_) linkAmt_->setCaptionColumnPx (86.0f * s);
+        if (mix_)     mix_->setCaptionColumnPx (34.0f * s);
+        if (out_)     out_->setCaptionColumnPx (34.0f * s);
     }
 
     void RsEditor::setFrozen (bool frozen)
@@ -409,6 +440,11 @@ namespace rs_ui
         // A window resize moves every control — discard any in-flight value edit so
         // the overlay can't linger over a stale rect.
         if (valueEntry_) valueEntry_->cancelEntry();
+
+        // Re-derive the k()-scaled live theme + widget px profiles BEFORE placing the
+        // children, so a shrunk window scales its whole look (fonts / radii / paddings
+        // / pill + node-panel geometry) instead of freezing at the design size.
+        applyScale();
 
         const float w = width(), h = height();
         const int mx = S (20);
@@ -581,6 +617,7 @@ namespace rs_ui
     void RsEditor::drawHeaderChrome (visage::Canvas& canvas)
     {
         // A|B strip (2 segments, manual — reflects the A/B model).
+        const float s = k();
         const Rect& r = abStrip_;
         canvas.setColor (visage::Color (rsTheme_.rs.segTrackBg));
         canvas.roundedRectangle (r.x, r.y, r.w, r.h, rsTheme_.rs.radiusBadge);
@@ -593,19 +630,20 @@ namespace rs_ui
             if (i == active)
             {
                 canvas.setColor (visage::Color (rsTheme_.base.palette.accent));
-                canvas.roundedRectangle (sx + 3.0f, r.y + 3.0f, segW - 6.0f, r.h - 6.0f, rsTheme_.rs.radiusBadge - 2.0f);
+                canvas.roundedRectangle (sx + 3.0f * s, r.y + 3.0f * s, segW - 6.0f * s, r.h - 6.0f * s, rsTheme_.rs.radiusBadge - 2.0f * s);
             }
             canvas.setColor (visage::Color (i == active ? 0xffffffff : rsTheme_.base.palette.textDim));
-            canvas.text (labels[i], boldFont (12.0f), visage::Font::kCenter, sx, r.y, segW, r.h);
+            canvas.text (labels[i], boldFont (12.0f * s), visage::Font::kCenter, sx, r.y, segW, r.h);
         }
     }
 
     void RsEditor::drawFooterChrome (visage::Canvas& canvas)
     {
         // footer card + hairline
+        const float s = k();
         const Rect& f = footerCard_;
         canvas.setColor (visage::Color (rsTheme_.rs.nodeShadow));
-        canvas.roundedRectangleShadow (f.x, f.y + 5.0f, f.w, f.h, rsTheme_.rs.radiusCard, 16.0f);
+        canvas.roundedRectangleShadow (f.x, f.y + 5.0f * s, f.w, f.h, rsTheme_.rs.radiusCard, 16.0f * s);
         fuv::paintCardShell (canvas, f.x, f.y, f.w, f.h, rsTheme_.rs.radiusCard,
                              visage::Color (rsTheme_.rs.footerBg),
                              visage::Color (rsTheme_.base.palette.track));
@@ -621,9 +659,9 @@ namespace rs_ui
         canvas.setColor (visage::Brush::vertical (visage::Color (rsTheme_.rs.modeBoxTop), visage::Color (0xffffffff)));
         canvas.roundedRectangle (m.x, m.y, m.w, m.h, rsTheme_.rs.radiusBox);
         canvas.setColor (visage::Color (rsTheme_.rs.modeBoxBorder));
-        canvas.roundedRectangleBorder (m.x + 0.75f, m.y + 0.75f, m.w - 1.5f, m.h - 1.5f, rsTheme_.rs.radiusBox, 1.5f);
+        canvas.roundedRectangleBorder (m.x + 0.75f * s, m.y + 0.75f * s, m.w - 1.5f * s, m.h - 1.5f * s, rsTheme_.rs.radiusBox, 1.5f * s);
         canvas.setColor (visage::Color (rsTheme_.base.palette.text));
-        canvas.text ("MODE", boldFont (12.0f), visage::Font::kLeft, m.x + S (12), m.y, m.w - S (12), m.h);
+        canvas.text ("MODE", boldFont (12.0f * s), visage::Font::kLeft, m.x + S (12), m.y, m.w - S (12), m.h);
     }
 
     void RsEditor::mouseDown (const visage::MouseEvent& e)

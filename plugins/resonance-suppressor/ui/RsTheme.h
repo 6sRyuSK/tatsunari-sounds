@@ -127,12 +127,56 @@ namespace rs_ui
         float displaySmoothMs     = 50.0f;      // -> RsFeed::setDisplaySmoothMs
 
         static RsExtras defaults() { return RsExtras {}; }
+
+        // Runtime px-metric scaler (the RS-extras analogue of
+        // factory_ui_visage::scaleThemeMetrics): return a copy with every
+        // PIXEL-DIMENSION field (radii ladder, spacing, node-handle geometry, the
+        // analyser stroke widths) multiplied by `s`, leaving colours, alphas, dB and
+        // the ms smoothing UNTOUCHED. At s == 1.0 it is the identity. Used by the
+        // editor so the RS-specific views (curve / node panel / pill cells) shrink
+        // with the window instead of freezing at the 1069x747 design size. The JSON
+        // (theme-rs.json / RsExtras::defaults) — the human taste-review surface — is
+        // never touched.
+        RsExtras scaled (float s) const
+        {
+            RsExtras o = *this; // colours + alphas + dB + ms copied through verbatim
+            o.radiusOuter     = radiusOuter     * s;
+            o.radiusCard      = radiusCard      * s;
+            o.radiusPopover   = radiusPopover   * s;
+            o.radiusBox       = radiusBox       * s;
+            o.radiusBadge     = radiusBadge     * s;
+            o.radiusBadgeLg   = radiusBadgeLg   * s;
+            o.radiusCutHandle = radiusCutHandle * s;
+            o.panelPad     = panelPad     * s;
+            o.panelGap     = panelGap     * s;
+            o.bigKnobGap   = bigKnobGap   * s;
+            o.smallKnobGap = smallKnobGap * s;
+            o.bandDot       = bandDot       * s;
+            o.bandDotSel    = bandDotSel    * s;
+            o.cutHandle     = cutHandle     * s;
+            o.cutHandleSel  = cutHandleSel  * s;
+            o.nodeHitRadius = nodeHitRadius * s;
+            o.curtainStrokeWidth = curtainStrokeWidth * s;
+            o.postLineWidth      = postLineWidth      * s;
+            o.profileGlowWidth   = profileGlowWidth   * s;
+            o.profileStrokeWidth = profileStrokeWidth * s;
+            return o;
+        }
     };
 
     struct RsTheme
     {
         factory_ui_visage::Theme base; // shared theme (+ overlay)
         RsExtras                 rs;    // RS-specific extras
+
+        // Uniform UI scale (editor k() = height / 747) applied to the px metrics of
+        // `base` and `rs`. 1.0 = design size (k = 1, identity). RS-specific widgets
+        // (RsPillCell, the node panel, the curve view) that carry hand-drawn px read
+        // this directly to follow the window; the shared widgets read the already-
+        // scaled `base` metrics. The editor keeps an UNSCALED baseline theme and
+        // writes the scaled copy (this instance) that the widgets reference on every
+        // resize().
+        float uiScale = 1.0f;
 
         static RsTheme defaults()
         {

@@ -37,8 +37,15 @@ namespace rs_ui
     public:
         RsNodePanel (const RsTheme& theme, RsProfileModel& model, RsFeed& feed);
 
+        // Design intrinsic size (scale == 1). preferredWidth()/preferredHeight()
+        // return the size scaled by the theme's uiScale (== the editor's k()), so the
+        // floating panel shrinks with the window instead of overhanging the analyser
+        // at small sizes. The editor reads these when placing the panel.
         static constexpr int kHeight = 112;
-        int preferredWidth() const noexcept { return isCut_ ? 350 : 500; }
+        float uiScale() const noexcept { return theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f; }
+        int preferredWidth() const noexcept
+        { return (int) ((isCut_ ? 350.0f : 500.0f) * uiScale() + 0.5f); }
+        int preferredHeight() const noexcept { return (int) (kHeight * uiScale() + 0.5f); }
         int currentNode() const noexcept { return nodeId_; }
 
         // The X was pressed (the editor deselects — which also drops Listen).

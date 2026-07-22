@@ -13,7 +13,7 @@
 //   8. an undo -> redo round-trip restores a parameter, and a preset load clears history
 //   9. preset next / prev step the model; an A/B switch swaps a param value;
 //      A/B copy (copyActiveToOther) snapshots the active slot onto the other
-//  10. resize renders at the min (940x657) and max (1320x922) layout sizes
+//  10. resize renders at the min (471x329) and max (1320x922) layout sizes
 //  11. node-on-curve: an isolated band's dot rides the combined profile curve
 //  12. knob three-zone donut: the ring reads accent / accentDim / panelLo
 //  13. mini-knob needle angle: the SENS mini-knob points at its value's angle
@@ -263,12 +263,12 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
 
   // --- 10. resize renders at min + max ------------------------------------
   await page.evaluate(() => window.rs.selectNode(-1));
-  await page.evaluate(() => window.rs.setSize(940, 657));
+  await page.evaluate(() => window.rs.setSize(471, 329));
   await wait(page, 250);
-  const minBuf = await editorShot(page, 940, 657);
+  const minBuf = await editorShot(page, 471, 329);
   fs.writeFileSync(path.join(OUT, "rs-min.png"), minBuf);
   const minStats = d.analyzePNG(minBuf);
-  check("rs-min.png (940x657) non-blank", d.notBlank(minStats), minStats.width + "x" + minStats.height);
+  check("rs-min.png (471x329) non-blank", d.notBlank(minStats), minStats.width + "x" + minStats.height);
 
   await page.evaluate(() => window.rs.setSize(1320, 922));
   await wait(page, 250);
@@ -276,7 +276,7 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   fs.writeFileSync(path.join(OUT, "rs-max.png"), maxBuf);
   const maxStats = d.analyzePNG(maxBuf);
   check("rs-max.png (1320x922) non-blank", d.notBlank(maxStats), maxStats.width + "x" + maxStats.height);
-  check("resize preserved the design aspect", Math.abs(940 / 657 - 1320 / 922) < 0.01);
+  check("resize preserved the design aspect", Math.abs(471 / 329 - 1320 / 922) < 0.01);
 
   // --- 11. node-on-curve: a band's dot rides the combined profile curve -----
   // Isolate one band (cuts off, all other bands off) so the combined profile at

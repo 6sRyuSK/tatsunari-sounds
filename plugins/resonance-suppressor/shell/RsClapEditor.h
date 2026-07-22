@@ -26,8 +26,8 @@ namespace rs_shell
     //
     // CLAP/VST3 GUI sizes are LOGICAL points on macOS but PHYSICAL pixels on
     // Windows/X11; `scale` is the native-per-logical ratio (1.0 on macOS). The snap
-    // runs in LOGICAL space — the space the editor lays out in — against the JUCE-era
-    // limits [940x657 .. 1320x922] and the 1069:747 design aspect, then converts back
+    // runs in LOGICAL space — the space the editor lays out in — against the resize
+    // limits [471x329 .. 1320x922] and the 1069:747 design aspect, then converts back
     // to native px. It is width-driven: the width is clamped to its logical limits,
     // the aspect-locked height derived, then the height clamped to its own limits
     // (the limit box's corners are marginally off-aspect, so the height clamp binds at
@@ -41,7 +41,7 @@ namespace rs_shell
     inline void snapEditorSizeForScale (double scale, std::uint32_t& w, std::uint32_t& h) noexcept
     {
         constexpr double kDesignW = 1069.0, kDesignH = 747.0;
-        constexpr double kMinW = 940.0, kMinH = 657.0, kMaxW = 1320.0, kMaxH = 922.0;
+        constexpr double kMinW = 471.0, kMinH = 329.0, kMaxW = 1320.0, kMaxH = 922.0;
         if (! (scale > 0.0)) scale = 1.0;
 
         const auto clampd = [] (double v, double lo, double hi) noexcept

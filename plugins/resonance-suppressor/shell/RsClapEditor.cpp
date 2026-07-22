@@ -61,17 +61,20 @@
 
 namespace
 {
-    // --- design geometry (parity with the JUCE editor) ------------------------
-    // Reference layout 1069x747, resize limits setResizeLimits(940, 657, 1320,
-    // 922), fixed aspect 1069:747. Height is the layout driver (the editor scales
-    // by k()=height/747). The window OPENS at the minimum, not the reference:
-    // 1069x747 logical pt plus host chrome overflows common laptop displays (the
-    // "default window too big" report), and growing from the minimum is one drag.
+    // --- design geometry ------------------------------------------------------
+    // Reference layout 1069x747, resize limits 471x329..1320x922, fixed aspect
+    // 1069:747. Height is the layout driver (the editor scales by k()=height/747).
+    // The window OPENS at kDefault = 706x493 (75% of the old 940x657 default): the
+    // reference 1069x747 plus host chrome overflowed common laptop displays (the
+    // "default window too big" report), and the old default doubled as the minimum
+    // so the user could not shrink it further. The new default is comfortably below
+    // the reference, and the minimum drops to 471x329 (50% of the old default) so the
+    // whole UI — uniform-scaled by k() — can be made much smaller on demand.
     constexpr int kDesignW = 1069, kDesignH = 747;
-    // Minimum window (used for setMinimumDimensions); the max + aspect snap now live
-    // in rs_shell::snapEditorSizeForScale (RsClapEditor.h).
-    constexpr int kMinW = 940, kMinH = 657;
-    constexpr int kDefaultW = kMinW, kDefaultH = kMinH;
+    // Minimum window (used for setMinimumDimensions); the max + aspect snap live in
+    // rs_shell::snapEditorSizeForScale (RsClapEditor.h).
+    constexpr int kMinW = 471, kMinH = 329;
+    constexpr int kDefaultW = 706, kDefaultH = 493;
 
 #if defined(_WIN32)
     constexpr const char* kNativeApi = CLAP_WINDOW_API_WIN32;

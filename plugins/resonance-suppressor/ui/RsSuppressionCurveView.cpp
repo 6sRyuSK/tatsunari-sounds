@@ -274,17 +274,22 @@ namespace rs_ui
 
     void RsSuppressionCurveView::computeLayout()
     {
+        // Everything scales with the editor's k() (theme_.uiScale) so the plot insets,
+        // the header control row and its chips shrink with the window instead of
+        // crowding at small sizes; node positions map through the resulting plot rect.
+        const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
         const float w = width(), h = height();
-        const float ix = kPlotInset, iy = kPlotInset;
-        const float iw = std::max (1.0f, w - 2.0f * kPlotInset);
-        controlsRow_ = { ix, iy, iw, kControlsH };
-        const float plotY = iy + kControlsH + kLabelsH;
-        plot_ = { ix, plotY, iw, std::max (1.0f, h - kPlotInset - plotY) };
+        const float inset = kPlotInset * s, controlsH = kControlsH * s, labelsH = kLabelsH * s;
+        const float ix = inset, iy = inset;
+        const float iw = std::max (1.0f, w - 2.0f * inset);
+        controlsRow_ = { ix, iy, iw, controlsH };
+        const float plotY = iy + controlsH + labelsH;
+        plot_ = { ix, plotY, iw, std::max (1.0f, h - inset - plotY) };
 
         // controls: mode chip (left 132), GR badge (right 100), freeze (right of it 66).
-        modeChip_  = { controlsRow_.x, controlsRow_.y, 132.0f, controlsRow_.h };
-        grBadge_   = { controlsRow_.x + controlsRow_.w - 100.0f, controlsRow_.y, 100.0f, controlsRow_.h };
-        freezeChip_= { grBadge_.x - 6.0f - 66.0f, controlsRow_.y, 66.0f, controlsRow_.h };
+        modeChip_  = { controlsRow_.x, controlsRow_.y, 132.0f * s, controlsRow_.h };
+        grBadge_   = { controlsRow_.x + controlsRow_.w - 100.0f * s, controlsRow_.y, 100.0f * s, controlsRow_.h };
+        freezeChip_= { grBadge_.x - (6.0f + 66.0f) * s, controlsRow_.y, 66.0f * s, controlsRow_.h };
     }
 
     void RsSuppressionCurveView::resized() { computeLayout(); }
@@ -365,6 +370,7 @@ namespace rs_ui
 
     void RsSuppressionCurveView::drawGrid (visage::Canvas& canvas)
     {
+        const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
         struct FL { float f; const char* s; bool strong; };
         const FL fls[] = { {50,"50",false}, {100,"100",true}, {200,"200",false}, {500,"500",false},
                            {1000,"1k",true}, {2000,"2k",false}, {5000,"5k",false}, {10000,"10k",true} };
@@ -375,7 +381,7 @@ namespace rs_ui
             canvas.segment (x, plot_.y, x, plot_.y + plot_.h, 1.0f, false);
             canvas.setColor (visage::Color (fl.strong ? theme_.base.palette.textDim : theme_.rs.textFaint));
             // v2.1.0 grid labels are weight 600 (-> bold in the JUCE mapping).
-            canvas.text (fl.s, boldFont (10.0f), visage::Font::kCenter, x - 18.0f, plot_.y - 13.0f, 36.0f, 12.0f);
+            canvas.text (fl.s, boldFont (10.0f * s), visage::Font::kCenter, x - 18.0f * s, plot_.y - 13.0f * s, 36.0f * s, 12.0f * s);
         }
         for (float db = 0.0f; db >= -60.0f; db -= 12.0f)
         {
@@ -620,6 +626,7 @@ namespace rs_ui
 
     void RsSuppressionCurveView::drawNodes (visage::Canvas& canvas)
     {
+        const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
         const int listen = feed_.getListenNode();
         for (int id = 0; id < RsProfileModel::kNumNodes; ++id)
         {
@@ -636,21 +643,21 @@ namespace rs_ui
                 const std::uint32_t ring = (id == 0) ? theme_.rs.orange : theme_.rs.highCutRing;
                 // dashed vertical guide
                 canvas.setColor (visage::Color (theme_.rs.textFaint).withAlpha (a));
-                for (float yy = plot_.y; yy < plot_.y + plot_.h; yy += 8.0f)
-                    canvas.segment (p.x, yy, p.x, std::min (yy + 4.0f, plot_.y + plot_.h), 1.0f, false);
+                for (float yy = plot_.y; yy < plot_.y + plot_.h; yy += 8.0f * s)
+                    canvas.segment (p.x, yy, p.x, std::min (yy + 4.0f * s, plot_.y + plot_.h), 1.0f, false);
 
                 const float sz = selected ? theme_.rs.cutHandleSel : theme_.rs.cutHandle;
                 const float x0 = p.x - sz * 0.5f, y0 = p.y - sz * 0.5f;
                 if (id == listen)
                 {
                     canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (0.9f));
-                    canvas.roundedRectangleBorder (x0 - 5.0f, y0 - 5.0f, sz + 10.0f, sz + 10.0f,
-                                                   theme_.rs.radiusCutHandle + 3.0f, 2.0f);
+                    canvas.roundedRectangleBorder (x0 - 5.0f * s, y0 - 5.0f * s, sz + 10.0f * s, sz + 10.0f * s,
+                                                   theme_.rs.radiusCutHandle + 3.0f * s, 2.0f * s);
                 }
                 canvas.setColor (visage::Color (theme_.rs.nodeShadow));
-                canvas.roundedRectangleShadow (x0, y0 + 2.0f, sz, sz, theme_.rs.radiusCutHandle, 5.0f);
+                canvas.roundedRectangleShadow (x0, y0 + 2.0f * s, sz, sz, theme_.rs.radiusCutHandle, 5.0f * s);
                 canvas.setColor (visage::Color (ring).withAlpha (a));
-                canvas.roundedRectangle (x0 - 2.0f, y0 - 2.0f, sz + 4.0f, sz + 4.0f, theme_.rs.radiusCutHandle + 1.5f);
+                canvas.roundedRectangle (x0 - 2.0f * s, y0 - 2.0f * s, sz + 4.0f * s, sz + 4.0f * s, theme_.rs.radiusCutHandle + 1.5f * s);
                 canvas.setColor (visage::Color (theme_.rs.footerBg).withAlpha (a));
                 canvas.roundedRectangle (x0, y0, sz, sz, theme_.rs.radiusCutHandle);
             }
@@ -658,15 +665,15 @@ namespace rs_ui
             {
                 const std::uint32_t col = bandColour (id);
                 const float dotD = selected ? theme_.rs.bandDotSel : theme_.rs.bandDot;
-                const float haloD = dotD + 6.0f;
+                const float haloD = dotD + 6.0f * s;
                 if (id == listen)
                 {
                     canvas.setColor (visage::Color (theme_.base.palette.positive).withAlpha (0.9f));
-                    const float rd = haloD + 7.0f;
-                    canvas.ring (p.x - rd * 0.5f, p.y - rd * 0.5f, rd, 2.0f);
+                    const float rd = haloD + 7.0f * s;
+                    canvas.ring (p.x - rd * 0.5f, p.y - rd * 0.5f, rd, 2.0f * s);
                 }
                 canvas.setColor (visage::Color (theme_.rs.nodeShadow));
-                canvas.roundedRectangleShadow (p.x - dotD * 0.5f, p.y - dotD * 0.5f + 2.0f, dotD, dotD, dotD * 0.5f, 6.0f);
+                canvas.roundedRectangleShadow (p.x - dotD * 0.5f, p.y - dotD * 0.5f + 2.0f * s, dotD, dotD, dotD * 0.5f, 6.0f * s);
                 canvas.setColor (visage::Color (0xffffffff));
                 canvas.circle (p.x - haloD * 0.5f, p.y - haloD * 0.5f, haloD);
                 canvas.setColor (visage::Color (col));
@@ -677,6 +684,7 @@ namespace rs_ui
 
     void RsSuppressionCurveView::drawHeaderControls (visage::Canvas& canvas)
     {
+        const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
         auto chipShell = [&] (const Rect& b)
         {
             fuv::paintCardShell (canvas, b.x, b.y, b.w, b.h, theme_.rs.radiusBadge,
@@ -697,24 +705,24 @@ namespace rs_ui
                 if (active)
                 {
                     canvas.setColor (visage::Color (theme_.base.palette.accent));
-                    canvas.roundedRectangle (sx + 1.0f, modeChip_.y + 4.0f, segW - 2.0f, modeChip_.h - 8.0f, theme_.rs.radiusBadge - 2.0f);
+                    canvas.roundedRectangle (sx + 1.0f * s, modeChip_.y + 4.0f * s, segW - 2.0f * s, modeChip_.h - 8.0f * s, theme_.rs.radiusBadge - 2.0f * s);
                 }
                 else if (i == hoverModeSeg_)
                 {
                     // Per-segment hover feedback (fix 8): a faint accent wash on the
                     // hovered, non-active segment.
                     canvas.setColor (visage::Color (theme_.base.palette.accent).withAlpha (0.14f));
-                    canvas.roundedRectangle (sx + 1.0f, modeChip_.y + 4.0f, segW - 2.0f, modeChip_.h - 8.0f, theme_.rs.radiusBadge - 2.0f);
+                    canvas.roundedRectangle (sx + 1.0f * s, modeChip_.y + 4.0f * s, segW - 2.0f * s, modeChip_.h - 8.0f * s, theme_.rs.radiusBadge - 2.0f * s);
                 }
                 canvas.setColor (visage::Color (active ? 0xffffffff : theme_.base.palette.textDim));
-                canvas.text (names[i], boldFont (9.5f), visage::Font::kCenter, sx, modeChip_.y, segW, modeChip_.h);
+                canvas.text (names[i], boldFont (9.5f * s), visage::Font::kCenter, sx, modeChip_.y, segW, modeChip_.h);
             }
         }
 
         // A2: Freeze.
         chipShell (freezeChip_);
         canvas.setColor (visage::Color (theme_.base.palette.textSecondary));
-        canvas.text (frozen_ ? "Frozen" : "Freeze", boldFont (9.5f), visage::Font::kCenter,
+        canvas.text (frozen_ ? "Frozen" : "Freeze", boldFont (9.5f * s), visage::Font::kCenter,
                      freezeChip_.x, freezeChip_.y, freezeChip_.w, freezeChip_.h);
 
         // A3: GR peak-hold badge.
@@ -723,7 +731,7 @@ namespace rs_ui
                              visage::Color (theme_.rs.grBg), visage::Color (theme_.rs.grBorder));
         char gr[24]; std::snprintf (gr, sizeof gr, "GR %.1f dB", grPeakDb_);
         canvas.setColor (visage::Color (theme_.rs.grText));
-        canvas.text (gr, boldFont (9.5f), visage::Font::kCenter, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h);
+        canvas.text (gr, boldFont (9.5f * s), visage::Font::kCenter, grBadge_.x, grBadge_.y, grBadge_.w, grBadge_.h);
     }
 
     void RsSuppressionCurveView::drawTooltip (visage::Canvas& canvas)
@@ -732,6 +740,7 @@ namespace rs_ui
         if (id < 0) return;
         const visage::Point anchor = dragging_ >= 0 ? dragVirtual_ : nodePos (id);
 
+        const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
         const float f = model_.nodeFreq (id);
         std::string text = hzLabel (f);
         if (! RsProfileModel::isCut (id))
@@ -740,13 +749,13 @@ namespace rs_ui
             std::snprintf (buf, sizeof buf, "   %.1f dB   %.2f oct", model_.nodeSens (id), model_.nodeWidth (id));
             text += buf;
         }
-        const float w = 8.0f * (float) text.size() + 14.0f;
+        const float w = (8.0f * (float) text.size() + 14.0f) * s;
         float bx = std::clamp (anchor.x - w * 0.5f, plot_.x, plot_.x + plot_.w - w);
-        float by = std::max (plot_.y, anchor.y - 26.0f);
+        float by = std::max (plot_.y, anchor.y - 26.0f * s);
         canvas.setColor (visage::Color (theme_.base.palette.text).withAlpha (0.9f));
-        canvas.roundedRectangle (bx, by, w, 18.0f, 5.0f);
+        canvas.roundedRectangle (bx, by, w, 18.0f * s, 5.0f * s);
         canvas.setColor (visage::Color (0xffffffff));
-        canvas.text (text, boldFont (10.5f), visage::Font::kCenter, bx, by, w, 18.0f);
+        canvas.text (text, boldFont (10.5f * s), visage::Font::kCenter, bx, by, w, 18.0f * s);
     }
 
     void RsSuppressionCurveView::updateGrHold (float instantDb)
@@ -798,8 +807,10 @@ namespace rs_ui
 
     // Mode-chip segment geometry: 3 equal segments inside a 3px chip inset — the
     // ONE source both the draw and the hit-test share.
-    float RsSuppressionCurveView::modeSegWidth() const  { return (modeChip_.w - 6.0f) / 3.0f; }
-    float RsSuppressionCurveView::modeSegLeft (int i) const { return modeChip_.x + 3.0f + (float) i * modeSegWidth(); }
+    float RsSuppressionCurveView::modeSegWidth() const
+    { const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f; return (modeChip_.w - 6.0f * s) / 3.0f; }
+    float RsSuppressionCurveView::modeSegLeft (int i) const
+    { const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f; return modeChip_.x + 3.0f * s + (float) i * modeSegWidth(); }
 
     // Which Pre/Post/Both segment a frame-local point is over (-1 if outside).
     // True per-segment hit-testing so a click lands on the segment under the

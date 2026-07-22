@@ -20,21 +20,26 @@ namespace rs_ui
         R freqArea, sensArea, widthArea; // sens/width valid for bands only (!isCut)
     };
 
+    // `scale` (== the editor's k() = height/747) multiplies every intrinsic px so
+    // the panel's inner rects shrink with the window; the caller passes the panel's
+    // ALREADY-SCALED (w, h). At scale == 1.0 this is the design-size layout.
     inline RsNodePanelLayout computeRsNodePanelLayout (float w, float h,
-                                                       bool isCut, int choiceCount)
+                                                       bool isCut, int choiceCount,
+                                                       float scale = 1.0f)
     {
+        const float s = scale > 0.0f ? scale : 1.0f;
         RsNodePanelLayout L;
-        L.closeBtn = { w - 28.0f, 8.0f, 18.0f, 18.0f };
+        L.closeBtn = { w - 28.0f * s, 8.0f * s, 18.0f * s, 18.0f * s };
 
         // inner reduced(14,12)
-        float rx = 14.0f, ry = 12.0f, rw = w - 28.0f, rh = h - 24.0f;
+        float rx = 14.0f * s, ry = 12.0f * s, rw = w - 28.0f * s, rh = h - 24.0f * s;
 
         // right knob column
-        const float knobW = 52.0f, kgap = 10.0f;
+        const float knobW = 52.0f * s, kgap = 10.0f * s;
         const float knobsW = isCut ? knobW : knobW * 3 + kgap * 2;
         float knobsX = rx + rw - knobsW;
-        rw -= (knobsW + 16.0f);
-        const float knobsY = ry + 18.0f, knobsH = rh - 18.0f;
+        rw -= (knobsW + 16.0f * s);
+        const float knobsY = ry + 18.0f * s, knobsH = rh - 18.0f * s;
         L.freqArea = { knobsX, knobsY, knobW, knobsH };
         if (! isCut)
         {
@@ -44,23 +49,23 @@ namespace rs_ui
 
         // header row (26)
         float hx = rx, hy = ry;
-        L.dot = { hx, hy + (26.0f - 14.0f) * 0.5f, 14.0f, 14.0f };
-        hx += 18.0f + 4.0f;
-        L.name = { hx, hy, 76.0f, 26.0f };
-        hx += 76.0f + 8.0f;
-        L.onBadge = { hx, hy + 2.0f, 40.0f, 22.0f };
-        hx += 40.0f + 6.0f;
-        const float listenW = std::min (90.0f, rx + rw - hx);
-        L.listenBadge = { hx, hy + 2.0f, std::max (40.0f, listenW), 22.0f };
+        L.dot = { hx, hy + (26.0f - 14.0f) * 0.5f * s, 14.0f * s, 14.0f * s };
+        hx += (18.0f + 4.0f) * s;
+        L.name = { hx, hy, 76.0f * s, 26.0f * s };
+        hx += (76.0f + 8.0f) * s;
+        L.onBadge = { hx, hy + 2.0f * s, 40.0f * s, 22.0f * s };
+        hx += (40.0f + 6.0f) * s;
+        const float listenW = std::min (90.0f * s, rx + rw - hx);
+        L.listenBadge = { hx, hy + 2.0f * s, std::max (40.0f * s, listenW), 22.0f * s };
 
         // caption + choice row (at ry + 26 + 18)
-        float cy = ry + 26.0f + 18.0f;
-        L.caption = { rx, cy, (isCut ? 52.0f : 38.0f), 30.0f };
-        float bx = rx + L.caption.w + 8.0f;
-        const float bw = isCut ? 40.0f : 32.0f, bgap = 4.0f, bh = 27.0f;
+        float cy = ry + (26.0f + 18.0f) * s;
+        L.caption = { rx, cy, (isCut ? 52.0f : 38.0f) * s, 30.0f * s };
+        float bx = rx + L.caption.w + 8.0f * s;
+        const float bw = (isCut ? 40.0f : 32.0f) * s, bgap = 4.0f * s, bh = 27.0f * s;
         for (int i = 0; i < choiceCount; ++i)
         {
-            L.choice[i] = { bx, cy + (30.0f - bh) * 0.5f, bw, bh };
+            L.choice[i] = { bx, cy + (30.0f * s - bh) * 0.5f, bw, bh };
             bx += bw + bgap;
         }
         return L;

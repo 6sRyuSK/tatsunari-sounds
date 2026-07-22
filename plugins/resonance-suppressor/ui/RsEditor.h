@@ -73,10 +73,14 @@ namespace rs_ui
     {
     public:
         // Design geometry (logical px): 1069x747 reference layout (k() scales off
-        // the height), resize limits 940x657..1320x922 — the JUCE editor's
-        // setResizeLimits, also mirrored by the CLAP shell's adjustSize.
+        // the height), resize limits 471x329..1320x922 — mirrored by the CLAP shell's
+        // adjustSize. The window OPENS at kDefault (706x493 = 75% of the old default),
+        // and can shrink to kMin (471x329 = 50% of the old default) or grow to kMax.
+        // The whole layout is uniform-scaled by k() = height/747, so every size is a
+        // faithful scale of the 1069x747 design (fixed aspect).
         static constexpr float kDesignW = 1069.0f, kDesignH = 747.0f;
-        static constexpr float kMinW = 940.0f, kMinH = 657.0f, kMaxW = 1320.0f, kMaxH = 922.0f;
+        static constexpr float kMinW = 471.0f, kMinH = 329.0f, kMaxW = 1320.0f, kMaxH = 922.0f;
+        static constexpr float kDefaultW = 706.0f, kDefaultH = 493.0f;
 
         RsEditor (const RsTheme& theme, factory_params::ParamStore& store, RsFeed& feed,
                   RsPresetModel& presets, RsAbModel& ab);
@@ -203,10 +207,19 @@ namespace rs_ui
         visage::Frame* widgetForParam (int storeIndex) const;
 
         int    idx (const char* id) const { return store_.indexOf (id); }
-        float  k() const { return height() / kDesignH; }  // uniform design scale
+        float  k() const { return height() > 0.0f ? height() / kDesignH : 1.0f; }  // uniform design scale
         int    S (float v) const { return (int) std::round (v * k()); }
 
-        RsTheme rsTheme_;                 // owned; mutated in place on hot reload
+        // Recompute the LIVE theme (rsTheme_, the instance every child widget holds a
+        // const ref to) as the UNSCALED baseline theme with every px metric multiplied
+        // by k(), and push the k()-scaled per-widget px profiles (knob dial rows /
+        // segmented + link caption columns) the ctor seeds at design size. Called at
+        // the top of resized() and after a theme hot reload, so a shrunk window scales
+        // its whole look instead of freezing fonts/radii at the 1069x747 design size.
+        void   applyScale();
+
+        RsTheme baseTheme_;               // UNSCALED authoritative theme (hot-reload target)
+        RsTheme rsTheme_;                 // LIVE scaled theme; widgets hold a const ref, mutated in place
         factory_params::ParamStore& store_;
         RsFeed& feed_;
         RsPresetModel& presets_;
