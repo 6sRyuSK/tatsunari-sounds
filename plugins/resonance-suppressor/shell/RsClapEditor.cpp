@@ -474,33 +474,44 @@ namespace
             // only write it when it actually moves — otherwise a same-size re-entry would
             // dirty nothing yet still churn.
             if (win && win->dpiScale() != dpi) win->setDpiScale (dpi);
-            // Drive the frame tree from the corrected dpi: app_ (and its RsEditor child)
-            // take the new dpi, the app's native (== physical client) maps back to logical
-            // 1069x747, the canvas follows, and the editor fills it at the design size.
+            // Drive the WHOLE frame tree from the corrected dpi FIRST, then recompute
+            // native bounds, so every frame ends up re-derived at the SAME dpi. Order is
+            // load-bearing: Frame::setDpiScale only ASSIGNS dpi_scale_ (+ redraw); it does
+            // NOT recompute native_bounds_ (frame.h). So a frame's native only updates when
+            // something later calls setBounds/setNativeBounds on it. app_->setDpiScale here
+            // stamps dpi onto app_, RsEditor AND its children; the explicit editor writes
+            // below then recompute their native at that dpi.
             app_->setDpiScale (dpi);
             app_->setNativeBounds (0, 0, physW, physH);
             if (win) app_->setCanvasDetails();
-            // Size the editor to the ACTUAL render surface, not the fixed design rect.
-            // The canvas / bgfx drawable are physW x physH; the host (Logic's AU window)
-            // does NOT honour our aspect hint on resize — clap-wrapper's AU
-            // `[NSView setFrame:] -> set_size` bypasses adjust_size — so the window can
-            // land OFF the 1069:747 design aspect. Pinning the editor to design 1069x747
-            // then left the over-hanging right/bottom of the drawable uncovered by the
-            // editor's full-bounds background, and bgfx presented uninitialised pixels
-            // there (the purple curtain, worse the further off-aspect the window shrinks).
-            // Deriving the editor's logical size from the live physical size makes
-            //   editor native == round((physW/dpi)*dpi) x round((physH/dpi)*dpi)
-            //                 == physW x physH == canvas == drawable
-            // exactly, so the background always covers the whole surface. On-aspect (the
-            // normal case, and always for the grip which snaps aspect) physW/dpi == 1069
-            // and physH/dpi == 747, i.e. IDENTICAL to the design; only a host-forced
-            // off-aspect window makes it reflow to fill instead of exposing purple.
-            const float editorLogicalW = static_cast<float> (physW) / dpi;
-            const float editorLogicalH = static_cast<float> (physH) / dpi; // == kDesignH
-            editor_->setBounds (0.0f, 0.0f, editorLogicalW, editorLogicalH);
+
+            // Fill the ACTUAL render surface (physW x physH == canvas == drawable), NOT the
+            // fixed design rect. The host (Logic's AU window) does NOT honour our aspect
+            // hint on resize — clap-wrapper's AU `[NSView setFrame:] -> set_size` bypasses
+            // adjust_size — and it can even force a size BELOW our 471x329 minimum (measured
+            // 442x327pt on an M1 Air). We treat that physical size as authoritative and paint
+            // it edge to edge rather than leave an uninitialised (magenta) overhang.
+            //
+            // WHY setNativeBounds, not setBounds(physW/dpi): pin the NATIVE to physW x physH
+            // EXACTLY (setBounds derives native = round(logical*dpi), which drifts under an
+            // off-aspect dpi; the earlier version could settle the editor at design*dpi^2 —
+            // a SECOND scale state below the children's design*dpi^1 — leaving the doubled
+            // text + magenta seen in the report). setNativeBounds fixes the native and lets
+            // setBounds derive the logical (physW/dpi x physH/dpi; the height is exactly the
+            // design 747, the width is the design 1069 only when on-aspect). RsEditor::resized
+            // then re-lays the children in that plane at the SAME single dpi (k() = height/747
+            // = 1). Belt-and-braces: stamp the editor subtree dpi again so children cannot be
+            // left at a stale dpi before their resized() layout runs.
+            editor_->setDpiScale (dpi);
+            editor_->setNativeBounds (0, 0, physW, physH);
             // Tell the editor the current zoom so the resize grip converts its design-
             // space drag into window units.
             editor_->setWindowScale (static_cast<float> (hostFacingWidth()) / static_cast<float> (kDesignW));
+            // Re-raster the ENTIRE subtree: a dpi change moves every child, and visage's
+            // dirty-region cache would otherwise keep the previous size's raster for any
+            // frame we did not explicitly redraw (the doubled-text artefact). redrawAll()
+            // invalidates the editor and all descendants so the next frame is drawn clean.
+            editor_->redrawAll();
             inScaleSync_ = false;
         }
 
