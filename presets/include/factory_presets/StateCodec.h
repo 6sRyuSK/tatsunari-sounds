@@ -51,6 +51,21 @@
 #include <utility>
 #include <vector>
 
+// Apple's Command Line Tools libc++ ships std::from_chars for INTEGERS only —
+// the floating-point overloads are declared deleted until the LLVM 20 libc++
+// (so __cpp_lib_to_chars stays undefined there, while libstdc++ >= 11 and MSVC
+// define it). parseDouble() below falls back to a locale-pinned strtod on such
+// toolchains; these headers are only needed for that fallback path.
+#if ! defined (__cpp_lib_to_chars)
+ #include <cerrno>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+ #if defined (__APPLE__)
+  #include <xlocale.h>
+ #endif
+#endif
+
 namespace factory_presets
 {
     // --- the parsed / to-be-written state ------------------------------------
@@ -201,8 +216,34 @@ namespace factory_presets
             while (b < e && isSpace (s[b])) ++b;
             while (e > b && isSpace (s[e - 1])) --e;
             if (b < e && s[b] == '+') ++b;
+           #if defined (__cpp_lib_to_chars)
             const auto r = std::from_chars (s.data() + b, s.data() + e, out);
             return r.ec == std::errc{} && r.ptr == s.data() + e;
+           #else
+            // No floating-point from_chars (Apple CLT libc++, see header top).
+            // strtod honours the process locale's decimal point, but the wire
+            // format is always '.', so parse under a pinned "C" locale. strtod
+            // is correctly rounded, so to_chars' shortest form still round-trips
+            // to the exact same double.
+            char buf[128]; // no finite shortest-form double comes close to this
+            const std::size_t len = e - b;
+            if (len == 0 || len >= sizeof buf) return false;
+            std::memcpy (buf, s.data() + b, len);
+            buf[len] = '\0';
+            char* end = nullptr;
+            errno = 0;
+           #if defined (__APPLE__)
+            static const locale_t cLocale = ::newlocale (LC_ALL_MASK, "C", nullptr);
+            const double v = cLocale != nullptr ? ::strtod_l (buf, &end, cLocale)
+                                                : std::strtod (buf, &end);
+           #else
+            const double v = std::strtod (buf, &end);
+           #endif
+            if (end != buf + len) return false;              // full consumption, like from_chars
+            if (errno == ERANGE && (v == HUGE_VAL || v == -HUGE_VAL)) return false; // overflow
+            out = v;
+            return true;
+           #endif
         }
 
         // Parse a tag body (positioned just after the element name) into its
