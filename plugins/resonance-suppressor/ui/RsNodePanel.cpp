@@ -134,7 +134,7 @@ namespace rs_ui
     {
         // The arithmetic lives in the pure computeRsNodePanelLayout (headless-
         // tested); this member just copies the results into the frame's rects.
-        const RsNodePanelLayout L = computeRsNodePanelLayout (width(), height(), isCut_, choiceCount_, uiScale());
+        const RsNodePanelLayout L = computeRsNodePanelLayout (width(), height(), isCut_, choiceCount_);
         auto rect = [] (const RsNodePanelLayout::R& r) { return Rect { r.x, r.y, r.w, r.h }; };
         closeBtn_    = rect (L.closeBtn);
         dotRect_     = rect (L.dot);
@@ -182,9 +182,7 @@ namespace rs_ui
         // Row heights + full-diameter dial match the JUCE NodePanel mini RsKnob
         // (name 14 / value 14, dial = min(w, h-name-value)); the old 13/13 + 3px
         // radius trim made the minis read smaller than the oracle (round-3 fix 7).
-        // Scale the label bands with the panel (uiScale) so they don't eat a shrunk
-        // mini cell.
-        const float labelH = 14.0f * uiScale(), valueH = 14.0f * uiScale();
+        const float labelH = 14.0f, valueH = 14.0f;
         const float dialTop = a.y + labelH, dialH = a.h - labelH - valueH;
         const auto& km = theme_.base.knob;
         MiniDial d;
@@ -226,11 +224,10 @@ namespace rs_ui
     {
         if (! k.visible) return;
         const Rect& a = k.area;
-        const float s = uiScale();
-        const float labelH = 14.0f * s, valueH = 14.0f * s; // match miniKnobDial + JUCE (fix 7)
+        const float labelH = 14.0f, valueH = 14.0f; // match miniKnobDial + JUCE (fix 7)
         // label
         canvas.setColor (visage::Color (theme_.base.palette.text));
-        canvas.text (k.label, boldFont (10.0f * s), visage::Font::kCenter, a.x, a.y, a.w, labelH);
+        canvas.text (k.label, boldFont (10.0f), visage::Font::kCenter, a.x, a.y, a.w, labelH);
 
         // Small donut + needle (design reference: NodePanel minis in salmon).
         const auto& p  = theme_.base.palette;
@@ -256,18 +253,17 @@ namespace rs_ui
         canvas.ring (d.cx - d.R, d.cy - d.R, 2.0f * d.R, 1.0f);
         const visage::Point tip = fuv::knobNeedleTip (d.cx, d.cy, d.len, d.toAng);
         canvas.setColor (visage::Color (accent));
-        canvas.segment (d.cx, d.cy, tip.x, tip.y, 2.5f * s, true);
+        canvas.segment (d.cx, d.cy, tip.x, tip.y, 2.5f, true);
 
         // value (accent)
         canvas.setColor (visage::Color (accent));
-        canvas.text (valueText (k), boldFont (11.0f * s), visage::Font::kCenter, a.x, a.y + a.h - valueH, a.w, valueH);
+        canvas.text (valueText (k), boldFont (11.0f), visage::Font::kCenter, a.x, a.y + a.h - valueH, a.w, valueH);
     }
 
     void RsNodePanel::draw (visage::Canvas& canvas)
     {
         computeLayout();
         const float w = width(), h = height();
-        const float s = uiScale();
 
         // card
         fuv::paintCardShell (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusPopover,
@@ -276,12 +272,12 @@ namespace rs_ui
 
         // header dot
         canvas.setColor (visage::Color (theme_.rs.dotRing));
-        canvas.circle (dotRect_.x - 3.0f * s, dotRect_.y - 3.0f * s, dotRect_.w + 6.0f * s);
+        canvas.circle (dotRect_.x - 3.0f, dotRect_.y - 3.0f, dotRect_.w + 6.0f);
         canvas.setColor (visage::Color (nodeColour()));
         canvas.circle (dotRect_.x, dotRect_.y, dotRect_.w);
         // name
         canvas.setColor (visage::Color (theme_.base.palette.text));
-        canvas.text (nodeName(), boldFont (15.0f * s), visage::Font::kLeft, nameRect_.x, nameRect_.y, nameRect_.w, nameRect_.h);
+        canvas.text (nodeName(), boldFont (15.0f), visage::Font::kLeft, nameRect_.x, nameRect_.y, nameRect_.w, nameRect_.h);
 
         // ON badge
         {
@@ -292,7 +288,7 @@ namespace rs_ui
                 fuv::paintHairline (canvas, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h,
                                     theme_.rs.radiusBadge, visage::Color (theme_.base.palette.track));
             canvas.setColor (visage::Color (on ? 0xffffffff : theme_.base.palette.textSecondary));
-            canvas.text (on ? "ON" : "OFF", boldFont (11.0f * s), visage::Font::kCenter, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h);
+            canvas.text (on ? "ON" : "OFF", boldFont (11.0f), visage::Font::kCenter, onBadge_.x, onBadge_.y, onBadge_.w, onBadge_.h);
         }
 
         // Listen badge
@@ -301,24 +297,24 @@ namespace rs_ui
                                  theme_.rs.radiusBadge,
                                  visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.rs.footerBg),
                                  visage::Color (listenOn_ ? theme_.base.palette.positive : theme_.base.palette.track));
-            const float dotD = 7.0f * s, dotX = listenBadge_.x + 8.0f * s, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
+            const float dotD = 7.0f, dotX = listenBadge_.x + 8.0f, dotY = listenBadge_.y + listenBadge_.h * 0.5f - dotD * 0.5f;
             canvas.setColor (visage::Color (listenOn_ ? 0xffffffff : theme_.base.palette.textSecondary));
             canvas.circle (dotX, dotY, dotD);
-            canvas.text ("Listen", boldFont (11.0f * s), visage::Font::kLeft, dotX + dotD + 4.0f * s, listenBadge_.y, listenBadge_.w - 24.0f * s, listenBadge_.h);
+            canvas.text ("Listen", boldFont (11.0f), visage::Font::kLeft, dotX + dotD + 4.0f, listenBadge_.y, listenBadge_.w - 24.0f, listenBadge_.h);
         }
 
         // close X
         {
             const Rect& c = closeBtn_;
-            const float in = 4.0f * s;
+            const float in = 4.0f;
             canvas.setColor (visage::Color (theme_.rs.textFaint));
-            canvas.segment (c.x + in, c.y + in, c.x + c.w - in, c.y + c.h - in, 1.8f * s, true);
-            canvas.segment (c.x + in, c.y + c.h - in, c.x + c.w - in, c.y + in, 1.8f * s, true);
+            canvas.segment (c.x + in, c.y + in, c.x + c.w - in, c.y + c.h - in, 1.8f, true);
+            canvas.segment (c.x + in, c.y + c.h - in, c.x + c.w - in, c.y + in, 1.8f, true);
         }
 
         // caption + choice buttons
         canvas.setColor (visage::Color (theme_.rs.typeCaption));
-        canvas.text (isCut_ ? "SLOPE" : "TYPE", boldFont (10.0f * s), visage::Font::kLeft, captionRect_.x, captionRect_.y, captionRect_.w, captionRect_.h);
+        canvas.text (isCut_ ? "SLOPE" : "TYPE", boldFont (10.0f), visage::Font::kLeft, captionRect_.x, captionRect_.y, captionRect_.w, captionRect_.h);
 
         const int sel = isCut_ ? model_.cutSlope (nodeId_) : model_.nodeType (nodeId_);
         const char* slopeLabels[] = { "6", "12", "24", "48" };
@@ -327,20 +323,20 @@ namespace rs_ui
             const Rect& b = choiceBtns_[(std::size_t) i];
             const bool active = (i == sel);
             canvas.setColor (visage::Color (active ? theme_.base.palette.accent : theme_.rs.footerBg));
-            canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f * s);
+            canvas.roundedRectangle (b.x, b.y, b.w, b.h, 8.0f);
             if (! active)
-                fuv::paintHairline (canvas, b.x, b.y, b.w, b.h, 8.0f * s,
+                fuv::paintHairline (canvas, b.x, b.y, b.w, b.h, 8.0f,
                                     visage::Color (theme_.base.palette.track));
             const std::uint32_t fg = active ? 0xffffffff : theme_.rs.iconInactive;
             if (isCut_)
             {
                 canvas.setColor (visage::Color (fg));
-                canvas.text (slopeLabels[i], boldFont (11.0f * s), visage::Font::kCenter, b.x, b.y, b.w, b.h);
+                canvas.text (slopeLabels[i], boldFont (11.0f), visage::Font::kCenter, b.x, b.y, b.w, b.h);
             }
             else
             {
                 const float boxW = 24.0f, boxH = 14.0f;
-                const float ax = b.x + 6.0f * s, ay = b.y + 7.0f * s, aw = b.w - 12.0f * s, ah = b.h - 14.0f * s;
+                const float ax = b.x + 6.0f, ay = b.y + 7.0f, aw = b.w - 12.0f, ah = b.h - 14.0f;
                 const float sc = std::min (aw / boxW, ah / boxH);
                 visage::Path g = eqGlyph (i).scaled (sc).translated (ax + aw * 0.5f - boxW * sc * 0.5f,
                                                                      ay + ah * 0.5f - boxH * sc * 0.5f);
@@ -367,7 +363,7 @@ namespace rs_ui
     // (matches drawMiniKnob's value text row).
     RsNodePanel::Rect RsNodePanel::miniValueRect (const MiniKnob& k) const
     {
-        const float valueH = 14.0f * uiScale();
+        constexpr float valueH = 14.0f;
         return { k.area.x, k.area.y + k.area.h - valueH, k.area.w, valueH };
     }
 
@@ -389,7 +385,7 @@ namespace rs_ui
         fuv::ValueEntryRequest req;
         req.x = o.x + r.x; req.y = o.y + r.y; req.w = r.w; req.h = r.h;
         req.prefill = fuv::stripLeadingNumber (valueText (k)); // "2.6kHz"->"2.6", "7.40 dB"->"7.40"
-        req.fontPx  = 11.0f * uiScale(); // the mini value read-out font
+        req.fontPx  = 11.0f; // the mini value read-out font
         const int  pi     = k.paramIndex;
         const bool isFreq = k.freq;
         req.commit = [this, pi, isFreq] (const std::string& t) { commitMiniEntry (pi, isFreq, t); };

@@ -160,15 +160,22 @@ extern "C"
         return (g_editor && g_editor->dropdown() && g_editor->dropdown()->rowCentreInWindow (i, x, y)) ? (double) y : -1.0;
     }
 
-    // Re-lay-out the editor at (w,h) — the min/max layout screenshots. The canvas
-    // is fixed at the max size (see main.cpp), so the editor renders into its
-    // top-left sub-rect and the driver clips the screenshot to (w,h). (Resizing the
-    // native window via setWindowDimensions is unavailable under Emscripten —
-    // computeWindowBounds is not linkable — so we resize the editor frame only.)
+    // Re-render the editor at window size (w,h) — the min/max layout screenshots.
+    // The editor ALWAYS lays out at the fixed 1069x747 design; the whole thing is
+    // uniform-zoomed, exactly like the CLAP shell's window setDpiScale, except here
+    // the canvas/window is fixed at the max size (see main.cpp) and shared with the
+    // driver's coordinate mapping — so we zoom the EDITOR FRAME (setDpiScale = h/747)
+    // instead of the window, keeping window/mouse coords stable while the editor
+    // renders design-scaled into its top-left (w x h) native sub-rect. The driver
+    // clips the screenshot to (w,h). At the design size (1069x747) dpi == 1, so the
+    // clicking tests (which run there) see window px == logical px unchanged.
     KEEPALIVE void rs_set_size (int w, int h)
     {
-        (void) g_app;
-        if (g_editor) g_editor->setBounds (0.0f, 0.0f, (float) w, (float) h);
+        (void) g_app; (void) w;
+        if (! g_editor) return;
+        const float dpi = (h > 0) ? (float) h / rs_ui::RsEditor::kDesignH : 1.0f;
+        g_editor->setDpiScale (dpi);
+        g_editor->setBounds (0.0f, 0.0f, rs_ui::RsEditor::kDesignW, rs_ui::RsEditor::kDesignH);
     }
 
     // Combined reduction-profile deviation (dB) at a frequency, evaluated over the

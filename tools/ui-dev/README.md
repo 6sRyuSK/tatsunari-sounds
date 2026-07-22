@@ -85,11 +85,14 @@ cd playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node rs.spec.js http:
 ```
 
 The rs-editor canvas is fixed at the **max** resize size (1320×922) and the editor
-frame renders into its top-left sub-rect; `rs.setSize(w,h)` re-lays-out at
+frame renders into its top-left sub-rect. The editor ALWAYS lays out at the fixed
+1069×747 design; `rs.setSize(w,h)` uniform-zooms it by setting the editor frame's
+`dpiScale = h/747` (the harness analogue of the CLAP shell's window `setDpiScale`,
+since the native window can't be resized under Emscripten — `computeWindowBounds`
+isn't linkable) so it renders design-scaled into a `(w,h)` native sub-rect at
 471×329 (min) / 706×493 (default) / 1069×747 (design) / 1320×922 (max) — fixed
-design aspect, uniform-scaled by k()=height/747 — and the driver clips the
-screenshot to `(w,h)` — the native window can't be resized under Emscripten
-(`computeWindowBounds` isn't linkable), so only the editor frame resizes.
+1069:747 aspect — and the driver clips the screenshot to `(w,h)`. At the design
+size dpi==1, so the clicking tests (which run there) see window px == logical px.
 
 The design system it exercises lives in **`ui/visage/`** (`factory_ui_visage`):
 `Theme` (+ JSON parser), `Fonts` (3-family runtime switch), `Chrome`, `Knob`,

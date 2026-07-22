@@ -46,29 +46,21 @@ namespace rs_ui
             const float w = width(), h = height();
             const bool on = store_.value (index_) > 0.5f;
 
-            // The row height rowH shrinks with the editor's k(); a FIXED-px pill /
-            // glyph / caption would then overflow the shrinking card (the user's
-            // "toggles don't fit the card" report). Scale every hand-drawn px by the
-            // theme's uiScale (== k()) so the cell contents track the card; the caption
-            // font already follows via the scaled theme.base.font.caption.
-            const float s = theme_.uiScale > 0.0f ? theme_.uiScale : 1.0f;
-
             if (card_)
                 fuv::paintCardShell (canvas, 0.0f, 0.0f, w, h, theme_.rs.radiusBadge,
                                      visage::Color (0xffffffff), visage::Color (p.track));
 
-            const float pillW = 34.0f * s, pillH = 19.0f * s, rightInset = 9.0f * s;
-            const float glyphSz = 16.0f * s;
+            const float pillW = 34.0f, pillH = 19.0f, rightInset = 9.0f;
             const float pillX = w - rightInset - pillW, pillY = (h - pillH) * 0.5f;
 
-            float x = card_ ? 9.0f * s : 0.0f;
+            float x = card_ ? 9.0f : 0.0f;
             if (hasGlyph_)
             {
                 canvas.setColor (visage::Color (p.textSecondary));
-                fuv::icons::paintGlyph (canvas, glyph_, x, (h - glyphSz) * 0.5f, glyphSz, glyphSz);
-                x += glyphSz + 6.0f * s;
+                fuv::icons::paintGlyph (canvas, glyph_, x, (h - 16.0f) * 0.5f, 16.0f, 16.0f);
+                x += 16.0f + 6.0f;
             }
-            const float capW = std::max (0.0f, pillX - x - 4.0f * s);
+            const float capW = std::max (0.0f, pillX - x - 4.0f);
             canvas.setColor (visage::Color (p.textSecondary));
             canvas.text (caption_, fuv::boldFont (theme_.base.font.caption),
                          card_ ? visage::Font::kLeft : visage::Font::kRight, x, 0.0f, capW, h);
@@ -76,10 +68,10 @@ namespace rs_ui
             // pill
             canvas.setColor (visage::Color (on ? onColour_ : theme_.rs.toggleOffBg));
             canvas.roundedRectangle (pillX, pillY, pillW, pillH, pillH * 0.5f);
-            const float knobD = pillH - 4.0f * s;
-            const float kx = on ? (pillX + pillW - knobD - 2.0f * s) : (pillX + 2.0f * s);
+            const float knobD = pillH - 4.0f;
+            const float kx = on ? (pillX + pillW - knobD - 2.0f) : (pillX + 2.0f);
             canvas.setColor (visage::Color (0xffffffff));
-            canvas.circle (kx, pillY + 2.0f * s, knobD);
+            canvas.circle (kx, pillY + 2.0f, knobD);
         }
 
         void mouseDown (const visage::MouseEvent&) override

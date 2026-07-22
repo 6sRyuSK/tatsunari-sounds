@@ -72,12 +72,13 @@ namespace rs_ui
     class RsEditor : public visage::Frame
     {
     public:
-        // Design geometry (logical px): 1069x747 reference layout (k() scales off
-        // the height), resize limits 471x329..1320x922 — mirrored by the CLAP shell's
-        // adjustSize. The window OPENS at kDefault (706x493 = 75% of the old default),
-        // and can shrink to kMin (471x329 = 50% of the old default) or grow to kMax.
-        // The whole layout is uniform-scaled by k() = height/747, so every size is a
-        // faithful scale of the 1069x747 design (fixed aspect).
+        // Design geometry (logical px). The editor ALWAYS lays out at the fixed
+        // 1069x747 reference (so k() == 1); the whole window is uniform-zoomed by the
+        // CLAP shell via visage::Window::setDpiScale (physical height / 747), never by
+        // scaling individual elements. kMin/kMax/kDefault are the WINDOW size limits
+        // (physical px on Windows/X11, logical points on macOS): the window OPENS at
+        // kDefault (706x493) and resizes within [471x329 .. 1320x922] at the fixed
+        // 1069:747 aspect — mirrored by the CLAP shell's snapEditorSizeForScale.
         static constexpr float kDesignW = 1069.0f, kDesignH = 747.0f;
         static constexpr float kMinW = 471.0f, kMinH = 329.0f, kMaxW = 1320.0f, kMaxH = 922.0f;
         static constexpr float kDefaultW = 706.0f, kDefaultH = 493.0f;
@@ -85,13 +86,19 @@ namespace rs_ui
         RsEditor (const RsTheme& theme, factory_params::ParamStore& store, RsFeed& feed,
                   RsPresetModel& presets, RsAbModel& ab);
 
-        // Host-window resize relay (editor-logical px, already aspect-snapped and
+        // Host-window resize relay (WINDOW logical px, already aspect-snapped and
         // clamped to the limits above). Set by the CLAP shell; when unset (the
         // ui-dev harness) the corner grip is hidden.
         std::function<void (float w, float h)> onResizeRequest;
 
-        // Snap a proposed size onto the 1069:747 aspect (height-driven) and clamp
-        // it into [kMin .. kMax] — the same maths as the shell's adjustSize.
+        // The zoom factor the shell keeps in sync: window px per design unit
+        // (window size / 1069). The resize grip drags in editor-DESIGN units (the
+        // logical plane is fixed at 1069x747), so it multiplies its proposal by this
+        // to reach WINDOW px before snapping. 1.0 == design size / unset (harness).
+        void setWindowScale (float s) noexcept { windowScale_ = s > 0.0f ? s : 1.0f; }
+
+        // Snap a proposed WINDOW size onto the 1069:747 aspect (height-driven) and
+        // clamp it into [kMin .. kMax] — the same maths as the shell's adjustSize.
         static void snapWindowSize (float& w, float& h);
 
         // --- harness / bridge surface -----------------------------------------
@@ -207,19 +214,14 @@ namespace rs_ui
         visage::Frame* widgetForParam (int storeIndex) const;
 
         int    idx (const char* id) const { return store_.indexOf (id); }
-        float  k() const { return height() > 0.0f ? height() / kDesignH : 1.0f; }  // uniform design scale
+        // The editor is always the 1069x747 design size (the shell/harness uniform-
+        // zoom the whole window instead of scaling elements), so k() == 1 and S() is
+        // an identity round; both are kept so the layout code reads as design px.
+        float  k() const { return height() > 0.0f ? height() / kDesignH : 1.0f; }
         int    S (float v) const { return (int) std::round (v * k()); }
 
-        // Recompute the LIVE theme (rsTheme_, the instance every child widget holds a
-        // const ref to) as the UNSCALED baseline theme with every px metric multiplied
-        // by k(), and push the k()-scaled per-widget px profiles (knob dial rows /
-        // segmented + link caption columns) the ctor seeds at design size. Called at
-        // the top of resized() and after a theme hot reload, so a shrunk window scales
-        // its whole look instead of freezing fonts/radii at the 1069x747 design size.
-        void   applyScale();
-
-        RsTheme baseTheme_;               // UNSCALED authoritative theme (hot-reload target)
-        RsTheme rsTheme_;                 // LIVE scaled theme; widgets hold a const ref, mutated in place
+        float  windowScale_ = 1.0f;       // window px per design unit (shell-synced; grip)
+        RsTheme rsTheme_;                 // owned; mutated in place on hot reload
         factory_params::ParamStore& store_;
         RsFeed& feed_;
         RsPresetModel& presets_;
