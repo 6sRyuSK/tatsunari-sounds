@@ -37,34 +37,38 @@ if(EMSCRIPTEN)
   add_compile_definitions(EMSCRIPTEN=1)
 endif()
 
-# --- Obstacle #3: macOS backing-scale vs layout-zoom split (RS clap-first) -----
-# The pinned visage reuses Window::dpiScale() for BOTH the frame-tree layout scale
-# AND the macOS physical-pixel density (MTKView contentsScale / drawable size, mouse
-# point<->pixel conversion). The RS CLAP editor drives the window dpi as a UNIFORM
-# ZOOM (dpi = physicalHeight / 747) so the 1069x747 design fills any window; on a
-# Retina Mac that zoom (~1.32) is NOT the backing factor (2.0), so the shared value
-# left the Metal drawable undersized (a black margin) and clicks offset from what is
-# drawn (reported on an M1 Air in Logic). This patch adds a SEPARATE WindowMac
-# backingScale() (the OS backingScaleFactor) for every points<->pixels conversion and
-# leaves dpiScale() as the pure layout scale; standalone windows are unchanged
-# (backing == dpi when no zoom). It touches ONLY the macOS windowing files, so
-# Windows / X11 / Emscripten are unaffected.
+# --- Obstacle #3: visage patches for the RS clap-first Retina editor -----------
+# Applied via PATCH_COMMAND against the pinned checkout (the pin hash is NEVER changed).
+# apply-visage-patches.cmake applies each idempotently (a re-configure that re-runs the
+# patch step on an already-populated checkout is a no-op, not an error) — see that script
+# for why a plain `git apply` / shell `||` cannot be used here. RE-EVALUATE these patches
+# whenever FACTORY_VISAGE_GIT_TAG is bumped (upstream lines may move, or the fixes may land
+# upstream). See ui/visage/patches/ for the diffs + rationale.
 #
-# Applied via PATCH_COMMAND against the pinned checkout (the pin hash is NOT changed).
-# apply-macos-dpi-patch.cmake makes it idempotent (a re-configure that re-runs the
-# patch step on an already-populated checkout is a no-op, not an error) — see that
-# script for why a plain `git apply` / shell `||` cannot be used here. RE-EVALUATE
-# this patch whenever FACTORY_VISAGE_GIT_TAG is bumped (the upstream lines may move,
-# or the split may land upstream). See ui/visage/patches/ for the diff + rationale.
-set(FACTORY_VISAGE_MACOS_DPI_PATCH
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/0001-macos-separate-backing-scale-from-layout-dpi.patch")
+# 0001 (macOS backing-scale vs layout-zoom split): the pinned visage reuses
+#   Window::dpiScale() for BOTH the frame-tree layout scale AND the macOS physical-pixel
+#   density (MTKView contentsScale / drawable size, mouse point<->pixel conversion). The RS
+#   editor drives the window dpi as a UNIFORM ZOOM (dpi = physicalHeight/747) so the 1069x747
+#   design fills any window; on a Retina Mac that zoom is NOT the backing factor (2.0), so the
+#   shared value left the drawable undersized (black margin) and clicks offset (M1 Air/Logic).
+#   Adds a SEPARATE WindowMac backingScale() for every points<->pixels conversion and leaves
+#   dpiScale() as the pure layout scale. Also disables MTKView autoResizeDrawable so bgfx is
+#   the SOLE writer of the drawable size (no two-writer magenta overhang). macOS-only files —
+#   Windows / X11 / Emscripten unaffected.
+# 0002 (clear the window framebuffer): visage never bgfx::setViewClear's, so any pixel of the
+#   on-screen framebuffer not covered by drawn geometry is uninitialised (magenta). This clears
+#   the WINDOW layer to the warm-white theme background as a safety net (normally invisible).
+#   Cross-platform (visage_graphics), harmless where the editor already covers the surface.
+set(FACTORY_VISAGE_PATCHES
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/0001-macos-separate-backing-scale-from-layout-dpi.patch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patches/0002-clear-window-framebuffer-safety-net.patch")
 
 FetchContent_Declare(visage
   GIT_REPOSITORY https://github.com/VitalAudio/visage.git
   GIT_TAG ${FACTORY_VISAGE_GIT_TAG}
   PATCH_COMMAND ${CMAKE_COMMAND}
-                -DPATCH_FILE=${FACTORY_VISAGE_MACOS_DPI_PATCH}
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply-macos-dpi-patch.cmake
+                "-DPATCH_FILES=${FACTORY_VISAGE_PATCHES}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply-visage-patches.cmake
 )
 # As a subproject, visage sets VISAGE_BUILD_EXAMPLES / _TESTS OFF automatically
 # and (under Emscripten) skips the CLAP example + SDK fetch.

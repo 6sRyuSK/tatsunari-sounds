@@ -27,7 +27,7 @@ index c63d60d..ca6b190 100644
  }
  
 diff --git a/visage_windowing/macos/windowing_macos.mm b/visage_windowing/macos/windowing_macos.mm
-index e90bf06..c45438c 100644
+index e90bf06..f8aab0d 100644
 --- a/visage_windowing/macos/windowing_macos.mm
 +++ b/visage_windowing/macos/windowing_macos.mm
 @@ -343,7 +343,7 @@ namespace visage {
@@ -39,7 +39,22 @@ index e90bf06..c45438c 100644
    [self drawWindow];
  }
  @end
-@@ -432,13 +432,16 @@ namespace visage {
+@@ -356,6 +356,14 @@ namespace visage {
+   self.clearColor = MTLClearColorMake(0.1, 0.1, 0.1, 1.0);
+   self.enableSetNeedsDisplay = NO;
+   self.framebufferOnly = YES;
++  // [factory patch] bgfx OWNS the drawable size: SwapChainMtl::resize sets
++  // view.layer.drawableSize = the bgfx framebuffer (canvas) dimensions. Leaving MTKView's
++  // autoResizeDrawable = YES made MTKView ALSO write drawableSize (= bounds * contentsScale)
++  // on every layout, so the two writers could disagree by a frame / rounding and leave the
++  // drawable larger than what bgfx rendered — an uninitialised (magenta) overhang, since
++  // visage never bgfx::setViewClear's. Disabling it makes bgfx the SOLE writer, so the
++  // drawable always equals the rendered canvas. See ui/visage/patches.
++  self.autoResizeDrawable = NO;
+   self.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
+   self.preferredFramesPerSecond = 120;
+ 
+@@ -432,13 +440,16 @@ namespace visage {
    NSPoint location = [event locationInWindow];
    NSPoint view_location = [self convertPoint:location fromView:nil];
    CGFloat view_height = self.frame.size.height;
@@ -58,7 +73,7 @@ index e90bf06..c45438c 100644
  }
  
  - (NSPoint)mouseScreenPosition {
-@@ -718,7 +721,7 @@ namespace visage {
+@@ -718,7 +729,7 @@ namespace visage {
      self.resizing_vertical = true;
  
    visage::Point borders = visage::windowBorderSize(self.window_handle);
@@ -67,7 +82,7 @@ index e90bf06..c45438c 100644
    int width = scale * (frame_size.width - borders.x);
    int height = scale * (frame_size.height - borders.y);
    self.visage_window->handleAdjustResize(&width, &height, self.resizing_horizontal, self.resizing_vertical);
-@@ -856,6 +859,7 @@ namespace visage {
+@@ -856,6 +867,7 @@ namespace visage {
    WindowMac::WindowMac(int x, int y, int width, int height, float scale, Decoration decoration) :
        Window(width, height), decoration_(decoration) {
      setDpiScale(scale);
@@ -75,7 +90,7 @@ index e90bf06..c45438c 100644
      last_content_rect_ = NSMakeRect(x / scale, y / scale, width / scale, height / scale);
      NSRect rect = last_content_rect_;
  
-@@ -872,6 +876,11 @@ namespace visage {
+@@ -872,6 +884,11 @@ namespace visage {
  
    WindowMac::WindowMac(int width, int height, float scale, void* parent_handle) :
        Window(width, height) {
@@ -87,7 +102,7 @@ index e90bf06..c45438c 100644
      parent_view_ = (__bridge NSView*)parent_handle;
      CGRect view_frame = CGRectMake(0.0f, 0.0f, width / scale, height / scale);
  
-@@ -916,8 +925,9 @@ namespace visage {
+@@ -916,8 +933,9 @@ namespace visage {
  
      window_handle_ = window;
      setDpiScale([window_handle_ backingScaleFactor]);
@@ -99,7 +114,7 @@ index e90bf06..c45438c 100644
      handleResized(client_width, client_height);
  
      [window_handle_ setContentView:view_];
-@@ -945,8 +955,14 @@ namespace visage {
+@@ -945,8 +963,14 @@ namespace visage {
    }
  
    void WindowMac::resetBackingScale() {
@@ -116,7 +131,7 @@ index e90bf06..c45438c 100644
    }
  
    void WindowMac::windowContentsResized(int width, int height) {
-@@ -954,8 +970,10 @@ namespace visage {
+@@ -954,8 +978,10 @@ namespace visage {
      int x = frame.origin.x;
      int y = frame.origin.y;
  
@@ -129,7 +144,7 @@ index e90bf06..c45438c 100644
      Point borders = windowBorderSize(window_handle_);
      frame.size.width = w + borders.x;
      frame.size.height = h + borders.y;
-@@ -1015,8 +1033,10 @@ namespace visage {
+@@ -1015,8 +1041,10 @@ namespace visage {
      NSScreen* screen = [window_handle_ screen];
      NSRect visible_frame = [screen visibleFrame];
  

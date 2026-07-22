@@ -1,0 +1,22 @@
+diff --git a/visage_graphics/layer.cpp b/visage_graphics/layer.cpp
+index 7cb1804..a3e1373 100644
+--- a/visage_graphics/layer.cpp
++++ b/visage_graphics/layer.cpp
+@@ -317,6 +317,17 @@ namespace visage {
+     bgfx::setViewMode(submit_pass, bgfx::ViewMode::Sequential);
+     bgfx::setViewRect(submit_pass, 0, 0, width_, height_);
+ 
++    // [factory patch] SAFETY NET: clear the on-screen (window) framebuffer to the warm-white
++    // theme background before compositing. This layer is the final present target; if a
++    // geometry bug ever leaves part of it uncovered, the gap shows the app background colour
++    // instead of an uninitialised (magenta) drawable — visage otherwise never setViewClear's.
++    // Only the window layer (window_handle_ != null) is cleared; intermediate/offscreen
++    // layers must stay transparent so their compositing is unaffected. Normally invisible
++    // (the editor covers the whole surface). Colour is 0xRRGGBBAA == factory-default palette
++    // "background" (#fdf6f2); revisit if that theme default changes.
++    if (window_handle_ != nullptr)
++      bgfx::setViewClear(submit_pass, BGFX_CLEAR_COLOR, 0xfdf6f2ff);
++
+     if (bgfx::isValid(frame_buffer_data_->handle))
+       bgfx::setViewFrameBuffer(submit_pass, frame_buffer_data_->handle);
+ 
