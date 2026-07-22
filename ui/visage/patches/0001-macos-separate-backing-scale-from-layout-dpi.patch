@@ -1,0 +1,144 @@
+diff --git a/visage_windowing/macos/windowing_macos.h b/visage_windowing/macos/windowing_macos.h
+index c63d60d..ca6b190 100644
+--- a/visage_windowing/macos/windowing_macos.h
++++ b/visage_windowing/macos/windowing_macos.h
+@@ -93,6 +93,15 @@ namespace visage {
+     void handleNativeResize(int width, int height);
+     bool isPopup() const { return decoration_ == Decoration::Popup; }
+ 
++    // [factory patch] The OS backing-store scale (points -> physical px), i.e. the
++    // NSWindow backingScaleFactor. This is SEPARATE from Window::dpiScale(): dpiScale()
++    // is the frame-tree layout scale (which an embedder may drive as a uniform zoom),
++    // whereas backingScale() is the physical pixel density the Metal layer, the
++    // drawable, and mouse point<->pixel conversions must use. When no zoom is applied
++    // the two are equal, so standalone windows are unaffected. See ui/visage/patches.
++    float backingScale() const { return backing_scale_; }
++    void setBackingScale(float scale) { backing_scale_ = scale; }
++
+   private:
+     static bool running_event_loop_;
+     NSWindow* window_handle_ = nullptr;
+@@ -101,6 +110,7 @@ namespace visage {
+     VisageAppViewDelegate* view_delegate_ = nullptr;
+     NSRect last_content_rect_ {};
+     Decoration decoration_ = Decoration::Native;
++    float backing_scale_ = 1.0f; // [factory patch] OS backingScaleFactor; see backingScale()
+   };
+ }
+ 
+diff --git a/visage_windowing/macos/windowing_macos.mm b/visage_windowing/macos/windowing_macos.mm
+index e90bf06..c45438c 100644
+--- a/visage_windowing/macos/windowing_macos.mm
++++ b/visage_windowing/macos/windowing_macos.mm
+@@ -343,7 +343,7 @@ namespace visage {
+   if (!view.currentDrawable || !view.currentRenderPassDescriptor)
+     return;
+ 
+-  view.layer.contentsScale = self.visage_window->dpiScale();
++  view.layer.contentsScale = self.visage_window->backingScale(); // [factory patch] physical density, not layout zoom
+   [self drawWindow];
+ }
+ @end
+@@ -432,13 +432,16 @@ namespace visage {
+   NSPoint location = [event locationInWindow];
+   NSPoint view_location = [self convertPoint:location fromView:nil];
+   CGFloat view_height = self.frame.size.height;
+-  return visage::Point(view_location.x, view_height - view_location.y) * self.visage_window->dpiScale();
++  // [factory patch] points -> physical px uses the backing scale; the event handler
++  // then divides by the frame-tree dpi (convertToLogical) to reach layout coords, so
++  // this factor MUST be the backing scale or clicks land at the wrong point under a zoom.
++  return visage::Point(view_location.x, view_height - view_location.y) * self.visage_window->backingScale();
+ }
+ 
+ - (visage::Point)dragPosition:(id<NSDraggingInfo>)sender {
+   NSPoint drag_point = [self convertPoint:[sender draggingLocation] fromView:nil];
+   CGFloat view_height = self.frame.size.height;
+-  return visage::Point(drag_point.x, view_height - drag_point.y) * self.visage_window->dpiScale();
++  return visage::Point(drag_point.x, view_height - drag_point.y) * self.visage_window->backingScale(); // [factory patch]
+ }
+ 
+ - (NSPoint)mouseScreenPosition {
+@@ -718,7 +721,7 @@ namespace visage {
+     self.resizing_vertical = true;
+ 
+   visage::Point borders = visage::windowBorderSize(self.window_handle);
+-  float scale = self.visage_window->dpiScale();
++  float scale = self.visage_window->backingScale(); // [factory patch] standalone live-resize: points<->px is the backing scale
+   int width = scale * (frame_size.width - borders.x);
+   int height = scale * (frame_size.height - borders.y);
+   self.visage_window->handleAdjustResize(&width, &height, self.resizing_horizontal, self.resizing_vertical);
+@@ -856,6 +859,7 @@ namespace visage {
+   WindowMac::WindowMac(int x, int y, int width, int height, float scale, Decoration decoration) :
+       Window(width, height), decoration_(decoration) {
+     setDpiScale(scale);
++    setBackingScale(scale); // [factory patch] standalone: backing == dpi (no zoom)
+     last_content_rect_ = NSMakeRect(x / scale, y / scale, width / scale, height / scale);
+     NSRect rect = last_content_rect_;
+ 
+@@ -872,6 +876,11 @@ namespace visage {
+ 
+   WindowMac::WindowMac(int width, int height, float scale, void* parent_handle) :
+       Window(width, height) {
++    // [factory patch] Record the OS backing scale up front. Unlike the standalone
++    // ctor this deliberately does NOT setDpiScale(scale): the frame-tree dpi is the
++    // embedder's layout/zoom scale (set via the window's dpiScale by the plugin
++    // shell), while the backing scale drives the Metal drawable + input mapping.
++    setBackingScale(scale);
+     parent_view_ = (__bridge NSView*)parent_handle;
+     CGRect view_frame = CGRectMake(0.0f, 0.0f, width / scale, height / scale);
+ 
+@@ -916,8 +925,9 @@ namespace visage {
+ 
+     window_handle_ = window;
+     setDpiScale([window_handle_ backingScaleFactor]);
+-    int client_width = std::round(last_content_rect_.size.width * dpiScale());
+-    int client_height = std::round(last_content_rect_.size.height * dpiScale());
++    setBackingScale([window_handle_ backingScaleFactor]); // [factory patch]
++    int client_width = std::round(last_content_rect_.size.width * backingScale());
++    int client_height = std::round(last_content_rect_.size.height * backingScale());
+     handleResized(client_width, client_height);
+ 
+     [window_handle_ setContentView:view_];
+@@ -945,8 +955,14 @@ namespace visage {
+   }
+ 
+   void WindowMac::resetBackingScale() {
+-    if (window_handle_)
+-      setDpiScale([window_handle_ backingScaleFactor]);
++    if (window_handle_) {
++      // [factory patch] Always track the OS backing scale. Only fold it into the
++      // frame-tree dpi for a STANDALONE window (no embedder zoom); for a plugin
++      // subview the dpi is the embedder's layout scale and must not be clobbered.
++      setBackingScale([window_handle_ backingScaleFactor]);
++      if (parent_view_ == nullptr)
++        setDpiScale([window_handle_ backingScaleFactor]);
++    }
+   }
+ 
+   void WindowMac::windowContentsResized(int width, int height) {
+@@ -954,8 +970,10 @@ namespace visage {
+     int x = frame.origin.x;
+     int y = frame.origin.y;
+ 
+-    float w = width / dpiScale();
+-    float h = height / dpiScale();
++    // [factory patch] width/height are physical px (the client/drawable size); the
++    // NSView frame is in points, so convert with the backing scale, NOT the layout dpi.
++    float w = width / backingScale();
++    float h = height / backingScale();
+     Point borders = windowBorderSize(window_handle_);
+     frame.size.width = w + borders.x;
+     frame.size.height = h + borders.y;
+@@ -1015,8 +1033,10 @@ namespace visage {
+     NSScreen* screen = [window_handle_ screen];
+     NSRect visible_frame = [screen visibleFrame];
+ 
+-    int display_width = dpiScale() * (visible_frame.size.width - borders.x);
+-    int display_height = dpiScale() * (visible_frame.size.height - borders.y);
++    // [factory patch] screen points -> physical px is the backing scale (the aspect
++    // clamp works in physical px); the layout zoom must not enter the display bound.
++    int display_width = backingScale() * (visible_frame.size.width - borders.x);
++    int display_height = backingScale() * (visible_frame.size.height - borders.y);
+     return { display_width, display_height };
+   }
+ 
