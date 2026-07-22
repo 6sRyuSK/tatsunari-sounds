@@ -470,7 +470,24 @@ namespace
             app_->setDpiScale (dpi);
             app_->setNativeBounds (0, 0, physW, physH);
             if (win) app_->setCanvasDetails();
-            editor_->setBounds (0.0f, 0.0f, static_cast<float> (kDesignW), static_cast<float> (kDesignH));
+            // Size the editor to the ACTUAL render surface, not the fixed design rect.
+            // The canvas / bgfx drawable are physW x physH; the host (Logic's AU window)
+            // does NOT honour our aspect hint on resize — clap-wrapper's AU
+            // `[NSView setFrame:] -> set_size` bypasses adjust_size — so the window can
+            // land OFF the 1069:747 design aspect. Pinning the editor to design 1069x747
+            // then left the over-hanging right/bottom of the drawable uncovered by the
+            // editor's full-bounds background, and bgfx presented uninitialised pixels
+            // there (the purple curtain, worse the further off-aspect the window shrinks).
+            // Deriving the editor's logical size from the live physical size makes
+            //   editor native == round((physW/dpi)*dpi) x round((physH/dpi)*dpi)
+            //                 == physW x physH == canvas == drawable
+            // exactly, so the background always covers the whole surface. On-aspect (the
+            // normal case, and always for the grip which snaps aspect) physW/dpi == 1069
+            // and physH/dpi == 747, i.e. IDENTICAL to the design; only a host-forced
+            // off-aspect window makes it reflow to fill instead of exposing purple.
+            const float editorLogicalW = static_cast<float> (physW) / dpi;
+            const float editorLogicalH = static_cast<float> (physH) / dpi; // == kDesignH
+            editor_->setBounds (0.0f, 0.0f, editorLogicalW, editorLogicalH);
             // Tell the editor the current zoom so the resize grip converts its design-
             // space drag into window units.
             editor_->setWindowScale (static_cast<float> (hostFacingWidth()) / static_cast<float> (kDesignW));
