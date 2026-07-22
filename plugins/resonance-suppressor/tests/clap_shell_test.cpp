@@ -556,6 +556,53 @@ int main()
         }
     }
 
+    // ============ 7. DYNAMIC DISPLAY MAX CLAMP (grip off-screen guard) =========
+    // snapEditorSizeForScale's optional dynamic max (maxWindowW/H): clamps the aspect-
+    // locked window to the current display's usable area so a height-driven grip drag
+    // cannot push the window (and its grip) off-screen. Aspect is preserved by re-deriving
+    // the binding axis; the minimum wins on an absurdly small display; a dynamic max at or
+    // above the static cap leaves the static behaviour untouched.
+    {
+        auto dyn = [] (std::uint32_t w, std::uint32_t h, double mw, double mh,
+                       std::uint32_t& ow, std::uint32_t& oh)
+        { ow = w; oh = h; rs_shell::snapEditorSizeForScale (1.0, ow, oh, mw, mh); };
+
+        const double aspect = 1069.0 / 747.0;
+        auto aspectOk = [&] (std::uint32_t w, std::uint32_t h)
+        { long d = (long) w * 747 - (long) h * 1069; return (d < 0 ? -d : d) <= 1069; };
+
+        std::uint32_t w = 0, h = 0;
+
+        // A square 1000x1000 display box: a huge proposal is capped to fit BOTH axes.
+        dyn (2000, 2000, 1000.0, 1000.0, w, h);
+        check (w <= 1000 && h <= 1000, "dyn: capped within 1000x1000 box");
+        check (aspectOk (w, h), "dyn: aspect preserved under square cap");
+        check (w >= 990, "dyn: width fills the binding (height-derived) axis");
+
+        // Short/wide display (height binds): width must be RE-DERIVED from the clamped
+        // height, never overshoot. maxH 500 -> height 500, width ~ 500*aspect ~ 716.
+        dyn (2000, 2000, 2000.0, 500.0, w, h);
+        check (h <= 500, "dyn: height honoured on a short display");
+        check (w <= 720 && aspectOk (w, h), "dyn: width re-derived from height (no overshoot)");
+
+        // Absurdly small display (below the usable minimum): the MINIMUM wins.
+        dyn (2000, 2000, 300.0, 300.0, w, h);
+        check (w == 471 && h == 329, "dyn: tiny display -> minimum wins (471x329)");
+
+        // Dynamic max at/above the static cap: identical to the static-only snap.
+        std::uint32_t sw, sh;
+        dyn (5000, 5000, 5000.0, 5000.0, w, h);
+        sw = 5000; sh = 5000; rs_shell::snapEditorSizeForScale (1.0, sw, sh);
+        check (w == sw && h == sh, "dyn: max >= static cap leaves static behaviour (1320x922)");
+
+        // Fixed point: re-snapping a dynamically-clamped size with the same limit is a no-op.
+        dyn (2000, 2000, 1000.0, 1000.0, w, h);
+        std::uint32_t w2 = w, h2 = h;
+        rs_shell::snapEditorSizeForScale (1.0, w2, h2, 1000.0, 1000.0);
+        check (w2 == w && h2 == h, "dyn: clamped size is a fixed point under its own limit");
+        (void) aspect;
+    }
+
     // ============ 6. WINDOW-RESIZE LOOP GUARD (Logic AU stack overflow) =========
     // rs_shell::shouldRelayHostResize: the predicate the onWindowContentsResized handler
     // uses to decide whether to call host gui.request_resize. Relaying unconditionally

@@ -38,7 +38,20 @@ namespace rs_shell
     // makes the snap a FIXED POINT: re-applying it to its own output returns the same
     // native size. `scale <= 0` is treated as 1.0. Pure + Visage-free (unit-tested in
     // clap_shell_test), so it needs no GUI build to validate.
-    inline void snapEditorSizeForScale (double scale, std::uint32_t& w, std::uint32_t& h) noexcept
+    //
+    // `maxWindowW` / `maxWindowH` are an OPTIONAL dynamic upper bound (0 = unused) in the
+    // SAME units as the proposal after the `scale` division — i.e. window units when the
+    // caller passes scale 1.0 (the shipping path). They tighten the static 1320x922 cap
+    // to whatever the current display can actually hold (see dynamicMaxWindowUnits), so a
+    // height-driven grip drag cannot push the window (and its resize grip) off-screen.
+    // Because the design aspect is fixed, BOTH axes are honoured: when a dynamic limit
+    // binds, the width is re-derived from the aspect-clamped height so it cannot overshoot
+    // (the "width overshoot" trap). The static 1320x922 corner is intentionally the box
+    // corner (marginally off-aspect) and is preserved exactly when no dynamic limit binds.
+    // If the dynamic max falls below the usable minimum (an absurdly small display) the
+    // MINIMUM wins — better a slightly-overflowing minimum window than a degenerate one.
+    inline void snapEditorSizeForScale (double scale, std::uint32_t& w, std::uint32_t& h,
+                                        double maxWindowW = 0.0, double maxWindowH = 0.0) noexcept
     {
         constexpr double kDesignW = 1069.0, kDesignH = 747.0;
         constexpr double kMinW = 471.0, kMinH = 329.0, kMaxW = 1320.0, kMaxH = 922.0;
@@ -47,12 +60,31 @@ namespace rs_shell
         const auto clampd = [] (double v, double lo, double hi) noexcept
         { return v < lo ? lo : (v > hi ? hi : v); };
 
+        // Effective per-axis logical max: the static cap tightened by the (optional)
+        // dynamic display limit. Never let either axis fall below the usable minimum.
+        double effMaxW = kMaxW, effMaxH = kMaxH;
+        const bool dynW = maxWindowW > 0.0, dynH = maxWindowH > 0.0;
+        if (dynW) effMaxW = effMaxW < maxWindowW ? effMaxW : maxWindowW;
+        if (dynH) effMaxH = effMaxH < maxWindowH ? effMaxH : maxWindowH;
+        if (effMaxW < kMinW) effMaxW = kMinW;
+        if (effMaxH < kMinH) effMaxH = kMinH;
+
         // native -> logical (the proposed height follows the width under the host's
         // aspect lock, so the width drives the snap).
         const double logicalW = static_cast<double> (w) / scale;
-        double lw = clampd (logicalW, kMinW, kMaxW);
+        double lw = clampd (logicalW, kMinW, effMaxW);
         double lh = lw * kDesignH / kDesignW;
-        lh = clampd (lh, kMinH, kMaxH);
+        lh = clampd (lh, kMinH, effMaxH);
+        // When a DYNAMIC limit tightened the cap, re-derive the width from the aspect-
+        // clamped height so the width cannot overshoot a short/narrow display (aspect
+        // preserved, height-driven). The static-only corner (1320x922) skips this so its
+        // marginally-off-aspect box corner is preserved for the existing oracle.
+        if ((dynW && effMaxW < kMaxW) || (dynH && effMaxH < kMaxH))
+        {
+            const double wForHeight = lh * kDesignW / kDesignH;
+            lw = lw < wForHeight ? lw : wForHeight;
+            if (lw < kMinW) lw = kMinW;
+        }
 
         // Settle the logical rounding, THEN scale back to native (fixed-point rule).
         const long lwi = std::lround (lw);

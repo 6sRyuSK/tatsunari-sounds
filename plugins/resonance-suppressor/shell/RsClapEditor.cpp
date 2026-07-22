@@ -176,15 +176,22 @@ namespace
             // The editor's corner grip already proposes a WINDOW size (its drag runs
             // in the fixed 1069x747 design plane and is converted to window units via
             // the shell-synced windowScale_ — see RsEditor::setWindowScale), snapped to
-            // the aspect + limits. So we relay it to the host verbatim (host units ==
-            // window units: logical points on macOS, physical px elsewhere). This is the
-            // ONLY resize path a host with no window resize edge (Logic's AU) offers.
+            // the aspect + STATIC limits. We additionally clamp to the DYNAMIC display
+            // limit here (the grip is height-driven, so a downward drag grows the window;
+            // without this it can exceed the screen and carry the grip itself off-screen
+            // where it can't be grabbed). Host units == window units (logical points on
+            // macOS, physical px elsewhere). This is the ONLY resize path a host with no
+            // window resize edge (Logic's AU) offers.
             editor_->onResizeRequest = [this] (float w, float h)
             {
                 fetchHostExts();
                 if (hostGui_ == nullptr || hostGui_->request_resize == nullptr) return;
-                hostGui_->request_resize (host_, static_cast<std::uint32_t> (std::lround (w)),
-                                          static_cast<std::uint32_t> (std::lround (h)));
+                std::uint32_t rw = static_cast<std::uint32_t> (std::lround (w));
+                std::uint32_t rh = static_cast<std::uint32_t> (std::lround (h));
+                double maxW = 0.0, maxH = 0.0;
+                dynamicMaxWindowUnits (maxW, maxH); // {0,0} if unavailable -> static cap only
+                rs_shell::snapEditorSizeForScale (1.0, rw, rh, maxW, maxH);
+                hostGui_->request_resize (host_, rw, rh);
             };
 
             app_->addChild (*editor_);
@@ -308,9 +315,12 @@ namespace
             // limits (471x329..1320x922) are both in WINDOW units — physical px on
             // Windows/X11, logical points on macOS — so no logical<->native conversion
             // is needed here (the editor's own uniform zoom absorbs the OS DPI factor):
-            // snap directly in window units (scale 1.0). The pure snapEditorSizeForScale
-            // is still unit-tested across scales (clap_shell_test).
-            rs_shell::snapEditorSizeForScale (1.0, *width, *height);
+            // snap directly in window units (scale 1.0). Also clamp to the DYNAMIC
+            // display limit so a host-driven resize cannot exceed the usable screen.
+            // The pure snapEditorSizeForScale is still unit-tested (clap_shell_test).
+            double maxW = 0.0, maxH = 0.0;
+            dynamicMaxWindowUnits (maxW, maxH); // {0,0} if unavailable -> static cap only
+            rs_shell::snapEditorSizeForScale (1.0, *width, *height, maxW, maxH);
             return true;
         }
 
@@ -492,6 +502,41 @@ namespace
             // space drag into window units.
             editor_->setWindowScale (static_cast<float> (hostFacingWidth()) / static_cast<float> (kDesignW));
             inScaleSync_ = false;
+        }
+
+        // Largest window size (WINDOW UNITS: logical pt on macOS, physical px elsewhere)
+        // that fits the CURRENT display's usable area, or false / {0,0} when it cannot be
+        // determined (e.g. before the window is attached) — callers then fall back to the
+        // static cap only. Source: visage's Window::maxWindowDimensions(), which returns
+        // the screen work area minus the host window border in PHYSICAL px on every
+        // platform. We convert to window units with the live backing ratio: on macOS
+        // physW == hostFacingWidth * backingScale, so (hostFacingWidth / physW) == 1 /
+        // backingScale; on Windows/X11 window units ARE physical px and hostFacingWidth ==
+        // physW, so the ratio is exactly 1. A conservative host-chrome margin is then
+        // subtracted: visage cannot hand us the embedded view's on-screen position, so we
+        // cannot compute the exact bottom-right inset; instead we reserve a fixed margin
+        // (~a Logic AU title bar + safety gap) so the window and its resize grip stay on
+        // screen. The aspect snap consumes both axes and re-derives the binding one.
+        bool dynamicMaxWindowUnits (double& maxW, double& maxH) const
+        {
+            maxW = 0.0; maxH = 0.0;
+            if (app_ == nullptr) return false;
+            visage::Window* win = app_->window();
+            if (win == nullptr) return false;
+            const int physW = win->clientWidth();
+            const int hostW = hostFacingWidth();
+            if (physW <= 0 || hostW <= 0) return false;
+            const visage::IPoint maxPhys = win->maxWindowDimensions(); // physical px, work area
+            if (maxPhys.x <= 0 || maxPhys.y <= 0) return false;
+
+            const double toWindowUnits = static_cast<double> (hostW) / static_cast<double> (physW);
+            // Reserve headroom for host plugin-window chrome (title bar / toolbar) that the
+            // screen work area does not exclude, so the window + grip stay fully on-screen.
+            constexpr double kHostChromeMargin = 80.0; // window units; conservative
+            maxW = static_cast<double> (maxPhys.x) * toWindowUnits - kHostChromeMargin;
+            maxH = static_cast<double> (maxPhys.y) * toWindowUnits - kHostChromeMargin;
+            if (maxW <= 0.0 || maxH <= 0.0) { maxW = 0.0; maxH = 0.0; return false; }
+            return true;
         }
 
         void fetchHostExts()
