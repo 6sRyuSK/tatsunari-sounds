@@ -95,7 +95,7 @@ option(FACTORY_INCLUDE_ARCHIVED "Also configure archived plugins from archive/pl
 set(FACTORY_PLUGINS "" CACHE STRING "Plugin slugs to configure, comma/semicolon separated (empty = all)")
 string(REPLACE "," ";" _factory_plugins "${FACTORY_PLUGINS}")
 
-set(_rs_configured FALSE)
+set(_clap_shell_dirs "")
 file(GLOB _plugin_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/plugins/*)
 if(FACTORY_INCLUDE_ARCHIVED)
   file(GLOB _archived_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/archive/plugins/*)
@@ -107,27 +107,30 @@ foreach(_dir ${_plugin_dirs})
     if(_factory_plugins AND NOT _slug IN_LIST _factory_plugins)
       continue()
     endif()
-    if(_slug STREQUAL "resonance-suppressor")
-      set(_rs_configured TRUE)  # -> assemble its clap-first shipping build below
+    if(EXISTS ${_dir}/shell/CMakeLists.txt)
+      # A clap-first plugin: its shipping binaries come from its shell/, which
+      # is assembled below AFTER the generic shell library.
+      list(APPEND _clap_shell_dirs ${_dir}/shell)
     endif()
     add_subdirectory(${_dir})
   endif()
 endforeach()
 
-# --- resonance-suppressor: CLAP-FIRST SHIPPING BUILD (3.0.0 cutover) ----------
-# RS now ships clap-first: the make_clapfirst shell produces the CLAP + wrapper
-# VST3 (+ AUv2 on Apple, with the Visage editor) that REPLACES the old JUCE
-# VST3/AU (there is no juce_add_plugin for RS any more — see
-# plugins/resonance-suppressor/CMakeLists.txt). The shell + pinned CLAP/VST3/
-# clap-wrapper SDKs are therefore assembled whenever RS is in the configured set
-# (_rs_configured). Other plugins never reach factory_clap_plugin, so a
-# subset configure that excludes RS (FACTORY_PLUGINS=<other>) fetches nothing
-# CLAP-related — the SDK fetch tracks RS's presence, not a global flag.
+# --- CLAP-FIRST SHIPPING BUILDS (3.0.0 cutover; generalised for pitch-fix) ----
+# A clap-first plugin (resonance-suppressor, pitch-fix) carries a
+# shell/CMakeLists.txt whose make_clapfirst shell produces the CLAP + wrapper
+# VST3 (+ AUv2 on Apple, with the Visage editor) — there is no juce_add_plugin
+# for these plugins (their main CMakeLists holds only headless tests / test
+# oracles). The generic shell + pinned CLAP/VST3/clap-wrapper SDKs are assembled
+# whenever AT LEAST ONE clap-first plugin is in the configured set
+# (_clap_shell_dirs). Pure-JUCE plugins never reach factory_clap_plugin, so a
+# subset configure without any clap-first slug fetches nothing CLAP-related —
+# the SDK fetch tracks the configured set, not a global flag.
 #
 # FACTORY_RS_CLAP is retained as a harmless no-op so a stray -DFACTORY_RS_CLAP=ON
 # on a configure line (older scripts) neither errors nor changes anything.
 option(FACTORY_RS_CLAP "Legacy no-op: RS is clap-first unconditionally now" OFF)
-if(_rs_configured)
+if(_clap_shell_dirs)
   # The impl + clap-wrapper's own static libs (base-sdk-vst3, the per-target VST3
   # wrapper glue) are linked into MODULE (shared) libraries, so they must be PIC.
   # Set it here — the root scope — so BOTH add_subdirectory()s below (and the
@@ -157,5 +160,7 @@ if(_rs_configured)
   endif()
 
   add_subdirectory(shell)
-  add_subdirectory(plugins/resonance-suppressor/shell)
+  foreach(_shell_dir ${_clap_shell_dirs})
+    add_subdirectory(${_shell_dir})
+  endforeach()
 endif()
