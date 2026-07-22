@@ -18,7 +18,19 @@ UI は JUCE 非依存の Visage 製です。
 | Resonance TatSuppressor | EQ | 3.0.2 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (14)
+### In progress (0)
+
+_None yet._
+
+
+### Planned (0)
+
+_None yet._
+
+
+### Archived (14)
+
+_Not built or released (excluded from CI); sources kept under `archive/plugins/` and may return with reworked DSP. Local opt-in build: `-DFACTORY_INCLUDE_ARCHIVED=ON`._
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
@@ -36,11 +48,6 @@ UI は JUCE 非依存の Visage 製です。
 | Tatsunari Surikire | Lo-Fi | Chase Bliss / Cooper FX Generation Loss MKII |
 | Tumble Delay | Delay | OP-1 Tombola sequencer × granular echo |
 | Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
-
-
-### Planned (0)
-
-_None yet._
 
 <!-- END:CATALOG -->
 

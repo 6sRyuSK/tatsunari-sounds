@@ -34,8 +34,9 @@ README_TEMPLATE = (
 
 
 def make_plugin(root: Path, slug: str, *, name: str, category: str, version: str,
-                status: str, formats: list[str], reference: str) -> None:
-    d = root / "plugins" / slug
+                status: str, formats: list[str], reference: str,
+                archived: bool = False) -> None:
+    d = (root / "archive" / "plugins" / slug) if archived else (root / "plugins" / slug)
     d.mkdir(parents=True, exist_ok=True)
     fmt = ", ".join(f'"{f}"' for f in formats)
     (d / "plugin.toml").write_text(
@@ -75,6 +76,9 @@ class GenCatalogTest(unittest.TestCase):
         make_plugin(self.root, "gamma-verb", name="Gamma Verb", category="Reverb",
                     version="0.1.0", status="in-progress", formats=["VST3", "AU"],
                     reference="FDN")
+        make_plugin(self.root, "old-fuzz", name="Old Fuzz", category="Distortion",
+                    version="0.3.0", status="shipped", formats=["VST3", "AU"],
+                    reference="Fuzz Face", archived=True)
         (self.root / "roadmap.toml").write_text(
             "[[plugin]]\n"
             'name      = "Delta Delay"\n'
@@ -101,6 +105,14 @@ class GenCatalogTest(unittest.TestCase):
         self.assertIn("Delta Delay", block)
         # in-progress plugin not listed as shipped
         self.assertIn("Gamma Verb", block)
+
+    def test_render_archived_section(self):
+        block = gen_catalog.render()
+        self.assertIn("### Archived (1)", block)
+        self.assertIn("Old Fuzz", block)
+        # archived plugins never count as shipped/in-progress
+        self.assertIn("### Shipped (2)", block)
+        self.assertIn("### In progress (1)", block)
 
     # ---- --check gating --------------------------------------------------
     def test_check_detects_stale_readme(self):
@@ -131,8 +143,10 @@ class GenCatalogTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             gen_catalog.emit_json(str(dest))
         data = json.loads(dest.read_text(encoding="utf-8"))
-        # All plugins (shipped + in-progress), not status-filtered.
+        # All plugins (shipped + in-progress), not status-filtered — but NEVER
+        # archived ones (the installer must not offer them).
         self.assertEqual(len(data), 3)
+        self.assertNotIn("old-fuzz", {e["slug"] for e in data})
         # Keys the installer's release.CatalogEntry decodes (catalog.go).
         required = {"name", "slug", "category", "formats", "status", "version", "reference"}
         for entry in data:

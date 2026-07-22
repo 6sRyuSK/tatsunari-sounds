@@ -1,8 +1,10 @@
 # CLAUDE.md — Autonomous Plugin Factory
 
 ## What this is
-A factory that builds audio plugins with **CMake**. Most plugins ship as
-**JUCE 8** VST3/AU; `resonance-suppressor` ships **CLAP-first** (clap-wrapper's
+A factory that builds audio plugins with **CMake**. Active plugins are
+`dynamic-eq` (**JUCE 8** VST3/AU) and `resonance-suppressor` (everything else
+is archived under `archive/plugins/` — see `archive/README.md`);
+`resonance-suppressor` ships **CLAP-first** (clap-wrapper's
 `make_clapfirst` → CLAP + wrapper VST3, AUv2 on Apple) with a JUCE-free
 **Visage** editor. All compose a shared, versioned DSP core (`core/`), shared
 parameter/preset models (`params/`, `presets/`), and the shared UI design
@@ -70,6 +72,10 @@ skill builds on.
   resonance-suppressor deviates (clap-first): `RsCore.h` (framework-free core),
   `ui/` (JUCE-free Visage editor), `shell/` (CLAP entry); its `Source/` JUCE
   processor remains **only** as the byte-equivalence test oracle, never shipped.
+- `archive/plugins/<slug>/` — archived plugins (same layout; see
+  `archive/README.md`): not built by default, excluded from CI/releases/
+  installer. Local opt-in build: `-DFACTORY_INCLUDE_ARCHIVED=ON`. Don't do
+  feature work here — a revival rebuilds the DSP and moves the plugin back.
 - `cmake/FactoryHelpers.cmake` (`factory_read_version`), `cmake/NamCore.cmake`
   (NAM Player's only-extra dependency; its header comments are load-bearing).
 - `tools/gen_catalog.py` — regenerates the README catalog (+ `--emit-json`);
