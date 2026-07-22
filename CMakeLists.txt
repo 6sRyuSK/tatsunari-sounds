@@ -86,11 +86,21 @@ add_subdirectory(presets/tests)
 # semicolon-separated). Empty (the default) configures everything. CI passes
 # the plugins a PR touches so unaffected binaries are not rebuilt; anything
 # that could affect all plugins (core/ ui/ cmake/ this file) keeps it empty.
+#
+# Archived plugins live under archive/plugins/<slug> (same layout) and are NOT
+# configured by default — they are excluded from CI and releases. Pass
+# -DFACTORY_INCLUDE_ARCHIVED=ON to add them to the configure set (local builds
+# only); FACTORY_PLUGINS narrowing applies to archived slugs the same way.
+option(FACTORY_INCLUDE_ARCHIVED "Also configure archived plugins from archive/plugins/ (local use only; never CI/release)" OFF)
 set(FACTORY_PLUGINS "" CACHE STRING "Plugin slugs to configure, comma/semicolon separated (empty = all)")
 string(REPLACE "," ";" _factory_plugins "${FACTORY_PLUGINS}")
 
 set(_rs_configured FALSE)
 file(GLOB _plugin_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/plugins/*)
+if(FACTORY_INCLUDE_ARCHIVED)
+  file(GLOB _archived_dirs LIST_DIRECTORIES true ${CMAKE_CURRENT_SOURCE_DIR}/archive/plugins/*)
+  list(APPEND _plugin_dirs ${_archived_dirs})
+endif()
 foreach(_dir ${_plugin_dirs})
   if(IS_DIRECTORY ${_dir} AND EXISTS ${_dir}/CMakeLists.txt)
     get_filename_component(_slug ${_dir} NAME)

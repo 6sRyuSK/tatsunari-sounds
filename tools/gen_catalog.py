@@ -3,8 +3,9 @@
 tools/gen_catalog.py — generate the README catalog from machine-readable sources.
 
 Sources of truth (one item lives in exactly ONE of these):
-  plugins/<slug>/plugin.toml   real plugins   (status: shipped | in-progress)
-  roadmap.toml                 planned plugins not yet started
+  plugins/<slug>/plugin.toml           real plugins   (status: shipped | in-progress)
+  archive/plugins/<slug>/plugin.toml   archived plugins (not built, not shipped)
+  roadmap.toml                         planned plugins not yet started
 
 Rewrites only the block between:
   <!-- BEGIN:CATALOG -->  ...  <!-- END:CATALOG -->
@@ -82,6 +83,24 @@ def emit_json(dest: str) -> None:
     print(f"catalog.json written: {dest} ({len(data)} plugins)")
 
 
+def load_archived():
+    """Archived plugins (archive/plugins/<slug>/plugin.toml) — listed in the
+    README for the record but NEVER emitted into catalog.json: they are not
+    built, released, or installable."""
+    out = []
+    for path in sorted(glob.glob(str(ROOT / "archive" / "plugins" / "*" / "plugin.toml"))):
+        p = Path(path)
+        raw = tomllib.loads(p.read_text(encoding="utf-8"))
+        t = raw.get("plugin", raw)
+        out.append({
+            "name": t.get("name", "?"),
+            "slug": t.get("slug", p.parent.name),
+            "category": t.get("category", "?"),
+            "reference": t.get("reference", "—"),
+        })
+    return out
+
+
 def load_roadmap():
     f = ROOT / "roadmap.toml"
     if not f.exists():
@@ -106,6 +125,7 @@ def md_table(rows, cols):
 def render() -> str:
     shipped, in_progress = load_plugins()
     planned = load_roadmap()
+    archived = load_archived()
     parts = []
     parts.append(f"### Shipped ({len(shipped)})\n")
     parts.append(md_table(shipped, [
@@ -118,6 +138,15 @@ def render() -> str:
     ]))
     parts.append(f"\n\n### Planned ({len(planned)})\n")
     parts.append(md_table(planned, [
+        ("name", "Plugin"), ("category", "Category"), ("reference", "Reference"),
+    ]))
+    parts.append(f"\n\n### Archived ({len(archived)})\n")
+    parts.append(
+        "_Not built or released (excluded from CI); sources kept under "
+        "`archive/plugins/` and may return with reworked DSP. Local opt-in "
+        "build: `-DFACTORY_INCLUDE_ARCHIVED=ON`._\n"
+    )
+    parts.append(md_table(archived, [
         ("name", "Plugin"), ("category", "Category"), ("reference", "Reference"),
     ]))
     return "\n".join(parts)

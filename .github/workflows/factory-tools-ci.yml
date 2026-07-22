@@ -12,6 +12,7 @@ on:
     paths:
       - "tools/**"
       - "plugins/*/plugin.toml"
+      - "archive/plugins/*/plugin.toml"
       - "roadmap.toml"
       - "README.md"
       - ".github/workflows/factory-tools-ci.yml"
@@ -19,6 +20,7 @@ on:
     paths:
       - "tools/**"
       - "plugins/*/plugin.toml"
+      - "archive/plugins/*/plugin.toml"
       - "roadmap.toml"
       - "README.md"
       - ".github/workflows/factory-tools-ci.yml"
