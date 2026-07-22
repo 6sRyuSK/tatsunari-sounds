@@ -556,6 +556,44 @@ int main()
         }
     }
 
+    // ============ 6. WINDOW-RESIZE LOOP GUARD (Logic AU stack overflow) =========
+    // rs_shell::shouldRelayHostResize: the predicate the onWindowContentsResized handler
+    // uses to decide whether to call host gui.request_resize. Relaying unconditionally
+    // is what recursed the AU setFrame -> setSize -> windowContentsResized -> request_resize
+    // cycle into a stack overflow. Contract: relay ONLY a genuine size change that did
+    // NOT originate from a host setSize (inSetSize) and is non-degenerate.
+    {
+        using rs_shell::shouldRelayHostResize;
+
+        // Same size as the host cache -> never relay (feeding the current size back in
+        // must be a no-op; this is the fixed point that terminates the callback chain).
+        check (! shouldRelayHostResize (706, 493, 706, 493, false), "same size -> no relay (fixed point)");
+
+        // Inside a host-driven setSize -> never relay, even for a different size (the
+        // host is the origin; echoing it back re-enters the loop).
+        check (! shouldRelayHostResize (706, 493, 940, 657, true),  "in setSize -> no relay (origin guard)");
+        check (! shouldRelayHostResize (706, 493, 706, 493, true),  "in setSize + same size -> no relay");
+
+        // A genuine OS-driven change (e.g. a real DPI move on Windows/X11 where the
+        // host-facing size is the physical window) -> relay exactly once.
+        check (shouldRelayHostResize (706, 493, 940, 657, false),   "genuine change -> relay");
+        check (shouldRelayHostResize (706, 493, 707, 493, false),   "1px width change -> relay");
+        check (shouldRelayHostResize (706, 493, 706, 494, false),   "1px height change -> relay");
+
+        // Degenerate / not-yet-realised window -> never relay.
+        check (! shouldRelayHostResize (706, 493, 0, 493, false),   "zero width -> no relay");
+        check (! shouldRelayHostResize (706, 493, 706, 0, false),   "zero height -> no relay");
+
+        // Convergence property: after relaying a change, the cache holds the new size,
+        // so re-notifying with that same size no longer relays -> the loop stops in one
+        // step instead of recursing (the shell updates curW_/curH_ before relaying).
+        std::uint32_t cw = 706, ch = 493;
+        const std::uint32_t nw = 940, nh = 657;
+        check (shouldRelayHostResize (cw, ch, nw, nh, false), "step 1: change relays");
+        cw = nw; ch = nh; // shell caches the relayed size
+        check (! shouldRelayHostResize (cw, ch, nw, nh, false), "step 2: same size no longer relays (converged)");
+    }
+
     if (g_failures == 0) std::printf ("clap_shell_test: ALL PASS\n");
     else                 std::printf ("clap_shell_test: %d FAILURE(S)\n", g_failures);
     return g_failures == 0 ? 0 : 1;

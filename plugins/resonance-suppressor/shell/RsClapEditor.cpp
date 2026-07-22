@@ -219,26 +219,31 @@ namespace
             // mark-dirty, WITHOUT punching an automation point per parameter.
             editor_->onHistoryApplied = [this] { notifyHostEdited(); };
 
-            // Content-driven resize -> chiefly an OS DPI change: the platform layer
-            // (mac backingScaleFactor / Win32 WM_DPICHANGED / X11) OVERWRITES the
-            // window's dpi_scale with the OS factor and re-derives the logical bounds,
-            // which would un-pin our uniform zoom. Re-assert dpi = physicalHeight/747
-            // (syncWindowScale) so the logical plane stays a fixed 1069x747, refresh the
-            // host-facing size cache, and ask the host to match — mirroring visage's
-            // ClapPlugin example. syncWindowScale is re-entrancy-guarded and does not
-            // itself re-fire this callback (it changes dpi, not the native size).
+            // Content-driven resize (an OS DPI move, or the cascade our own writes set
+            // off). Re-pin the editor to the fixed 1069x747 design plane via the
+            // IDEMPOTENT syncWindowScale (writing the SAME size writes nothing), then
+            // relay to the host ONLY when the window's host-facing size actually changed
+            // and we are not already mid-setSize (shouldRelayHostResize).
+            //
+            // Relaying unconditionally here is exactly what closed the Logic AU stack-
+            // overflow loop: request_resize -> host [NSView setFrame:] -> setSize ->
+            // (re)resize -> windowContentsResized -> back here. Because syncWindowScale
+            // sets the app frame's NATIVE bounds to the LIVE window client size, the
+            // follow-up notifyContentsResized -> setInternalWindowSize sees no change and
+            // early-returns, so this callback does not synchronously re-drive itself; and
+            // the guarded relay never re-enters the host. The pair is a fixed point.
             app_->onWindowContentsResized() = [this] {
                 if (app_ == nullptr) return;
                 syncWindowScale();
+                const std::uint32_t hw = static_cast<std::uint32_t> (hostFacingWidth());
+                const std::uint32_t hh = static_cast<std::uint32_t> (hostFacingHeight());
+                if (! rs_shell::shouldRelayHostResize (curW_, curH_, hw, hh, inSetSize_))
+                    return;
+                curW_ = hw;
+                curH_ = hh;
                 fetchHostExts();
-#if !defined(__APPLE__)
-                // Non-mac host size is the physical window; a DPI move changed it.
-                curW_ = static_cast<std::uint32_t> (hostFacingWidth());
-                curH_ = static_cast<std::uint32_t> (hostFacingHeight());
-#endif
                 if (hostGui_ != nullptr && hostGui_->request_resize != nullptr)
-                    hostGui_->request_resize (host_, static_cast<std::uint32_t> (hostFacingWidth()),
-                                              static_cast<std::uint32_t> (hostFacingHeight()));
+                    hostGui_->request_resize (host_, hw, hh);
             };
 
             curW_ = kDefaultW;
@@ -312,6 +317,18 @@ namespace
         bool setSize (std::uint32_t width, std::uint32_t height) noexcept override
         {
             if (! app_) return false;
+            // IDEMPOTENT early-return: Logic re-sends the current size repeatedly during
+            // its resize handshake. Re-entering the resize machinery for a size we are
+            // already at is one arm of the stack-overflow loop (setSize -> resize ->
+            // windowContentsResized -> request_resize -> host setFrame -> setSize), so a
+            // no-op change must do nothing at all.
+            if (width == curW_ && height == curH_) return true;
+
+            // ORIGIN GUARD: the host is the source of this size, so while we apply it the
+            // onWindowContentsResized handler must NOT echo it back via request_resize
+            // (shouldRelayHostResize returns false when inSetSize_). This closes the
+            // request_resize -> setFrame -> setSize edge of the loop.
+            inSetSize_ = true;
             // Host-driven resize (window units). Set the native/logical window size per
             // platform, cache it as the host-facing size, then re-assert the uniform
             // zoom (dpi = physicalHeight/747) so the editor stays the 1069x747 design.
@@ -319,6 +336,7 @@ namespace
             curW_ = width;
             curH_ = height;
             syncWindowScale();
+            inSetSize_ = false;
             return true;
         }
 
@@ -414,25 +432,40 @@ namespace
         // convertToLogical, font rasterization) through the window dpi_scale, this makes
         // the whole editor render at the design layout uniformly scaled to the window —
         // no per-element scaling, and the OS Retina/HiDPI factor is composited in
-        // automatically because we derive from the physical height. Idempotent (frame
-        // setBounds/setDpiScale early-return when unchanged) and re-entrancy guarded so
-        // the OS-DPI reapply in onWindowContentsResized cannot recurse.
+        // automatically because we derive from the physical height.
+        //
+        // FIXED-POINT INVARIANT (this is what keeps the AU resize chain from recursing):
+        // the app frame's native bounds are set to the LIVE window client size
+        // (physW,physH). So the cascade this triggers — Frame::setBounds ->
+        // TopLevelFrame::resized -> ApplicationEditor::notifyContentsResized ->
+        // Window::setInternalWindowSize(nativeWidth, nativeHeight) — feeds
+        // setInternalWindowSize a size equal to the current client size, which makes it
+        // early-return WITHOUT calling windowContentsResized again. Every writable sink
+        // here is idempotent: Frame::setBounds / Frame::setDpiScale early-return on an
+        // unchanged value, and the one sink that does NOT (Window::setDpiScale is a plain
+        // assignment) is guarded by an explicit compare. Therefore running this with an
+        // unchanged window size writes nothing and starts no further callbacks — the
+        // property the Logic-loop fix depends on. `inScaleSync_` additionally blocks
+        // synchronous self-recursion within a single pass.
         void syncWindowScale()
         {
             if (inScaleSync_ || app_ == nullptr || editor_ == nullptr) return;
             visage::Window* win = app_->window();
-            // Physical pixel height of the window. clientHeight() is native px and is
-            // independent of the dpi_scale we are about to overwrite; before the window
-            // is attached, the app frame's native height carries the pre-set size.
+            // Physical pixel size of the window. clientWidth/Height() are native px and
+            // track the real drawable; before the window is attached, the app frame's
+            // native size carries the pre-set default.
             const int physH = win ? win->clientHeight() : app_->nativeHeight();
             const int physW = win ? win->clientWidth()  : app_->nativeWidth();
             if (physH <= 0 || physW <= 0) return;
             const float dpi = static_cast<float> (physH) / static_cast<float> (kDesignH);
 
             inScaleSync_ = true;
-            if (win) win->setDpiScale (dpi);
+            // Window::setDpiScale is a bare assignment (no unchanged-value guard), so
+            // only write it when it actually moves — otherwise a same-size re-entry would
+            // dirty nothing yet still churn.
+            if (win && win->dpiScale() != dpi) win->setDpiScale (dpi);
             // Drive the frame tree from the corrected dpi: app_ (and its RsEditor child)
-            // take the new dpi, the app's native (== physical) maps back to logical
+            // take the new dpi, the app's native (== physical client) maps back to logical
             // 1069x747, the canvas follows, and the editor fills it at the design size.
             app_->setDpiScale (dpi);
             app_->setNativeBounds (0, 0, physW, physH);
@@ -486,7 +519,8 @@ namespace
         std::unique_ptr<rs_ui::RsEditor>           editor_;
         std::uint32_t curW_ = static_cast<std::uint32_t> (kDefaultW);
         std::uint32_t curH_ = static_cast<std::uint32_t> (kDefaultH);
-        bool          inScaleSync_ = false; // re-entrancy guard for syncWindowScale()
+        bool          inScaleSync_ = false; // synchronous re-entrancy guard for syncWindowScale()
+        bool          inSetSize_   = false; // origin guard: suppress request_resize echo during a host setSize
     };
 } // namespace
 

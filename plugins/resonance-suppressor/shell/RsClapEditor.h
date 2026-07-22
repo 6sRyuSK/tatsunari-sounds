@@ -60,6 +60,37 @@ namespace rs_shell
         w = static_cast<std::uint32_t> (std::lround (static_cast<double> (lwi) * scale));
         h = static_cast<std::uint32_t> (std::lround (static_cast<double> (lhi) * scale));
     }
+
+    // Decide whether an OS-driven "window contents resized" notification should be
+    // relayed to the host as a gui.request_resize.
+    //
+    // Relaying UNCONDITIONALLY is what closed the Logic AU stack-overflow loop
+    // (crash report: ___chkstk_darwin at a guard page). The recurring cycle was
+    //   windowContentsResized -> [MTKView setFrameSize] -> _resizeDrawable ->
+    //   WindowEventHandler::handleResized -> TopLevelFrame::resized ->
+    //   notifyContentsResized -> OUR onWindowContentsResized -> request_resize ->
+    //   host [NSView setFrame:] -> setSize -> setWindowDimensions -> Frame::setBounds
+    //   -> TopLevelFrame::resized -> windowContentsResized -> ...
+    // i.e. our handler asked the host to resize on every contents change, the host
+    // obliged by re-driving setSize, and the two size conventions never settled to a
+    // fixed point.
+    //
+    // The cure is to relay ONLY a size the host does not already know about: relay
+    // when the window's host-facing size actually CHANGED from what the host last
+    // gave us, and NEVER while we are inside a host-driven setSize (`inSetSize` — the
+    // host set that size, echoing it back is what re-enters). With both guards,
+    // feeding the current size straight back in is a no-op, so the callback chain is
+    // a fixed point that terminates in one pass. Pure + Visage-free (unit-tested in
+    // clap_shell_test).
+    inline bool shouldRelayHostResize (std::uint32_t curW, std::uint32_t curH,
+                                       std::uint32_t newW, std::uint32_t newH,
+                                       bool inSetSize) noexcept
+    {
+        if (inSetSize)            return false; // host is the origin of this change
+        if (newW == 0 || newH == 0) return false; // degenerate / not yet realised
+        return newW != curW || newH != curH;   // relay only a genuine change
+    }
+
     // Construct the RS Visage editor host, backed by the SAME live objects the CLAP
     // shell owns: the RsCore (its published analyser snapshots feed the editor via
     // RsFeedFromCore), the ParamStore (every control binds by id), and the
