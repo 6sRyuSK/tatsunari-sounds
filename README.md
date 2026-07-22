@@ -30,6 +30,7 @@ UI は JUCE 非依存の Visage 製です。
 | Onsen Delay | Delay | Chase Bliss Thermae (harmonic glide delay) |
 | Taturator | Saturation | Analog tape / tube soft-clip |
 | Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
+| Tatsunari Surikire | Lo-Fi | Chase Bliss / Cooper FX Generation Loss MKII |
 | Tumble Delay | Delay | OP-1 Tombola sequencer × granular echo |
 | Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
 
