@@ -18,9 +18,11 @@ UI は JUCE 非依存の Visage 製です。
 | Resonance TatSuppressor | EQ | 3.0.2 | VST3, AU | oeksound soothe2 |
 
 
-### In progress (0)
+### In progress (1)
 
-_None yet._
+| Plugin | Category | Reference |
+| --- | --- | --- |
+| Pitch TatFixer | Pitch Correction | Antares Auto-Tune / Waves Tune Real-Time |
 
 
 ### Planned (0)
