@@ -107,7 +107,7 @@ namespace rs_core
         // its samplesPerBlock argument). Allocation happens here, never in process.
         void prepare (double sampleRate, int /*samplesPerBlock*/)
         {
-            currentSampleRate = sampleRate;
+            currentSampleRate.store (sampleRate, std::memory_order_relaxed);
             currentFftOrder   = factory_core::fftOrderForSampleRate (sampleRate, kBaseFftOrder, kRefSampleRate, kMaxFftOrder);
             suppressor.prepare (sampleRate, currentFftOrder);
 
@@ -122,8 +122,8 @@ namespace rs_core
             outTrimPrimed = false;
 
             suppressor.setDisplaySmoothingMs (50.0);
-            reportedLatency = suppressor.latencySamples();
-            activeBins      = suppressor.numBins();
+            reportedLatency.store (suppressor.latencySamples(), std::memory_order_relaxed);
+            activeBins.store      (suppressor.numBins(),        std::memory_order_relaxed);
             for (auto& a : pubMag)    a.store (-120.0f, std::memory_order_relaxed);
             for (auto& a : pubRed)    a.store (   0.0f, std::memory_order_relaxed);
             for (auto& a : pubMagPre) a.store (-120.0f, std::memory_order_relaxed);
@@ -155,7 +155,7 @@ namespace rs_core
             // Live display-smoothing override (l.253): atomic load only. Forced to 0
             // (the engine's cheap unsmoothed display path) while no editor is attached.
             suppressor.setDisplaySmoothingMs (showDisplay ? (double) displaySmoothMsUi.load (std::memory_order_relaxed) : 0.0);
-            uiQuality = s.quality;
+            uiQuality.store (s.quality, std::memory_order_relaxed);
 
             // Mode read once (l.257): steers both the Depth mapping and setMode.
             const bool hardMode = (s.mode == 1);
@@ -208,10 +208,10 @@ namespace rs_core
             // (l.343-348). The wrapper additionally calls setLatencySamples() for
             // host PDC — that lives in the shell, not here.
             const int lat = suppressor.latencySamples();
-            if (lat != reportedLatency)
+            if (lat != reportedLatency.load (std::memory_order_relaxed))
             {
-                reportedLatency = lat;
-                activeBins      = suppressor.numBins();
+                reportedLatency.store (lat,                 std::memory_order_relaxed);
+                activeBins.store      (suppressor.numBins(), std::memory_order_relaxed);
             }
 
             // Publish the latest display spectra on the now-current bin grid
@@ -238,9 +238,9 @@ namespace rs_core
         // --- published read-outs (mirror the processor's published semantics) ----
         // The live display bin count / latency track the engine across Quality
         // switches exactly like binsForDisplay() / getLatencySamples().
-        int    numBins()        const noexcept { return activeBins; }
-        int    latencySamples() const noexcept { return reportedLatency; }
-        double sampleRate()     const noexcept { return currentSampleRate; }
+        int    numBins()        const noexcept { return activeBins.load (std::memory_order_relaxed); }
+        int    latencySamples() const noexcept { return reportedLatency.load (std::memory_order_relaxed); }
+        double sampleRate()     const noexcept { return currentSampleRate.load (std::memory_order_relaxed); }
 
         // Per-bin display spectra (length kMaxBins; valid over [0, numBins())),
         // element k read with [k].load(relaxed) — the same lock-free hand-off the
@@ -273,7 +273,7 @@ namespace rs_core
         // Optional read-out for a UI: the label of the last snapshot's Quality.
         const char* qualityLabel() const noexcept
         {
-            switch (uiQuality) { case 0: return "Fast"; case 2: return "High"; default: return "Normal"; }
+            switch (uiQuality.load (std::memory_order_relaxed)) { case 0: return "Fast"; case 2: return "High"; default: return "Normal"; }
         }
 
     private:
@@ -388,10 +388,18 @@ namespace rs_core
         factory_core::LinearRamp<double> outTrim { 1.0 };
         bool   outTrimPrimed  = false;
 
-        double currentSampleRate = kRefSampleRate;
-        int    currentFftOrder   = kBaseFftOrder;
-        int    activeBins        = (1 << kBaseFftOrder) / 2 + 1;
-        int    reportedLatency   = 0;
+        // GUI/audio-shared scalars are atomic (relaxed): activeBins / reportedLatency
+        // move on the audio thread (a Quality window swap) and are read on the message
+        // thread by the editor/feed; currentSampleRate is written in prepare() and read
+        // by the UI. This restores the shipping JUCE processor's `std::atomic<int>
+        // activeBins` (etc.) — the extraction had dropped them to plain ints, a data
+        // race regression. relaxed ordering suffices: these are independent scalars, no
+        // publish/consume dependency, and the numeric values (hence the equivalence
+        // oracle) are unchanged.
+        std::atomic<double> currentSampleRate { kRefSampleRate };
+        int                 currentFftOrder   = kBaseFftOrder; // audio-thread-only (prepare)
+        std::atomic<int>    activeBins        { (1 << kBaseFftOrder) / 2 + 1 };
+        std::atomic<int>    reportedLatency   { 0 };
 
         std::array<double, kMaxBins> profileBuf {};        // reduction profile, low (display) grid
         std::array<double, kMaxBins> profileBufHigh {};    // reduction profile, high engine's grid
@@ -408,7 +416,7 @@ namespace rs_core
         std::atomic<int>   listenNode        { -1 };    // -1 = normal processing
         std::atomic<float> displaySmoothMsUi { 50.0f }; // == prepareToPlay's fixed 50 ms until overridden
         std::atomic<bool>  displayActive     { false }; // editor attached? (see setDisplayActive)
-        int                uiQuality         { 1 };     // last snapshot Quality (for qualityLabel)
+        std::atomic<int>   uiQuality         { 1 };     // last snapshot Quality (for qualityLabel; GUI reads)
 
         // Profile-rasterisation cache (perf), byte-identical to the processor's:
         // the key of the last rasterise (listen node / nodes / grid bin counts).

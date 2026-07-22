@@ -153,6 +153,16 @@ namespace factory_params
             return droppedCount.load (std::memory_order_relaxed);
         }
 
+        // Non-consuming observer: are there pending host-write events in the queue?
+        // Callable from ANY thread — it only compares head/tail, never advances the
+        // consumer index, so it does NOT steal events from the single consumer (the
+        // CLAP shell). The editor uses it to ask the host for a param flush while the
+        // plugin is inactive (no process() to drain the queue).
+        bool hasPendingHostWrites() const noexcept
+        {
+            return queueHead.load (std::memory_order_acquire) != queueTail.load (std::memory_order_acquire);
+        }
+
     private:
         // Snap + clamp via the parameter's range, store, bump epoch. Returns the
         // stored (snapped) value so the UI path can enqueue exactly what it stored.

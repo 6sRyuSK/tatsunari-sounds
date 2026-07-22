@@ -17,7 +17,8 @@ namespace rs_ui
 
     RsEditor::RsEditor (const RsTheme& theme, factory_params::ParamStore& store, RsFeed& feed,
                         RsPresetModel& presets, RsAbModel& ab)
-        : rsTheme_ (theme), store_ (store), feed_ (feed), presets_ (presets), ab_ (ab), model_ (store)
+        : rsTheme_ (theme), store_ (store), feed_ (feed), presets_ (presets), ab_ (ab), model_ (store),
+          sweeper_ (store)
     {
         const fuv::Theme& base = rsTheme_.base;
 
@@ -151,6 +152,23 @@ namespace rs_ui
         undo_.push (lastSnap_, now());
         lastGestureEnd_ = store_.gestureEndCount(); // seed the observer at the current count
         refreshUndoButtons();
+
+        // --- host-change sweep baseline (fix F1) -----------------------------
+        // Precompute the node-parameter mask (lc_/hc_/b0_..b7_ prefixes) so the
+        // per-tick sweep never does string compares, then run one empty sweep to
+        // baseline sweeper_ at the CURRENT epochs. Any parameter change made before
+        // the editor existed is already reflected in the widgets' first draw (they
+        // read store.value()), so replaying it as a redraw storm on the first tick is
+        // pure waste — the baseline sweep swallows it.
+        nodeParamMask_.assign ((std::size_t) store_.size(), 0);
+        for (int i = 0; i < store_.size(); ++i)
+        {
+            const std::string& id = store_.desc (i).id;
+            const bool isNode = id.rfind ("lc_", 0) == 0 || id.rfind ("hc_", 0) == 0
+                                || (id.size() >= 3 && id[0] == 'b' && id[1] >= '0' && id[1] <= '9' && id[2] == '_');
+            nodeParamMask_[(std::size_t) i] = isNode ? 1 : 0;
+        }
+        sweeper_.sweep (store_, [] (int) {});
     }
 
     // ---- clock + snapshots --------------------------------------------------
@@ -184,6 +202,23 @@ namespace rs_ui
             lastGestureEnd_ = g;
             commitUndo();
         }
+
+        // Host-driven change sweep (fix F1): redraw every widget whose param changed
+        // since the last tick. This catches automation / host-generic-UI / MIDI-learn
+        // edits (setFromHost, which touches no widget). The UI's OWN edits bump the
+        // same epochs, so the widget being dragged also gets a redraw() here — but
+        // redraw() is idempotent (it just marks the frame dirty), so the double mark is
+        // harmless. The curve view self-drives every frame and needs no nudge.
+        bool nodeChanged = false;
+        sweeper_.sweep (store_, [&] (int i)
+        {
+            if (visage::Frame* w = widgetForParam (i))
+                w->redraw();
+            if (i >= 0 && (std::size_t) i < nodeParamMask_.size() && nodeParamMask_[(std::size_t) i])
+                nodeChanged = true;
+        });
+        if (nodeChanged && nodePanel_ && nodePanel_->isVisible())
+            nodePanel_->redraw();
     }
 
     void RsEditor::commitUndo()
@@ -205,6 +240,9 @@ namespace rs_ui
         applyingHistory_ = false;
         refreshUndoButtons();
         redrawAll();
+        // Relay the bulk change to the host (rescan + mark-dirty) — the CLAP shell
+        // wires this so undo/redo reaches the DAW. Unset in the harness.
+        if (onHistoryApplied) onHistoryApplied();
     }
 
     void RsEditor::doUndo() { if (undo_.canUndo()) applyHistory (undo_.undo (snapshotNow())); }
@@ -612,6 +650,23 @@ namespace rs_ui
                && nodePanel_->miniKnobTipInWindow (which, cx, cy, tx, ty);
     }
 
+    // The single param-index -> footer widget map, shared by widgetRectInWindow and
+    // pumpGestures's host-change sweep (fix F1), so the two can never diverge.
+    visage::Frame* RsEditor::widgetForParam (int pi) const
+    {
+        if (pi < 0) return nullptr;
+        for (const auto& kn : knobs_) if (kn->paramIndex() == pi) return kn.get();
+        for (const auto& pl : pills_) if (pl->paramIndex() == pi) return pl.get();
+        if (bypass_     && bypass_->paramIndex()     == pi) return bypass_.get();
+        if (modeSeg_    && modeSeg_->paramIndex()    == pi) return modeSeg_.get();
+        if (qualitySet_ && qualitySet_->paramIndex() == pi) return qualitySet_.get();
+        if (chSet_      && chSet_->paramIndex()      == pi) return chSet_.get();
+        if (linkAmt_    && linkAmt_->paramIndex()    == pi) return linkAmt_.get();
+        if (mix_        && mix_->paramIndex()        == pi) return mix_.get();
+        if (out_        && out_->paramIndex()        == pi) return out_.get();
+        return nullptr;
+    }
+
     bool RsEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
     {
         auto rectOf = [&] (const visage::Frame* fr) -> bool
@@ -636,16 +691,7 @@ namespace rs_ui
         if (key == "footerCard") { x = o.x + footerCard_.x; y = o.y + footerCard_.y; w = footerCard_.w; h = footerCard_.h; return true; }
 
         const int pi = store_.indexOf (key);
-        if (pi < 0) return false;
-        for (const auto& kn : knobs_)   if (kn->paramIndex() == pi) return rectOf (kn.get());
-        for (const auto& pl : pills_)   if (pl->paramIndex() == pi) return rectOf (pl.get());
-        if (bypass_ && bypass_->paramIndex() == pi) return rectOf (bypass_.get());
-        if (modeSeg_ && modeSeg_->paramIndex() == pi) return rectOf (modeSeg_.get());
-        if (qualitySet_ && qualitySet_->paramIndex() == pi) return rectOf (qualitySet_.get());
-        if (chSet_ && chSet_->paramIndex() == pi) return rectOf (chSet_.get());
-        if (linkAmt_ && linkAmt_->paramIndex() == pi) return rectOf (linkAmt_.get());
-        if (mix_ && mix_->paramIndex() == pi) return rectOf (mix_.get());
-        if (out_ && out_->paramIndex() == pi) return rectOf (out_.get());
+        if (visage::Frame* fr = widgetForParam (pi)) return rectOf (fr);
         return false;
     }
 

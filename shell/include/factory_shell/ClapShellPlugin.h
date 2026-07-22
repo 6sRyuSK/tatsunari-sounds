@@ -333,6 +333,13 @@ namespace factory_shell
             if (s->hostParams != nullptr)
                 s->hostParams->rescan (s->host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
 
+            // Resync an open editor to the replaced state (clears/re-seeds its undo
+            // timeline, rebuilds the preset selector, redraws) — the CLAP counterpart
+            // of JUCE's setStateInformation -> replaceState follow-through. Nothing to
+            // do when no editor is created (headless host, or GUI not opened).
+            if (s->editor)
+                s->editor->onHostStateRestored();
+
             // A restore may change a latency-affecting parameter (Quality). CLAP only
             // permits latency to change across (de)activation, so if we are active,
             // ask the host to restart — activate() then re-primes the latency and

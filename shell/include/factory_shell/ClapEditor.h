@@ -55,6 +55,14 @@ namespace factory_shell
         virtual bool show() noexcept = 0;
         virtual bool hide() noexcept = 0;
 
+        // [main-thread] The shell calls this after a host clap.state.load() completes
+        // (the restored parameter values are already in the store, and the host has
+        // been told to rescan). It lets the editor resync to the replaced state —
+        // clear + re-seed its undo timeline, rebuild the preset selector, redraw — the
+        // CLAP equivalent of the JUCE setStateInformation -> apvts.replaceState follow
+        // through. Default no-op: a plugin whose editor needs no resync is unaffected.
+        virtual void onHostStateRestored() noexcept {}
+
         // ── Linux posix-fd-support ───────────────────────────────────────────
         // The editor's event fd, or -1 when unavailable (no window / non-Linux).
         // The shell registers/unregisters it with the host; the host then calls

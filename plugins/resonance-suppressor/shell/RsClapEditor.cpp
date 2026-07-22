@@ -68,7 +68,9 @@ namespace
     // 1069x747 logical pt plus host chrome overflows common laptop displays (the
     // "default window too big" report), and growing from the minimum is one drag.
     constexpr int kDesignW = 1069, kDesignH = 747;
-    constexpr int kMinW = 940, kMinH = 657, kMaxW = 1320, kMaxH = 922;
+    // Minimum window (used for setMinimumDimensions); the max + aspect snap now live
+    // in rs_shell::snapEditorSizeForScale (RsClapEditor.h).
+    constexpr int kMinW = 940, kMinH = 657;
     constexpr int kDefaultW = kMinW, kDefaultH = kMinH;
 
 #if defined(_WIN32)
@@ -80,11 +82,15 @@ namespace
 #endif
 
     // --- REAL preset model over the shell's PresetSession ---------------------
-    // Lists Init + the six factory presets (real names) + a trailing "Save As…"
-    // action row (parity with the P3 harness selector). load() applies the real
+    // Lists Init + the six factory presets (real names). load() applies the real
     // program values through the session, then fires onLoaded so the host re-pulls
     // values + marks state dirty. Returning true tells the editor a preset LOADED,
     // so it clears its undo timeline (JUCE apvts.replaceState() semantics).
+    //
+    // No trailing "Save As…" action row: until a user-preset store (UserPresetStoreFs)
+    // is wired into the CLAP shell there is nothing for it to do, so we do not surface
+    // a dead menu entry. (The tools/ui-dev harness keeps its mock action row to
+    // exercise the selector's action-row skipping, and is intentionally left as is.)
     class SessionPresetModel final : public rs_ui::RsPresetModel
     {
     public:
@@ -95,10 +101,9 @@ namespace
         {
             std::vector<rs_ui::RsPresetItem> v;
             const int n = session_.numPrograms();
-            v.reserve (static_cast<std::size_t> (n) + 1);
+            v.reserve (static_cast<std::size_t> (n));
             for (int i = 0; i < n; ++i)
                 v.push_back ({ session_.programName (i), /*steppable*/ true, /*isAction*/ false });
-            v.push_back ({ "Save As\xE2\x80\xA6", /*steppable*/ false, /*isAction*/ true });
             return v;
         }
 
@@ -107,7 +112,7 @@ namespace
         bool load (int index) override
         {
             if (index < 0 || index >= session_.numPrograms())
-                return false; // the "Save As…" action row (or out of range)
+                return false; // out of range
             session_.applyProgram (index); // writes real values via ParamStore::setFromHost
             if (onLoaded_) onLoaded_();
             return true;
@@ -184,19 +189,43 @@ namespace
 
             app_->addChild (*editor_);
             setPluginDimensions (kDefaultW, kDefaultH);
-            layoutEditor (kDefaultW, kDefaultH);
+            layoutEditorToWindow();
             app_->setMinimumDimensions (static_cast<float> (kMinW), static_cast<float> (kMinH));
             app_->setFixedAspectRatio (true); // captures the current 1069:747 ratio
 
-            // Per analyser frame: drain the editor's gesture queue into its undo
-            // timeline. The REAL feed refreshes itself from the audio thread, so
-            // (unlike the synthetic harness feed) there is nothing to advance here.
-            editor_->curve().onTick = [this] { if (editor_) editor_->pumpGestures(); };
+            // Per analyser frame:
+            //  * drain the editor's gesture queue into its undo timeline. The REAL feed
+            //    refreshes itself from the audio thread, so (unlike the synthetic
+            //    harness feed) there is nothing to advance here; and
+            //  * while the plugin is INACTIVE there is no process()/params.flush() to
+            //    drain the store's host-write queue, so a GUI knob edit made with the
+            //    transport stopped would never reach the host. Ask the host to flush
+            //    the params when edits are pending — the CLAP contract's inactive-edit
+            //    path. While active this is harmless (the next process() drains the
+            //    queue first, so the flush finds nothing). [main-thread].
+            editor_->curve().onTick = [this] {
+                if (editor_ == nullptr) return;
+                editor_->pumpGestures();
+                if (store_.hasPendingHostWrites())
+                {
+                    fetchHostExts();
+                    if (hostParams_ != nullptr && hostParams_->request_flush != nullptr)
+                        hostParams_->request_flush (host_);
+                }
+            };
 
-            // Content-driven resize (e.g. a future DPI change) -> ask the host to
-            // resize the host window to match, mirroring visage's ClapPlugin example.
+            // Undo / redo applies a bulk parameter change (the whole snapshot), so
+            // relay it to the host exactly like a preset / A-B switch: rescan(VALUES) +
+            // mark-dirty, WITHOUT punching an automation point per parameter.
+            editor_->onHistoryApplied = [this] { notifyHostEdited(); };
+
+            // Content-driven resize (e.g. a DPI change once the window attaches to its
+            // parent, which can move the logical size) -> re-flow the editor to the new
+            // logical bounds, then ask the host to resize its window to match, mirroring
+            // visage's ClapPlugin example.
             app_->onWindowContentsResized() = [this] {
                 if (app_ == nullptr) return;
+                layoutEditorToWindow();
                 if (hostGui_ == nullptr && host_ != nullptr)
                     hostGui_ = static_cast<const clap_host_gui_t*> (host_->get_extension (host_, CLAP_EXT_GUI));
                 if (hostGui_ != nullptr && hostGui_->request_resize != nullptr)
@@ -265,15 +294,13 @@ namespace
         bool adjustSize (std::uint32_t* width, std::uint32_t* height) noexcept override
         {
             if (width == nullptr || height == nullptr) return false;
-            // Snap to the 1069:747 aspect (height-driven) and clamp to the JUCE
-            // editor's resize limits [940x657 .. 1320x922].
-            double h = static_cast<double> (*height);
-            h = clampd (h, kMinH, kMaxH);
-            double w = h * static_cast<double> (kDesignW) / static_cast<double> (kDesignH);
-            if (w < kMinW) { w = kMinW; h = w * static_cast<double> (kDesignH) / static_cast<double> (kDesignW); }
-            if (w > kMaxW) { w = kMaxW; h = w * static_cast<double> (kDesignH) / static_cast<double> (kDesignW); }
-            *width  = static_cast<std::uint32_t> (std::lround (w));
-            *height = static_cast<std::uint32_t> (std::lround (h));
+            // Snap to the 1069:747 aspect + the JUCE editor's resize limits, in LOGICAL
+            // space. On Windows/X11 the host proposes NATIVE px, so pass the live DPI
+            // scale (native-per-logical) — otherwise a high-DPI display would snap the
+            // physical size against logical limits and land the window at the wrong
+            // size (the Windows/X11 analogue of the macOS Retina bug the platform split
+            // fixes). On macOS the proposal is already logical, so dpiScale() == 1.
+            rs_shell::snapEditorSizeForScale (dpiScale(), *width, *height);
             return true;
         }
 
@@ -281,7 +308,7 @@ namespace
         {
             if (! app_) return false;
             setPluginDimensions (static_cast<int> (width), static_cast<int> (height));
-            layoutEditor (static_cast<int> (width), static_cast<int> (height));
+            layoutEditorToWindow();
             curW_ = width;
             curH_ = height;
             return true;
@@ -299,6 +326,15 @@ namespace
 
         bool show() noexcept override { if (editor_) editor_->setVisible (true);  return true; }
         bool hide() noexcept override { if (editor_) editor_->setVisible (false); return true; }
+
+        // The shell finished a host state.load(): the restored values are in the store
+        // already, so resync the editor to the replaced state (clear + re-seed undo,
+        // rebuild the preset selector, redraw) — the JUCE setStateInformation ->
+        // replaceState follow-through. No-op when the GUI was never created.
+        void onHostStateRestored() noexcept override
+        {
+            if (editor_) editor_->onStateReplaced();
+        }
 
         int posixFd() const noexcept override
         {
@@ -318,9 +354,21 @@ namespace
         }
 
     private:
-        static double clampd (double v, double lo, double hi) noexcept
+        // Native-per-logical pixel ratio of the live window. CLAP proposes NATIVE px
+        // on Windows/X11 but LOGICAL points on macOS, so this feeds the aspect snap
+        // the factor it needs to convert to/from logical space. On macOS the proposal
+        // is already logical (ratio 1). Elsewhere derive it from the window itself
+        // (nativeWidth / width); before a window exists, or at a degenerate size, fall
+        // back to 1 (host will re-query once attached).
+        double dpiScale() const
         {
-            return v < lo ? lo : (v > hi ? hi : v);
+#if __APPLE__
+            return 1.0;
+#else
+            return (app_ && app_->width() > 0)
+                     ? static_cast<double> (app_->nativeWidth()) / static_cast<double> (app_->width())
+                     : 1.0;
+#endif
         }
 
         // CLAP/VST3 GUI sizes are LOGICAL points on macOS but PHYSICAL pixels on
@@ -359,10 +407,17 @@ namespace
 #endif
         }
 
-        void layoutEditor (int w, int h)
+        // Size the editor to the window's LOGICAL bounds. Visage Frame coordinates are
+        // logical px, so the editor must track app_->width()/height() (logical),
+        // NOT the CLAP size (native px on Windows/X11) — feeding native px straight in
+        // would over-size the layout on a high-DPI display. On macOS width()/height()
+        // are already logical, so this is identical to the old code there.
+        void layoutEditorToWindow()
         {
-            if (editor_)
-                editor_->setBounds (0.0f, 0.0f, static_cast<float> (w), static_cast<float> (h));
+            if (editor_ && app_)
+                editor_->setBounds (0.0f, 0.0f,
+                                    static_cast<float> (app_->width()),
+                                    static_cast<float> (app_->height()));
         }
 
         void fetchHostExts()

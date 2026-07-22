@@ -395,6 +395,36 @@ void checkParamStore()
         s4.drainHostWrites ([&] (const HostWrite&) { ++drained; });
         check (drained == slots - 1, "drained == usable slots (" + std::to_string (slots - 1) + ")");
     }
+
+    // hasPendingHostWrites — a NON-consuming observer of the host-write queue (fix
+    // F5): the CLAP editor uses it to ask the host for a param flush while inactive.
+    {
+        ParamStore s6 (storeDescs());
+        check (! s6.hasPendingHostWrites(), "hasPendingHostWrites false on a fresh store");
+
+        s6.beginGesture (0);
+        check (s6.hasPendingHostWrites(), "hasPendingHostWrites true after a gesture enqueue");
+
+        s6.drainHostWrites ([] (const HostWrite&) {});
+        check (! s6.hasPendingHostWrites(), "hasPendingHostWrites false after drain");
+
+        // Three UI writes -> pending; the observer does NOT consume, so a drain still
+        // sees all three events and only then clears.
+        s6.setFromUi (0, 10.0f);
+        s6.setFromUi (0, 20.0f);
+        s6.setFromUi (0, 30.0f);
+        check (s6.hasPendingHostWrites(), "hasPendingHostWrites true after 3 UI writes");
+        int n6 = 0;
+        s6.drainHostWrites ([&] (const HostWrite&) { ++n6; });
+        check (n6 == 3, "observer did not consume: drain still yields all 3 events");
+        check (! s6.hasPendingHostWrites(), "hasPendingHostWrites false once actually drained");
+
+        // A host-side write goes straight to the value store (no queue), so it must
+        // NOT flag pending host writes (regression guard: the host path is not the UI
+        // path).
+        s6.setFromHost (0, 55.0f);
+        check (! s6.hasPendingHostWrites(), "setFromHost does NOT enqueue (no pending host write)");
+    }
 }
 
 // ---------------------------------------------------------------------------

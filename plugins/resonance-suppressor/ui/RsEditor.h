@@ -114,6 +114,17 @@ namespace rs_ui
         bool canUndo() const noexcept { return undo_.canUndo(); }
         bool canRedo() const noexcept { return undo_.canRedo(); }
 
+        // Fired after an undo/redo applies a snapshot (a BULK parameter change, like a
+        // preset load). The CLAP shell wires this to relay a host rescan + mark-dirty,
+        // so undo/redo reaches the DAW; unset in the harness. [message-thread].
+        std::function<void()> onHistoryApplied;
+
+        // Resync to a wholesale state replacement (host state.load, preset load, or A-B
+        // switch): clear + re-seed the undo timeline, rebuild the preset selector,
+        // redraw. Public so the CLAP shell can call it after a host state.load()
+        // (mirrors JUCE's setStateInformation -> apvts.replaceState()).
+        void onStateReplaced();
+
         // Inject a fixed clock value (seconds) for deterministic undo coalescing in
         // tests; pass a negative value to restore the real monotonic clock.
         void setClockOverride (double seconds) noexcept { clockOverride_ = seconds; }
@@ -163,7 +174,6 @@ namespace rs_ui
         std::vector<float> snapshotNow() const;
         void   commitUndo();
         void   applyHistory (const std::vector<float>& snap);
-        void   onStateReplaced();      // clear undo + refresh after preset / A-B load
         void   updateAbUi();           // sync the directional copy button to the active slot (fix 4)
         void   refreshUndoButtons();
         void   selectNode (int id);    // curve -> panel
@@ -184,6 +194,13 @@ namespace rs_ui
         void   drawBrand (visage::Canvas& canvas);
         void   drawHeaderChrome (visage::Canvas& canvas);
         void   drawFooterChrome (visage::Canvas& canvas);
+
+        // The single param-index -> footer widget map (knobs_/pills_/bypass_/modeSeg_/
+        // qualitySet_/chSet_/linkAmt_/mix_/out_), shared by widgetRectInWindow (driver
+        // lookups) and pumpGestures's host-change sweep (fix F1). Returns nullptr for a
+        // param with no bound widget (the legacy sharpness/selectivity, or the node
+        // params, which the curve / node panel own). nullptr for storeIndex < 0.
+        visage::Frame* widgetForParam (int storeIndex) const;
 
         int    idx (const char* id) const { return store_.indexOf (id); }
         float  k() const { return height() / kDesignH; }  // uniform design scale
@@ -222,6 +239,17 @@ namespace rs_ui
         // CLAP shell is that queue's single consumer (it relays GUI edits to the
         // host as automation). pumpGestures() snapshots on each new gesture-end.
         std::uint32_t lastGestureEnd_ = 0;
+
+        // Host-driven change observer (fix F1): a non-consuming per-frame sweep over
+        // the store's change epochs. HOST-side param changes (automation, generic-UI
+        // edits, MIDI-learn) go through setFromHost and bump epochs but touch no widget,
+        // and Visage only repaints redraw()n frames — so without this sweep the footer
+        // controls freeze while the curve (which self-drives) keeps moving. Each tick
+        // we redraw the widget bound to every changed param. nodeParamMask_[i] flags the
+        // node params (lc_/hc_/b0_..b7_) so a changed node repaints the open node panel
+        // once; it is precomputed in the ctor to avoid per-tick string compares.
+        factory_params::ChangeSweeper sweeper_;
+        std::vector<char>             nodeParamMask_; // size == store.size(); 1 = node param
 
         bool frozen_ = false;
 

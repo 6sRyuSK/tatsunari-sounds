@@ -24,6 +24,7 @@
 //
 #include "factory_shell/ClapParamBridge.h"
 #include "factory_shell/ClapStateBridge.h"
+#include "factory_shell/ClapShellPlugin.h" // drive the whole shell via its clap vtable (T1)
 
 #include "factory_params/ParamStore.h"
 #include "factory_presets/PresetBank.h"
@@ -34,13 +35,16 @@
 #include "Source/FactoryPresets.h"  // resonance_suppressor_presets::bank / kExclude
 #include "Source/StateMigration.h"  // resonance_suppressor_state::cleanBreakMigrate()
 #include "ui/RsAbState.h"           // rs_ui::AbCompareModel
+#include "shell/RsClapEditor.h"     // rs_shell::snapEditorSizeForScale (T2; visage-free header)
 
 #include <clap/clap.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -127,6 +131,144 @@ namespace
             "  <PARAM id=\"attack\" value=\"150\"/>\n"
             "</PARAMS>");
     }
+
+    // ==== T1 fixtures: drive the real ClapShellPlugin vtable with a mock editor ====
+
+    // A minimal editor recording only what T1 (F2) asserts: how many times the shell
+    // told it the host restored state. Everything else returns a benign default.
+    struct MockClapEditor final : factory_shell::IClapEditor
+    {
+        int onHostStateRestoredCount = 0;
+
+        bool isApiSupported (const char*, bool) const noexcept override { return true; }
+        bool getPreferredApi (const char** api, bool* fl) const noexcept override
+        { if (api) *api = "mock"; if (fl) *fl = false; return true; }
+        bool create (const char*, bool) noexcept override { return true; }
+        void destroy() noexcept override {}
+        bool setScale (double) noexcept override { return false; }
+        bool getSize (std::uint32_t*, std::uint32_t*) noexcept override { return false; }
+        bool canResize() const noexcept override { return false; }
+        bool getResizeHints (clap_gui_resize_hints_t*) noexcept override { return false; }
+        bool adjustSize (std::uint32_t*, std::uint32_t*) noexcept override { return false; }
+        bool setSize (std::uint32_t, std::uint32_t) noexcept override { return false; }
+        bool setParent (const clap_window_t*) noexcept override { return false; }
+        bool show() noexcept override { return true; }
+        bool hide() noexcept override { return true; }
+        void onHostStateRestored() noexcept override { ++onHostStateRestoredCount; }
+    };
+
+    // makeEditor is a static Policy hook, so it publishes the just-built editor here
+    // for the scenario to observe (the shell owns it). Reset before each scenario.
+    MockClapEditor* g_lastEditor = nullptr;
+
+    struct MockCore {};
+
+    // A shell Policy that DOES carry an editor (kHasEditor) but whose DSP is inert, so
+    // the shell advertises clap.gui and runs the F2 state-restore -> editor sync path
+    // without any real audio work. Uses the real RS param/preset tables (already
+    // linked) so paramsGetValue / state round-trip behave like the shipping build.
+    struct MockEditorPolicy
+    {
+        using Core = MockCore;
+
+        static const clap_plugin_descriptor_t* descriptor()
+        {
+            static const char* const features[] = { CLAP_PLUGIN_FEATURE_AUDIO_EFFECT, nullptr };
+            static const clap_plugin_descriptor_t d = {
+                CLAP_VERSION_INIT, "jp.tatsunari-sounds.rs-mock", "RS Mock", "Tatsunari Sounds",
+                "", "", "", "0.0.0", "", features
+            };
+            return &d;
+        }
+
+        static std::vector<factory_params::ParamDesc> params()
+        {
+            return resonance_suppressor_params::buildRsParams();
+        }
+        static const factory_presets::PresetBank& presetBank()
+        {
+            return resonance_suppressor_presets::bank;
+        }
+        static std::vector<std::string> excludeIds()
+        {
+            return std::vector<std::string> (
+                resonance_suppressor_presets::kExclude,
+                resonance_suppressor_presets::kExclude + resonance_suppressor_presets::kNumExclude);
+        }
+
+        static constexpr bool kHasSidechain = false;
+
+        static bool isClapExposed (const factory_params::ParamDesc& d) { return exposed (d); }
+        static void migrateState (factory_presets::StateModel& m)
+        {
+            resonance_suppressor_state::cleanBreakMigrate (m);
+        }
+
+        static void prepare (Core&, double, std::uint32_t) {}
+        static void process (Core&, const factory_params::ParamStore&,
+                             float*, float*, const float*, const float*, std::uint32_t) {}
+        static std::uint32_t latencySamples (const Core&) { return 0u; }
+        static std::uint32_t primeFrames() { return 0u; }
+
+        static constexpr bool kHasEditor = true;
+        static std::unique_ptr<factory_shell::IClapEditor>
+        makeEditor (Core&, factory_params::ParamStore&, factory_presets::PresetSession&, const clap_host_t*)
+        {
+            auto e = std::make_unique<MockClapEditor>();
+            g_lastEditor = e.get();
+            return e;
+        }
+    };
+
+    // A mock clap_host_t recording the round-trips clapStateLoad makes (rescan flags,
+    // mark_dirty, request_restart) and exposing the params + state host extensions.
+    struct MockHost
+    {
+        int                     rescanCount   = 0;
+        clap_param_rescan_flags lastRescan    = 0;
+        int                     flushCount    = 0;
+        int                     markDirtyCount = 0;
+        int                     requestRestartCount = 0;
+
+        clap_host_params_t params {};
+        clap_host_state_t  state {};
+        clap_host_t        host {};
+
+        MockHost()
+        {
+            params.rescan        = &rescanCb;
+            params.clear         = &clearCb;
+            params.request_flush = &flushCb;
+            state.mark_dirty     = &markDirtyCb;
+
+            host.clap_version    = CLAP_VERSION;
+            host.host_data       = this;
+            host.name            = "clap_shell_test";
+            host.vendor          = "";
+            host.url             = "";
+            host.version         = "";
+            host.get_extension   = &getExt;
+            host.request_restart = &reqRestart;
+            host.request_process = &reqProcess;
+            host.request_callback = &reqCallback;
+        }
+
+        static MockHost* of (const clap_host_t* h) { return static_cast<MockHost*> (h->host_data); }
+        static const void* CLAP_ABI getExt (const clap_host_t* h, const char* id)
+        {
+            if (std::strcmp (id, CLAP_EXT_PARAMS) == 0) return &of (h)->params;
+            if (std::strcmp (id, CLAP_EXT_STATE)  == 0) return &of (h)->state;
+            return nullptr;
+        }
+        static void CLAP_ABI rescanCb (const clap_host_t* h, clap_param_rescan_flags f)
+        { auto* s = of (h); ++s->rescanCount; s->lastRescan = f; }
+        static void CLAP_ABI clearCb (const clap_host_t*, clap_id, clap_param_clear_flags) {}
+        static void CLAP_ABI flushCb (const clap_host_t* h) { ++of (h)->flushCount; }
+        static void CLAP_ABI markDirtyCb (const clap_host_t* h) { ++of (h)->markDirtyCount; }
+        static void CLAP_ABI reqRestart (const clap_host_t* h) { ++of (h)->requestRestartCount; }
+        static void CLAP_ABI reqProcess (const clap_host_t*) {}
+        static void CLAP_ABI reqCallback (const clap_host_t*) {}
+    };
 }
 
 int main()
@@ -277,6 +419,140 @@ int main()
         ab.setActiveSlot (0);
         check (store.value (depth) == 90.0f && store.value (mix) == 80.0f && program == 2,
                "copyActiveToOther copied active (B) onto the other (A)");
+    }
+
+    // ============ 4. STATE RESTORE -> EDITOR SYNC (F2) =======================
+    // Drives the REAL ClapShellPlugin through its clap vtable: a host state.load must
+    // notify an open editor (onHostStateRestored) exactly once, AFTER rescanning the
+    // host, and request a restart only while active. No editor -> no notify, no crash.
+    {
+        using RsMockShell = factory_shell::ClapShellPlugin<MockEditorPolicy>;
+
+        std::vector<ParamDesc> descs = resonance_suppressor_params::buildRsParams();
+        const int     depthIx = ParamStore (descs).indexOf ("depth");
+        const clap_id depthId = descs[(std::size_t) depthIx].uid;
+
+        // A canonical v1 blob: depth 63, mix 25, presetIndex 2.
+        StateModel m; m.stateVersion = 1; m.presetIndex = 2;
+        m.params.push_back ({ "depth", 63.0 });
+        m.params.push_back ({ "mix",   25.0 });
+        const StateBlob blob = encode (m);
+
+        // -- Scenario A: editor present, plugin INACTIVE -----------------------
+        {
+            MockHost mh;
+            g_lastEditor = nullptr;
+            clap_plugin_t* plugin = RsMockShell::create (&mh.host);
+            check (plugin != nullptr && plugin->init (plugin), "A: plugin init");
+
+            const auto* gui = static_cast<const clap_plugin_gui_t*> (plugin->get_extension (plugin, CLAP_EXT_GUI));
+            check (gui != nullptr, "A: clap.gui advertised (Policy carries an editor)");
+            if (gui) gui->is_api_supported (plugin, "mock", false); // ensureEditor -> makeEditor
+            check (g_lastEditor != nullptr, "A: mock editor constructed on is_api_supported");
+
+            const auto* state  = static_cast<const clap_plugin_state_t*>  (plugin->get_extension (plugin, CLAP_EXT_STATE));
+            const auto* params = static_cast<const clap_plugin_params_t*> (plugin->get_extension (plugin, CLAP_EXT_PARAMS));
+            check (state != nullptr && params != nullptr, "A: state + params extensions present");
+
+            MockStream s; s.data.assign (blob.begin(), blob.end());
+            const bool ok = state->load (plugin, &s.istream);
+            check (ok, "A: state.load returns true");
+            check (g_lastEditor != nullptr && g_lastEditor->onHostStateRestoredCount == 1,
+                   "A: editor onHostStateRestored called exactly once");
+            check (mh.rescanCount == 1
+                   && mh.lastRescan == (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT),
+                   "A: host rescan(VALUES|TEXT) once");
+            check (mh.requestRestartCount == 0, "A: inactive -> request_restart NOT called");
+
+            double dv = -1.0;
+            check (params->get_value (plugin, depthId, &dv) && std::abs (dv - 63.0) < 1e-6,
+                   "A: depth restored into the store");
+
+            MockStream s2;
+            check (state->save (plugin, &s2.ostream), "A: re-save ok");
+            auto decoded = factory_presets::decode (s2.data.data(), s2.data.size());
+            check (decoded && decoded->presetIndex == 2, "A: re-saved blob keeps presetIndex 2");
+
+            plugin->destroy (plugin);
+        }
+
+        // -- Scenario B: editor present, plugin ACTIVE -------------------------
+        {
+            MockHost mh;
+            g_lastEditor = nullptr;
+            clap_plugin_t* plugin = RsMockShell::create (&mh.host);
+            plugin->init (plugin);
+            const auto* gui = static_cast<const clap_plugin_gui_t*> (plugin->get_extension (plugin, CLAP_EXT_GUI));
+            if (gui) gui->is_api_supported (plugin, "mock", false);
+            check (plugin->activate (plugin, 48000.0, 32, 512), "B: activate");
+
+            const auto* state = static_cast<const clap_plugin_state_t*> (plugin->get_extension (plugin, CLAP_EXT_STATE));
+            MockStream s; s.data.assign (blob.begin(), blob.end());
+            check (state->load (plugin, &s.istream), "B: state.load ok (active)");
+            check (g_lastEditor != nullptr && g_lastEditor->onHostStateRestoredCount == 1,
+                   "B: editor synced once (active)");
+            check (mh.requestRestartCount == 1, "B: active -> request_restart called once");
+
+            plugin->deactivate (plugin);
+            plugin->destroy (plugin);
+        }
+
+        // -- Scenario C: NO editor created -------------------------------------
+        {
+            MockHost mh;
+            g_lastEditor = nullptr;
+            clap_plugin_t* plugin = RsMockShell::create (&mh.host);
+            plugin->init (plugin);
+            const auto* state = static_cast<const clap_plugin_state_t*> (plugin->get_extension (plugin, CLAP_EXT_STATE));
+            MockStream s; s.data.assign (blob.begin(), blob.end());
+            check (state->load (plugin, &s.istream), "C: state.load ok (no editor)");
+            check (g_lastEditor == nullptr, "C: no editor was ever created");
+            check (mh.rescanCount == 1, "C: rescan still fires without an editor (no crash)");
+            plugin->destroy (plugin);
+        }
+    }
+
+    // ============ 5. EDITOR SIZE SNAP (F3) ==================================
+    // rs_shell::snapEditorSizeForScale: a Visage-free aspect/limit snap in LOGICAL
+    // space, applied in NATIVE px via the DPI scale. Expected outputs are FIXED numeric
+    // literals (independent hand-computed oracle), NOT re-derived from the impl.
+    {
+        auto snap = [] (double scale, std::uint32_t w, std::uint32_t h,
+                        std::uint32_t& ow, std::uint32_t& oh)
+        { ow = w; oh = h; rs_shell::snapEditorSizeForScale (scale, ow, oh); };
+
+        std::uint32_t w = 0, h = 0;
+
+        // scale 1.0 (macOS logical, or a 1x display): logical == native.
+        snap (1.0, 1069, 747, w, h);   check (w == 1069 && h == 747, "snap 1.0: 1069x747 is a fixed point");
+        snap (1.0, 10000, 10000, w, h); check (w == 1320 && h == 922, "snap 1.0: huge -> max 1320x922");
+        snap (1.0, 1, 1, w, h);         check (w == 940 && h == 657, "snap 1.0: tiny -> min 940x657");
+
+        // Aspect invariant for arbitrary inputs: |w*747 - h*1069| <= 747 (< ~1 logical px).
+        for (std::uint32_t in : { 700u, 950u, 1100u, 1200u, 1319u, 2000u })
+        {
+            snap (1.0, in, in, w, h);
+            long d = (long) w * 747 - (long) h * 1069;
+            if (d < 0) d = -d;
+            check (d <= 747, "snap 1.0: aspect within 1px for a square input");
+        }
+
+        // scale 1.5: the design proposal (native px) is ~713 logical wide -> min clamp
+        // -> logical 940x657 -> native 1410x986 (940*1.5, round(657*1.5)=round(985.5)).
+        snap (1.5, 1069, 747, w, h); check (w == 1410 && h == 986, "snap 1.5: native design proposal -> min -> 1410x986");
+
+        // scale 2.0: a huge square proposal -> logical max 1320x922 -> native 2640x1844.
+        snap (2.0, 5000, 5000, w, h); check (w == 2640 && h == 1844, "snap 2.0: huge -> native max 2640x1844");
+
+        // Fixed point at each scale: re-snapping the snap's own output is a no-op.
+        for (double sc : { 1.0, 1.5, 2.0 })
+        {
+            std::uint32_t w2, h2;
+            snap (sc, 5000, 5000, w, h);  w2 = w; h2 = h; rs_shell::snapEditorSizeForScale (sc, w2, h2);
+            check (w2 == w && h2 == h, "snap fixed point (max) at scale 1.0/1.5/2.0");
+            snap (sc, 1, 1, w, h);        w2 = w; h2 = h; rs_shell::snapEditorSizeForScale (sc, w2, h2);
+            check (w2 == w && h2 == h, "snap fixed point (min) at scale 1.0/1.5/2.0");
+        }
     }
 
     if (g_failures == 0) std::printf ("clap_shell_test: ALL PASS\n");
