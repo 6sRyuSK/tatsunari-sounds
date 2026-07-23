@@ -8,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 
 //
 // Multi-band dynamic parametric EQ (Pro-Q-style). N bands, each a
@@ -114,7 +115,11 @@ private:
     static constexpr int kRingMask = kRingSize - 1;
     std::array<float, kRingSize> analyzerRing {};     // pre-EQ (input)
     std::array<float, kRingSize> analyzerRingPost {}; // post-EQ (output)
-    std::atomic<int> ringWrite { 0 };
+    // Monotonic sample counter, masked to index the ring. Unsigned + 64-bit so
+    // the increment is well-defined wrapping (never signed-overflow UB) and does
+    // not wrap in any realistic run — a signed 32-bit counter reaches INT_MAX in
+    // ~3.1 h at 192 kHz, which a long standalone/mastering session can hit.
+    std::atomic<std::uint64_t> ringWrite { 0 };
 
     // Live per-band effective gain (dB) for the editor's animated display.
     std::array<std::atomic<float>, kNumBands> liveGainDb {};

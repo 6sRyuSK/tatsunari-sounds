@@ -227,7 +227,7 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         if (params[(size_t) b].on->load() > 0.5f && params[(size_t) b].lsn->load() > 0.5f)
         { soloBand = b; break; }
 
-    int w = ringWrite.load (std::memory_order_relaxed);
+    std::uint64_t w = ringWrite.load (std::memory_order_relaxed);
     for (int start = 0; start < numSamples; start += kSmoothChunk)
     {
         const int end = juce::jmin (start + kSmoothChunk, numSamples);
@@ -282,10 +282,10 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
 void DynamicEqAudioProcessor::copyAnalyzerSamples (float* dest, int num, bool post) const noexcept
 {
-    const int w = ringWrite.load (std::memory_order_acquire);
+    const std::uint64_t w = ringWrite.load (std::memory_order_acquire);
     const auto& ring = post ? analyzerRingPost : analyzerRing;
     for (int i = 0; i < num; ++i)
-        dest[i] = ring[(size_t) ((w - num + i) & kRingMask)];
+        dest[i] = ring[(size_t) ((w - (std::uint64_t) num + (std::uint64_t) i) & (std::uint64_t) kRingMask)];
 }
 
 juce::AudioProcessorEditor* DynamicEqAudioProcessor::createEditor()
