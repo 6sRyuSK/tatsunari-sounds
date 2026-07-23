@@ -52,8 +52,9 @@ endif()
 #   design fills any window; on a Retina Mac that zoom is NOT the backing factor (2.0), so the
 #   shared value left the drawable undersized (black margin) and clicks offset (M1 Air/Logic).
 #   Adds a SEPARATE WindowMac backingScale() for every points<->pixels conversion and leaves
-#   dpiScale() as the pure layout scale. Also disables MTKView autoResizeDrawable so bgfx is
-#   the SOLE writer of the drawable size (no two-writer magenta overhang). macOS-only files —
+#   dpiScale() as the pure layout scale. (It deliberately KEEPS MTKView autoResizeDrawable = YES,
+#   the default, so the drawable always tracks the view; letting bgfx be the sole writer left the
+#   drawable stale when the host shrank the view — see the note there.) macOS-only files —
 #   Windows / X11 / Emscripten unaffected.
 # 0002 (clear the window framebuffer): visage never bgfx::setViewClear's, so any pixel of the
 #   on-screen framebuffer not covered by drawn geometry is uninitialised (magenta). This clears
@@ -66,14 +67,7 @@ endif()
 #   frame (client / backingScale points) is mis-sized and the right + bottom clip. This reads the
 #   scale from the actual host window ([view_ window]) for embedded views, and adds a virtual
 #   Window::backingScale() (default dpiScale()) so the shell can read it without a platform cast.
-# 0004 (host content size for embedded views): adds a virtual Window::hostContentSizePx()
-#   (default = client size) that WindowMac overrides to return the PARENT view's real bounds
-#   in physical px. Logic can make its content area SMALLER than the size it requested via
-#   set_size (its window chrome imposes a minimum — measured ~458pt when it asked for the
-#   471pt minimum), so the shell renders to this real area instead of the requested size,
-#   which otherwise overflows the container and clips the right + bottom.
-#
-# 0005 (clamp the region to its FULL native size under a dpi<1 zoom): Canvas::beginRegion
+# 0004 (clamp the region to its FULL native size under a dpi<1 zoom): Canvas::beginRegion
 #   passed the region's NATIVE size to setClampBounds(), which multiplies its args by the
 #   layout scale (dpiScale) to reach native — yielding a clamp of native*scale. For scale>=1
 #   that clamp is >= the region (harmless), but a dpi<1 uniform zoom made it SMALLER than the

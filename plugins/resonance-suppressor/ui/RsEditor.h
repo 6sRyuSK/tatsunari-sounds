@@ -97,10 +97,6 @@ namespace rs_ui
         // to reach WINDOW px before snapping. 1.0 == design size / unset (harness).
         void setWindowScale (float s) noexcept { windowScale_ = s > 0.0f ? s : 1.0f; }
 
-        // TEMP: shell-side size-negotiation trace, drawn by the debug overlay. Remove
-        // with the overlay once the resize geometry is settled.
-        void setDebugShellText (std::string t) { debugShell_ = std::move (t); redrawAll(); }
-
         // Snap a proposed WINDOW size onto the 1069:747 aspect (height-driven) and
         // clamp it into [kMin .. kMax] — the same maths as the shell's adjustSize.
         static void snapWindowSize (float& w, float& h);
@@ -225,7 +221,6 @@ namespace rs_ui
         int    S (float v) const { return (int) std::round (v * k()); }
 
         float  windowScale_ = 1.0f;       // window px per design unit (shell-synced; grip)
-        std::string debugShell_;          // TEMP shell size-negotiation trace (debug overlay)
         RsTheme rsTheme_;                 // owned; mutated in place on hot reload
         factory_params::ParamStore& store_;
         RsFeed& feed_;

@@ -8,8 +8,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 
 namespace rs_ui
 {
@@ -560,42 +558,6 @@ namespace rs_ui
         drawFooterChrome (canvas);
         drawHeaderChrome (canvas);
         drawBrand (canvas);
-
-        // TEMP geometry diagnostic (ALWAYS ON in this debug build): draws the editor's
-        // own view of its logical/native size + a bottom-right child's native rect, so
-        // ONE Logic screenshot pins whether the shell feeds pixels or points. Remove
-        // once the resize geometry is settled. GUI-thread only.
-        {
-            // Bright border INSET 10px from the editor's own logical bounds, plus a
-            // filled square at each corner (inset 16px) in a DISTINCT colour: this makes
-            // "does the editor fill the visible view?" unmissable. If all four corner
-            // squares are visible the editor fills the view (any clipping is cosmetic /
-            // in-cell); if the right/bottom ones are gone, the surface exceeds the view.
-            const float in = 10.0f, cs = 12.0f, cc = 16.0f;
-            canvas.setColor (visage::Color (0xff00ff00));
-            canvas.rectangleBorder (in, in, w - 2.0f * in, h - 2.0f * in, 2.0f);
-            canvas.setColor (visage::Color (0xff00ffff)); canvas.fill (cc, cc, cs, cs);              // TL cyan
-            canvas.setColor (visage::Color (0xffffff00)); canvas.fill (w - cc - cs, cc, cs, cs);      // TR yellow
-            canvas.setColor (visage::Color (0xffff00ff)); canvas.fill (cc, h - cc - cs, cs, cs);      // BL magenta
-            canvas.setColor (visage::Color (0xffff0000)); canvas.fill (w - cc - cs, h - cc - cs, cs, cs); // BR red
-            // Only ~one line of vertical room before the analyser child covers the
-            // parent draw, so put the DECISIVE shell size-negotiation trace on the top
-            // visible line and the editor-native summary just under the brand.
-            char line[256];
-            const int oR = out_ ? (out_->nativeX() + out_->nativeWidth()) : -1;
-            // canvas.dpiScale() is the ACTUAL render scale visage uses (state_.scale in
-            // beginRegion). If it != the frame dpiScale() (0.881), layout and render
-            // disagree and the design overflows the drawable -> right/bottom clip.
-            const float canvasDpi = canvas.dpiScale();
-            std::snprintf (line, sizeof line,
-                           "%s | ed.nat %dx%d frameDpi%.3f canvasDpi%.3f OUTr%d",
-                           debugShell_.empty() ? "(no shell trace)" : debugShell_.c_str(),
-                           nativeWidth(), nativeHeight(), dpiScale(), canvasDpi, oR);
-            canvas.setColor (visage::Color (0xcc000000));
-            canvas.fill (6.0f, 56.0f, w - 12.0f, 20.0f);
-            canvas.setColor (visage::Color (0xff00ff88));
-            canvas.text (line, fuv::boldFont (11.0f), visage::Font::kLeft, 12.0f, 58.0f, w, 16.0f);
-        }
     }
 
     void RsEditor::drawBrand (visage::Canvas& canvas)

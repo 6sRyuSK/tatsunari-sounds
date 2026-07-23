@@ -52,7 +52,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -340,8 +339,6 @@ namespace
             // (shouldRelayHostResize returns false when inSetSize_). This closes the
             // request_resize -> setFrame -> setSize edge of the loop.
             inSetSize_ = true;
-            lastReqW_ = static_cast<int> (width); // TEMP trace
-            lastReqH_ = static_cast<int> (height);
             // Host-driven resize (window units). Set the native/logical window size per
             // platform, cache it as the host-facing size, then re-assert the uniform
             // zoom (dpi = physicalHeight/747) so the editor stays the 1069x747 design.
@@ -464,20 +461,11 @@ namespace
         {
             if (inScaleSync_ || app_ == nullptr || editor_ == nullptr) return;
             visage::Window* win = app_->window();
-            // Physical pixel size to render into. Prefer the HOST's real content area
-            // (hostContentSizePx): when embedded, that is the parent view's actual bounds,
-            // which Logic can make SMALLER than the size it requested via set_size (its own
-            // window chrome imposes a minimum) — rendering to the requested size then
-            // overflows the container and clips the right + bottom (confirmed on M1 Air /
-            // Logic: at the 471pt minimum the real content area is ~458pt). Standalone / no
-            // window yet -> client or the pre-set app native default.
-            int physW = win ? win->clientWidth()  : app_->nativeWidth();
-            int physH = win ? win->clientHeight() : app_->nativeHeight();
-            if (win)
-            {
-                const visage::IPoint host = win->hostContentSizePx();
-                if (host.x > 0 && host.y > 0) { physW = host.x; physH = host.y; }
-            }
+            // Physical pixel size of the window. clientWidth/Height() are native px and
+            // track the real drawable; before the window is attached, the app frame's
+            // native size carries the pre-set default.
+            const int physH = win ? win->clientHeight() : app_->nativeHeight();
+            const int physW = win ? win->clientWidth()  : app_->nativeWidth();
             if (physH <= 0 || physW <= 0) return;
             const float dpi = static_cast<float> (physH) / static_cast<float> (kDesignH);
 
@@ -524,22 +512,6 @@ namespace
             // frame we did not explicitly redraw (the doubled-text artefact). redrawAll()
             // invalidates the editor and all descendants so the next frame is drawn clean.
             editor_->redrawAll();
-
-            // TEMP size-negotiation trace for the debug overlay (remove with it). Shows
-            // the last host setSize args vs what the window actually reports, so a Logic
-            // screenshot reveals whether we render bigger than the real view.
-            {
-                char t[256];
-                const visage::IPoint vpx = win ? win->debugViewPx() : visage::IPoint { -1, -1 };
-                const visage::IPoint dpx = win ? win->debugDrawablePx() : visage::IPoint { -1, -1 };
-                // DRAWpx = the actual Metal drawable. If it exceeds VIEWpx the drawable
-                // overflows the view (stale drawable from autoResizeDrawable=NO) -> clip.
-                std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) VIEWpx(%d,%d) DRAWpx(%d,%d) APPnat(%dx%d) render(%d,%d)",
-                               lastReqW_, lastReqH_, vpx.x, vpx.y, dpx.x, dpx.y,
-                               app_->nativeWidth(), app_->nativeHeight(), physW, physH);
-                editor_->setDebugShellText (t);
-            }
             inScaleSync_ = false;
         }
 
@@ -622,7 +594,6 @@ namespace
         std::uint32_t curH_ = static_cast<std::uint32_t> (kDefaultH);
         bool          inScaleSync_ = false; // synchronous re-entrancy guard for syncWindowScale()
         bool          inSetSize_   = false; // origin guard: suppress request_resize echo during a host setSize
-        int           lastReqW_ = 0, lastReqH_ = 0; // TEMP: last host setSize args for the debug overlay
     };
 } // namespace
 
