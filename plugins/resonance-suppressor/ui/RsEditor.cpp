@@ -583,10 +583,14 @@ namespace rs_ui
             // visible line and the editor-native summary just under the brand.
             char line[256];
             const int oR = out_ ? (out_->nativeX() + out_->nativeWidth()) : -1;
+            // canvas.dpiScale() is the ACTUAL render scale visage uses (state_.scale in
+            // beginRegion). If it != the frame dpiScale() (0.881), layout and render
+            // disagree and the design overflows the drawable -> right/bottom clip.
+            const float canvasDpi = canvas.dpiScale();
             std::snprintf (line, sizeof line,
-                           "%s | ed.nat %dx%d dpi%.3f OUTr%d",
+                           "%s | ed.nat %dx%d frameDpi%.3f canvasDpi%.3f OUTr%d",
                            debugShell_.empty() ? "(no shell trace)" : debugShell_.c_str(),
-                           nativeWidth(), nativeHeight(), dpiScale(), oR);
+                           nativeWidth(), nativeHeight(), dpiScale(), canvasDpi, oR);
             canvas.setColor (visage::Color (0xcc000000));
             canvas.fill (6.0f, 56.0f, w - 12.0f, 20.0f);
             canvas.setColor (visage::Color (0xff00ff88));
