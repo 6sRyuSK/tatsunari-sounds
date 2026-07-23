@@ -531,11 +531,12 @@ namespace
             {
                 char t[256];
                 const visage::IPoint host = win ? win->hostContentSizePx() : visage::IPoint { -1, -1 };
+                const visage::IPoint vpx = win ? win->debugViewPx() : visage::IPoint { -1, -1 };
                 std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) client(%d,%d) HOST(%d,%d) render(%d,%d) BK%.2f",
+                               "setSize(%d,%d) client(%d,%d) HOST(%d,%d) VIEWpx(%d,%d) render(%d,%d)",
                                lastReqW_, lastReqH_, win ? win->clientWidth() : -1,
-                               win ? win->clientHeight() : -1, host.x, host.y, physW, physH,
-                               win ? win->backingScale() : -1.0f);
+                               win ? win->clientHeight() : -1, host.x, host.y, vpx.x, vpx.y,
+                               physW, physH);
                 editor_->setDebugShellText (t);
             }
             inScaleSync_ = false;

@@ -1,29 +1,27 @@
 diff --git a/visage_windowing/macos/windowing_macos.h b/visage_windowing/macos/windowing_macos.h
-index ca6b190..e628577 100644
+index ca6b190..d39d3a5 100644
 --- a/visage_windowing/macos/windowing_macos.h
 +++ b/visage_windowing/macos/windowing_macos.h
-@@ -101,6 +101,7 @@ namespace visage {
+@@ -101,6 +101,8 @@ namespace visage {
      // the two are equal, so standalone windows are unaffected. See ui/visage/patches.
      float backingScale() const { return backing_scale_; }
      void setBackingScale(float scale) { backing_scale_ = scale; }
 +    IPoint hostContentSizePx() const override; // [factory patch] real parent container size (embed)
++    IPoint debugViewPx() const override;        // [factory patch] TEMP: actual subview frame in px
  
    private:
      static bool running_event_loop_;
 diff --git a/visage_windowing/macos/windowing_macos.mm b/visage_windowing/macos/windowing_macos.mm
-index b966b65..9461569 100644
+index b966b65..34ab8b7 100644
 --- a/visage_windowing/macos/windowing_macos.mm
 +++ b/visage_windowing/macos/windowing_macos.mm
-@@ -962,6 +962,22 @@ namespace visage {
+@@ -962,6 +962,27 @@ namespace visage {
      resetBackingScale();
    }
  
 +  IPoint WindowMac::hostContentSizePx() const {
-+    // [factory patch] For an embedded plugin subview, the authoritative render size is
-+    // the PARENT view's real bounds (the host's actual content area), converted to
-+    // physical px with the backing scale. Logic can make this SMALLER than the size we
-+    // requested via set_size when its own window chrome imposes a minimum; rendering to
-+    // the request would then overflow and clip. Standalone (no parent) -> client size.
++    // [factory patch] Embedded plugin subview -> the PARENT view's real bounds in physical
++    // px (the host's actual content area); standalone -> client size.
 +    if (parent_view_ != nullptr) {
 +      NSSize s = parent_view_.bounds.size;
 +      int w = (int)std::round(s.width * backingScale());
@@ -34,24 +32,34 @@ index b966b65..9461569 100644
 +    return { clientWidth(), clientHeight() };
 +  }
 +
++  IPoint WindowMac::debugViewPx() const {
++    // [factory patch] TEMP: actual subview frame -> physical px.
++    if (view_ == nullptr)
++      return { 0, 0 };
++    NSSize s = view_.frame.size;
++    return { (int)std::round(s.width * backingScale()), (int)std::round(s.height * backingScale()) };
++  }
++
    void WindowMac::resetBackingScale() {
      // [factory patch] Track the OS backing scale from whichever NSWindow actually hosts
      // the view. Standalone -> window_handle_; EMBEDDED plugin subview -> window_handle_
 diff --git a/visage_windowing/windowing.h b/visage_windowing/windowing.h
-index 8c62728..c320f10 100644
+index 8c62728..b988506 100644
 --- a/visage_windowing/windowing.h
 +++ b/visage_windowing/windowing.h
-@@ -140,6 +140,14 @@ namespace visage {
+@@ -140,6 +140,16 @@ namespace visage {
      // read it without a platform cast. See ui/visage/patches.
      virtual float backingScale() const { return dpiScale(); }
  
 +    // [factory patch] The host-provided content area in physical px. For a standalone
 +    // window this is the client size; for an EMBEDDED plugin subview WindowMac overrides
-+    // it to return the PARENT view's real bounds (Logic's actual container), which can be
-+    // SMALLER than the size we requested via set_size when the host's own chrome imposes a
-+    // minimum — rendering to the requested size then overflows the container and clips the
-+    // right + bottom. The shell renders to this instead so the editor always fits exactly.
++    // it to return the PARENT view's real bounds (the host's actual container). The shell
++    // renders to this so the editor fits exactly even if it differs from the requested size.
 +    virtual IPoint hostContentSizePx() const { return { client_width_, client_height_ }; }
++
++    // [factory patch] TEMP DEBUG: the plugin subview's ACTUAL frame in physical px, to
++    // check whether a dpi<1 zoom left our NSView smaller than the drawable. {0,0} default.
++    virtual IPoint debugViewPx() const { return { 0, 0 }; }
 +
      IPoint convertToNative(const Point& logical_point) const {
        return { static_cast<int>(std::round(logical_point.x * dpi_scale_)),
