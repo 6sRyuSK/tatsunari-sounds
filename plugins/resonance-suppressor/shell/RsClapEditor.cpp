@@ -52,6 +52,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -339,6 +340,8 @@ namespace
             // (shouldRelayHostResize returns false when inSetSize_). This closes the
             // request_resize -> setFrame -> setSize edge of the loop.
             inSetSize_ = true;
+            lastReqW_ = static_cast<int> (width); // TEMP trace
+            lastReqH_ = static_cast<int> (height);
             // Host-driven resize (window units). Set the native/logical window size per
             // platform, cache it as the host-facing size, then re-assert the uniform
             // zoom (dpi = physicalHeight/747) so the editor stays the 1069x747 design.
@@ -512,6 +515,19 @@ namespace
             // frame we did not explicitly redraw (the doubled-text artefact). redrawAll()
             // invalidates the editor and all descendants so the next frame is drawn clean.
             editor_->redrawAll();
+
+            // TEMP size-negotiation trace for the debug overlay (remove with it). Shows
+            // the last host setSize args vs what the window actually reports, so a Logic
+            // screenshot reveals whether we render bigger than the real view.
+            {
+                char t[256];
+                std::snprintf (t, sizeof t,
+                               "setSize(%d,%d) client(%d,%d) cur(%u,%u) hostFacing(%d,%d) dpi%.3f",
+                               lastReqW_, lastReqH_, physW, physH,
+                               curW_, curH_, hostFacingWidth(), hostFacingHeight(),
+                               win ? win->dpiScale() : -1.0f);
+                editor_->setDebugShellText (t);
+            }
             inScaleSync_ = false;
         }
 
@@ -594,6 +610,7 @@ namespace
         std::uint32_t curH_ = static_cast<std::uint32_t> (kDefaultH);
         bool          inScaleSync_ = false; // synchronous re-entrancy guard for syncWindowScale()
         bool          inSetSize_   = false; // origin guard: suppress request_resize echo during a host setSize
+        int           lastReqW_ = 0, lastReqH_ = 0; // TEMP: last host setSize args for the debug overlay
     };
 } // namespace
 

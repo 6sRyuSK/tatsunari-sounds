@@ -582,9 +582,12 @@ namespace rs_ui
                            "ed.native %dx%d  dpi %.3f  OUTr %d  WINDOW(top) %dx%d",
                            nativeWidth(), nativeHeight(), dpiScale(), oR, tw, th);
             canvas.setColor (visage::Color (0xcc000000));
-            canvas.fill (6.0f, 56.0f, w - 12.0f, 22.0f);
+            canvas.fill (6.0f, 56.0f, w - 12.0f, 40.0f);
             canvas.setColor (visage::Color (0xff00ff88));
             canvas.text (line, fuv::boldFont (13.0f), visage::Font::kLeft, 12.0f, 58.0f, w, 18.0f);
+            if (! debugShell_.empty())
+                canvas.text (debugShell_.c_str(), fuv::boldFont (12.0f), visage::Font::kLeft,
+                             12.0f, 76.0f, w, 18.0f);
         }
     }
 
