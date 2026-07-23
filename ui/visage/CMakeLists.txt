@@ -73,6 +73,15 @@ endif()
 #   471pt minimum), so the shell renders to this real area instead of the requested size,
 #   which otherwise overflows the container and clips the right + bottom.
 #
+# 0005 (clamp the region to its FULL native size under a dpi<1 zoom): Canvas::beginRegion
+#   passed the region's NATIVE size to setClampBounds(), which multiplies its args by the
+#   layout scale (dpiScale) to reach native — yielding a clamp of native*scale. For scale>=1
+#   that clamp is >= the region (harmless), but a dpi<1 uniform zoom made it SMALLER than the
+#   region, clipping the right/bottom ~ (1-scale) of every frame's content. This surfaced as
+#   the small-size-only, cross-host (AU + VST3) clip that every geometry value (view, drawable,
+#   canvas all == the window) could not explain. Divide by the scale so the clamp is the full
+#   region at any scale. THIS is the root-cause fix for the resize clipping.
+#
 # The patch step is idempotent by RESET (apply-visage-patches.cmake hard-resets the pinned
 # checkout, then re-applies): the patches touch overlapping regions of the same files, which
 # a reverse-check-to-skip scheme cannot handle. Re-evaluate ALL patches when the pin bumps.

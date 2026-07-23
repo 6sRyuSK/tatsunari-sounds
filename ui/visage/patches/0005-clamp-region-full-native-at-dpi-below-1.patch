@@ -1,0 +1,21 @@
+diff --git a/visage_graphics/canvas.h b/visage_graphics/canvas.h
+index 69a5c3c..0ec4e0a 100644
+--- a/visage_graphics/canvas.h
++++ b/visage_graphics/canvas.h
+@@ -527,7 +527,15 @@ namespace visage {
+       setLogicalPixelScale();
+       state_.brush = nullptr;
+       state_.blend_mode = BlendMode::Alpha;
+-      setClampBounds(0, 0, region->width(), region->height());
++      // [factory patch] region->width()/height() are NATIVE px, but setClampBounds()
++      // multiplies its args by state_.scale (== dpiScale, just set above) to reach native.
++      // Passing the native size therefore yields a clamp of native*scale: for scale>=1 that
++      // is >= the region (harmless), but under a dpi<1 uniform zoom it SHRINKS the clamp
++      // below the region and clips the right/bottom of every frame's content (the cross-host,
++      // small-size-only clip). Divide by the scale so the clamp equals the full region at any
++      // scale. Guard scale>0 (it is dpiScale, always positive). See ui/visage/patches.
++      const float clamp_scale = state_.scale > 0.0f ? state_.scale : 1.0f;
++      setClampBounds(0, 0, region->width() / clamp_scale, region->height() / clamp_scale);
+       state_.current_region = region;
+     }
+ 
