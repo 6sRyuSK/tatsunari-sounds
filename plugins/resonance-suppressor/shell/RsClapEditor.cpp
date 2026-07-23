@@ -522,10 +522,10 @@ namespace
             {
                 char t[256];
                 std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) client(%d,%d) cur(%u,%u) hostFacing(%d,%d) dpi%.3f",
+                               "setSize(%d,%d) client(%d,%d) cur(%u,%u) dpi%.3f BACKING%.3f",
                                lastReqW_, lastReqH_, physW, physH,
-                               curW_, curH_, hostFacingWidth(), hostFacingHeight(),
-                               win ? win->dpiScale() : -1.0f);
+                               curW_, curH_, win ? win->dpiScale() : -1.0f,
+                               win ? win->backingScale() : -1.0f);
                 editor_->setDebugShellText (t);
             }
             inScaleSync_ = false;

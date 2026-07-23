@@ -59,6 +59,13 @@ endif()
 #   on-screen framebuffer not covered by drawn geometry is uninitialised (magenta). This clears
 #   the WINDOW layer to the warm-white theme background as a safety net (normally invisible).
 #   Cross-platform (visage_graphics), harmless where the editor already covers the surface.
+# 0003 (embedded-view backing scale + base accessor): visage's WindowMac::resetBackingScale
+#   only tracked the OS backingScaleFactor when window_handle_ was set — null for a plugin
+#   SUBVIEW — so an embedded editor's backingScale() stayed frozen at the main-screen value
+#   captured at creation. When Logic hosts the AU on a display of a different scale, the subview
+#   frame (client / backingScale points) is mis-sized and the right + bottom clip. This reads the
+#   scale from the actual host window ([view_ window]) for embedded views, and adds a virtual
+#   Window::backingScale() (default dpiScale()) so the shell can read it without a platform cast.
 # The patch step receives the patches DIRECTORY (the script globs NNNN-*.patch,
 # sorted) — never a `;`-joined list: ExternalProject's command serialisation splits
 # an embedded list separator into a stray positional argument that `cmake -P`
