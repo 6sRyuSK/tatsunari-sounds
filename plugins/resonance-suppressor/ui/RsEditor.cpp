@@ -566,10 +566,18 @@ namespace rs_ui
         // ONE Logic screenshot pins whether the shell feeds pixels or points. Remove
         // once the resize geometry is settled. GUI-thread only.
         {
-            // Bright border on the editor's own logical bounds + a filled banner so the
-            // text is legible over any background.
+            // Bright border INSET 10px from the editor's own logical bounds, plus a
+            // filled square at each corner (inset 16px) in a DISTINCT colour: this makes
+            // "does the editor fill the visible view?" unmissable. If all four corner
+            // squares are visible the editor fills the view (any clipping is cosmetic /
+            // in-cell); if the right/bottom ones are gone, the surface exceeds the view.
+            const float in = 10.0f, cs = 12.0f, cc = 16.0f;
             canvas.setColor (visage::Color (0xff00ff00));
-            canvas.rectangleBorder (0.0f, 0.0f, w, h, 2.0f);
+            canvas.rectangleBorder (in, in, w - 2.0f * in, h - 2.0f * in, 2.0f);
+            canvas.setColor (visage::Color (0xff00ffff)); canvas.fill (cc, cc, cs, cs);              // TL cyan
+            canvas.setColor (visage::Color (0xffffff00)); canvas.fill (w - cc - cs, cc, cs, cs);      // TR yellow
+            canvas.setColor (visage::Color (0xffff00ff)); canvas.fill (cc, h - cc - cs, cs, cs);      // BL magenta
+            canvas.setColor (visage::Color (0xffff0000)); canvas.fill (w - cc - cs, h - cc - cs, cs, cs); // BR red
             // Only ~one line of vertical room before the analyser child covers the
             // parent draw, so put the DECISIVE shell size-negotiation trace on the top
             // visible line and the editor-native summary just under the brand.
