@@ -1,8 +1,16 @@
-# Idempotently apply one or more patches to the pinned visage checkout, used as the
-# visage FetchContent PATCH_COMMAND. Invoked as:
-#   cmake -DPATCH_FILES=<abs;abs;...> -P apply-visage-patches.cmake
+# Idempotently apply the visage patches to the pinned checkout, used as the visage
+# FetchContent PATCH_COMMAND. Invoked as:
+#   cmake -DPATCH_DIR=<abs dir> -P apply-visage-patches.cmake
 # with the working directory set to the visage source tree (FetchContent runs
 # PATCH_COMMAND in <SOURCE_DIR>).
+#
+# The script GLOBS `NNNN-*.patch` from PATCH_DIR (sorted) instead of taking a list
+# argument: ExternalProject serialises PATCH_COMMAND arguments through the sub-build,
+# where an embedded CMake list separator (`;`) splits one `-DPATCH_FILES=a;b` argument
+# into `-DPATCH_FILES=a` plus a stray positional `b` that `cmake -P` silently ignores —
+# every patch after the first was silently dropped (found live: 0001 applied, 0002
+# missing on a fresh user configure). A single directory argument has no separator to
+# mangle.
 #
 # FetchContent/ExternalProject run PATCH_COMMAND directly (NOT through a shell), so
 # shell operators like `||` cannot express "apply once". This script provides that
@@ -12,8 +20,15 @@
 # checkout) a no-op instead of a hard error. See ui/visage/CMakeLists.txt for why the
 # patches exist; the pin hash itself is never changed.
 
-if(NOT DEFINED PATCH_FILES)
-  message(FATAL_ERROR "apply-visage-patches: PATCH_FILES not set")
+if(NOT DEFINED PATCH_DIR)
+  message(FATAL_ERROR "apply-visage-patches: PATCH_DIR not set")
+endif()
+
+file(GLOB PATCH_FILES "${PATCH_DIR}/[0-9][0-9][0-9][0-9]-*.patch")
+list(SORT PATCH_FILES)
+
+if(NOT PATCH_FILES)
+  message(FATAL_ERROR "apply-visage-patches: no NNNN-*.patch files found in ${PATCH_DIR}")
 endif()
 
 foreach(patch IN LISTS PATCH_FILES)

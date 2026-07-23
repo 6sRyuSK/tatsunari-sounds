@@ -59,15 +59,16 @@ endif()
 #   on-screen framebuffer not covered by drawn geometry is uninitialised (magenta). This clears
 #   the WINDOW layer to the warm-white theme background as a safety net (normally invisible).
 #   Cross-platform (visage_graphics), harmless where the editor already covers the surface.
-set(FACTORY_VISAGE_PATCHES
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/0001-macos-separate-backing-scale-from-layout-dpi.patch"
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/0002-clear-window-framebuffer-safety-net.patch")
-
+# The patch step receives the patches DIRECTORY (the script globs NNNN-*.patch,
+# sorted) — never a `;`-joined list: ExternalProject's command serialisation splits
+# an embedded list separator into a stray positional argument that `cmake -P`
+# silently ignores, dropping every patch after the first (bit us in the field:
+# 0001 applied, 0002 silently missing).
 FetchContent_Declare(visage
   GIT_REPOSITORY https://github.com/VitalAudio/visage.git
   GIT_TAG ${FACTORY_VISAGE_GIT_TAG}
   PATCH_COMMAND ${CMAKE_COMMAND}
-                "-DPATCH_FILES=${FACTORY_VISAGE_PATCHES}"
+                "-DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/patches"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply-visage-patches.cmake
 )
 # As a subproject, visage sets VISAGE_BUILD_EXAMPLES / _TESTS OFF automatically
