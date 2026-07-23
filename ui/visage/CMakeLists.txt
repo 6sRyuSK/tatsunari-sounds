@@ -66,6 +66,16 @@ endif()
 #   frame (client / backingScale points) is mis-sized and the right + bottom clip. This reads the
 #   scale from the actual host window ([view_ window]) for embedded views, and adds a virtual
 #   Window::backingScale() (default dpiScale()) so the shell can read it without a platform cast.
+# 0004 (host content size for embedded views): adds a virtual Window::hostContentSizePx()
+#   (default = client size) that WindowMac overrides to return the PARENT view's real bounds
+#   in physical px. Logic can make its content area SMALLER than the size it requested via
+#   set_size (its window chrome imposes a minimum — measured ~458pt when it asked for the
+#   471pt minimum), so the shell renders to this real area instead of the requested size,
+#   which otherwise overflows the container and clips the right + bottom.
+#
+# The patch step is idempotent by RESET (apply-visage-patches.cmake hard-resets the pinned
+# checkout, then re-applies): the patches touch overlapping regions of the same files, which
+# a reverse-check-to-skip scheme cannot handle. Re-evaluate ALL patches when the pin bumps.
 # The patch step receives the patches DIRECTORY (the script globs NNNN-*.patch,
 # sorted) — never a `;`-joined list: ExternalProject's command serialisation splits
 # an embedded list separator into a stray positional argument that `cmake -P`

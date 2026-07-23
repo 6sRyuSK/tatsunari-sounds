@@ -464,11 +464,20 @@ namespace
         {
             if (inScaleSync_ || app_ == nullptr || editor_ == nullptr) return;
             visage::Window* win = app_->window();
-            // Physical pixel size of the window. clientWidth/Height() are native px and
-            // track the real drawable; before the window is attached, the app frame's
-            // native size carries the pre-set default.
-            const int physH = win ? win->clientHeight() : app_->nativeHeight();
-            const int physW = win ? win->clientWidth()  : app_->nativeWidth();
+            // Physical pixel size to render into. Prefer the HOST's real content area
+            // (hostContentSizePx): when embedded, that is the parent view's actual bounds,
+            // which Logic can make SMALLER than the size it requested via set_size (its own
+            // window chrome imposes a minimum) — rendering to the requested size then
+            // overflows the container and clips the right + bottom (confirmed on M1 Air /
+            // Logic: at the 471pt minimum the real content area is ~458pt). Standalone / no
+            // window yet -> client or the pre-set app native default.
+            int physW = win ? win->clientWidth()  : app_->nativeWidth();
+            int physH = win ? win->clientHeight() : app_->nativeHeight();
+            if (win)
+            {
+                const visage::IPoint host = win->hostContentSizePx();
+                if (host.x > 0 && host.y > 0) { physW = host.x; physH = host.y; }
+            }
             if (physH <= 0 || physW <= 0) return;
             const float dpi = static_cast<float> (physH) / static_cast<float> (kDesignH);
 
@@ -521,10 +530,11 @@ namespace
             // screenshot reveals whether we render bigger than the real view.
             {
                 char t[256];
+                const visage::IPoint host = win ? win->hostContentSizePx() : visage::IPoint { -1, -1 };
                 std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) client(%d,%d) cur(%u,%u) dpi%.3f BACKING%.3f",
-                               lastReqW_, lastReqH_, physW, physH,
-                               curW_, curH_, win ? win->dpiScale() : -1.0f,
+                               "setSize(%d,%d) client(%d,%d) HOST(%d,%d) render(%d,%d) BK%.2f",
+                               lastReqW_, lastReqH_, win ? win->clientWidth() : -1,
+                               win ? win->clientHeight() : -1, host.x, host.y, physW, physH,
                                win ? win->backingScale() : -1.0f);
                 editor_->setDebugShellText (t);
             }
