@@ -570,24 +570,19 @@ namespace rs_ui
             // text is legible over any background.
             canvas.setColor (visage::Color (0xff00ff00));
             canvas.rectangleBorder (0.0f, 0.0f, w, h, 2.0f);
+            // Only ~one line of vertical room before the analyser child covers the
+            // parent draw, so put the DECISIVE shell size-negotiation trace on the top
+            // visible line and the editor-native summary just under the brand.
             char line[256];
             const int oR = out_ ? (out_->nativeX() + out_->nativeWidth()) : -1;
-            // The top parent frame == visage's window content frame; its native size is
-            // the REAL drawable/window. If it exceeds our native, the editor is stale
-            // (a window resize the shell's syncWindowScale did not follow).
-            visage::Frame* top = topParentFrame();
-            const int tw = top ? top->nativeWidth()  : -1;
-            const int th = top ? top->nativeHeight() : -1;
             std::snprintf (line, sizeof line,
-                           "ed.native %dx%d  dpi %.3f  OUTr %d  WINDOW(top) %dx%d",
-                           nativeWidth(), nativeHeight(), dpiScale(), oR, tw, th);
+                           "%s | ed.nat %dx%d dpi%.3f OUTr%d",
+                           debugShell_.empty() ? "(no shell trace)" : debugShell_.c_str(),
+                           nativeWidth(), nativeHeight(), dpiScale(), oR);
             canvas.setColor (visage::Color (0xcc000000));
-            canvas.fill (6.0f, 56.0f, w - 12.0f, 40.0f);
+            canvas.fill (6.0f, 56.0f, w - 12.0f, 20.0f);
             canvas.setColor (visage::Color (0xff00ff88));
-            canvas.text (line, fuv::boldFont (13.0f), visage::Font::kLeft, 12.0f, 58.0f, w, 18.0f);
-            if (! debugShell_.empty())
-                canvas.text (debugShell_.c_str(), fuv::boldFont (12.0f), visage::Font::kLeft,
-                             12.0f, 76.0f, w, 18.0f);
+            canvas.text (line, fuv::boldFont (11.0f), visage::Font::kLeft, 12.0f, 58.0f, w, 16.0f);
         }
     }
 
