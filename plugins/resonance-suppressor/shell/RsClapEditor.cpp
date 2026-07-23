@@ -530,12 +530,14 @@ namespace
             // screenshot reveals whether we render bigger than the real view.
             {
                 char t[256];
-                const visage::IPoint host = win ? win->hostContentSizePx() : visage::IPoint { -1, -1 };
                 const visage::IPoint vpx = win ? win->debugViewPx() : visage::IPoint { -1, -1 };
+                // app_ native == the canvas/drawable size (setCanvasDetails uses app native).
+                // If it exceeds VIEWpx, the drawable overflows the view and clips.
                 std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) client(%d,%d) HOST(%d,%d) VIEWpx(%d,%d) render(%d,%d)",
+                               "setSize(%d,%d) client(%d,%d) VIEWpx(%d,%d) APPnat(%dx%d) APPlog(%.0fx%.0f) render(%d,%d)",
                                lastReqW_, lastReqH_, win ? win->clientWidth() : -1,
-                               win ? win->clientHeight() : -1, host.x, host.y, vpx.x, vpx.y,
+                               win ? win->clientHeight() : -1, vpx.x, vpx.y,
+                               app_->nativeWidth(), app_->nativeHeight(), app_->width(), app_->height(),
                                physW, physH);
                 editor_->setDebugShellText (t);
             }
