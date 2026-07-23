@@ -531,14 +531,13 @@ namespace
             {
                 char t[256];
                 const visage::IPoint vpx = win ? win->debugViewPx() : visage::IPoint { -1, -1 };
-                // app_ native == the canvas/drawable size (setCanvasDetails uses app native).
-                // If it exceeds VIEWpx, the drawable overflows the view and clips.
+                const visage::IPoint dpx = win ? win->debugDrawablePx() : visage::IPoint { -1, -1 };
+                // DRAWpx = the actual Metal drawable. If it exceeds VIEWpx the drawable
+                // overflows the view (stale drawable from autoResizeDrawable=NO) -> clip.
                 std::snprintf (t, sizeof t,
-                               "setSize(%d,%d) client(%d,%d) VIEWpx(%d,%d) APPnat(%dx%d) APPlog(%.0fx%.0f) render(%d,%d)",
-                               lastReqW_, lastReqH_, win ? win->clientWidth() : -1,
-                               win ? win->clientHeight() : -1, vpx.x, vpx.y,
-                               app_->nativeWidth(), app_->nativeHeight(), app_->width(), app_->height(),
-                               physW, physH);
+                               "setSize(%d,%d) VIEWpx(%d,%d) DRAWpx(%d,%d) APPnat(%dx%d) render(%d,%d)",
+                               lastReqW_, lastReqH_, vpx.x, vpx.y, dpx.x, dpx.y,
+                               app_->nativeWidth(), app_->nativeHeight(), physW, physH);
                 editor_->setDebugShellText (t);
             }
             inScaleSync_ = false;

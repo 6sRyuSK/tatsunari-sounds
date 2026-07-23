@@ -43,14 +43,14 @@ index e90bf06..f8aab0d 100644
    self.clearColor = MTLClearColorMake(0.1, 0.1, 0.1, 1.0);
    self.enableSetNeedsDisplay = NO;
    self.framebufferOnly = YES;
-+  // [factory patch] bgfx OWNS the drawable size: SwapChainMtl::resize sets
-+  // view.layer.drawableSize = the bgfx framebuffer (canvas) dimensions. Leaving MTKView's
-+  // autoResizeDrawable = YES made MTKView ALSO write drawableSize (= bounds * contentsScale)
-+  // on every layout, so the two writers could disagree by a frame / rounding and leave the
-+  // drawable larger than what bgfx rendered — an uninitialised (magenta) overhang, since
-+  // visage never bgfx::setViewClear's. Disabling it makes bgfx the SOLE writer, so the
-+  // drawable always equals the rendered canvas. See ui/visage/patches.
-+  self.autoResizeDrawable = NO;
++  // [factory patch] Keep MTKView's default autoResizeDrawable = YES so the Metal drawable
++  // ALWAYS tracks view.bounds * contentsScale. bgfx also sets drawableSize (= canvas) via
++  // SwapChainMtl::resize; the two AGREE at steady state (view*backing == canvas). Disabling
++  // it left the drawable following ONLY bgfx, which went STALE when the host SHRINKS the view
++  // (drawable stuck at the larger previous size -> drawable > view -> right/bottom clipped,
++  // seen only at dpi<1 / small sizes, on BOTH AU and VST3). YES makes it follow the view; any
++  // brief resize overhang is covered by the 0002 window clear (warm-white). See ui/visage/patches.
++  self.autoResizeDrawable = YES;
    self.layerContentsPlacement = NSViewLayerContentsPlacementTopLeft;
    self.preferredFramesPerSecond = 120;
  
