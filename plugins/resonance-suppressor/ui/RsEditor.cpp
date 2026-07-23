@@ -561,24 +561,24 @@ namespace rs_ui
         drawHeaderChrome (canvas);
         drawBrand (canvas);
 
-        // TEMP geometry diagnostic (RS_UI_DEBUG=1): draws the editor's own view of
-        // its logical/native size + a bottom-right child's native rect, so ONE
-        // Logic screenshot pins whether the shell feeds pixels or points. Remove
+        // TEMP geometry diagnostic (ALWAYS ON in this debug build): draws the editor's
+        // own view of its logical/native size + a bottom-right child's native rect, so
+        // ONE Logic screenshot pins whether the shell feeds pixels or points. Remove
         // once the resize geometry is settled. GUI-thread only.
-        if (const char* dbg = std::getenv ("RS_UI_DEBUG"); dbg && dbg[0] == '1')
         {
-            // Bright border on the editor's own logical bounds.
+            // Bright border on the editor's own logical bounds + a filled banner so the
+            // text is legible over any background.
             canvas.setColor (visage::Color (0xff00ff00));
             canvas.rectangleBorder (0.0f, 0.0f, w, h, 2.0f);
             char line[256];
             const int oR = out_ ? (out_->nativeX() + out_->nativeWidth()) : -1;
             std::snprintf (line, sizeof line,
-                           "logi %.0fx%.0f  native %dx%d  dpi %.3f  OUT.nativeRight %d",
+                           "logi %.0fx%.0f  native %dx%d  dpi %.3f  OUTnativeRight %d",
                            w, h, nativeWidth(), nativeHeight(), dpiScale(), oR);
-            canvas.setColor (visage::Color (0xff000000));
-            canvas.text (line, fuv::boldFont (13.0f), visage::Font::kLeft, 11.0f, 61.0f, w, 20.0f);
+            canvas.setColor (visage::Color (0xcc000000));
+            canvas.fill (6.0f, 56.0f, w - 12.0f, 22.0f);
             canvas.setColor (visage::Color (0xff00ff88));
-            canvas.text (line, fuv::boldFont (13.0f), visage::Font::kLeft, 10.0f, 60.0f, w, 20.0f);
+            canvas.text (line, fuv::boldFont (13.0f), visage::Font::kLeft, 12.0f, 58.0f, w, 18.0f);
         }
     }
 
