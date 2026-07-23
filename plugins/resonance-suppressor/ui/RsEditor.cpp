@@ -572,9 +572,15 @@ namespace rs_ui
             canvas.rectangleBorder (0.0f, 0.0f, w, h, 2.0f);
             char line[256];
             const int oR = out_ ? (out_->nativeX() + out_->nativeWidth()) : -1;
+            // The top parent frame == visage's window content frame; its native size is
+            // the REAL drawable/window. If it exceeds our native, the editor is stale
+            // (a window resize the shell's syncWindowScale did not follow).
+            visage::Frame* top = topParentFrame();
+            const int tw = top ? top->nativeWidth()  : -1;
+            const int th = top ? top->nativeHeight() : -1;
             std::snprintf (line, sizeof line,
-                           "logi %.0fx%.0f  native %dx%d  dpi %.3f  OUTnativeRight %d",
-                           w, h, nativeWidth(), nativeHeight(), dpiScale(), oR);
+                           "ed.native %dx%d  dpi %.3f  OUTr %d  WINDOW(top) %dx%d",
+                           nativeWidth(), nativeHeight(), dpiScale(), oR, tw, th);
             canvas.setColor (visage::Color (0xcc000000));
             canvas.fill (6.0f, 56.0f, w - 12.0f, 22.0f);
             canvas.setColor (visage::Color (0xff00ff88));
