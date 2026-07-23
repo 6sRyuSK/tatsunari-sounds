@@ -37,9 +37,59 @@ if(EMSCRIPTEN)
   add_compile_definitions(EMSCRIPTEN=1)
 endif()
 
+# --- Obstacle #3: visage patches for the RS clap-first Retina editor -----------
+# Applied via PATCH_COMMAND against the pinned checkout (the pin hash is NEVER changed).
+# apply-visage-patches.cmake applies each idempotently (a re-configure that re-runs the
+# patch step on an already-populated checkout is a no-op, not an error) — see that script
+# for why a plain `git apply` / shell `||` cannot be used here. RE-EVALUATE these patches
+# whenever FACTORY_VISAGE_GIT_TAG is bumped (upstream lines may move, or the fixes may land
+# upstream). See ui/visage/patches/ for the diffs + rationale.
+#
+# 0001 (macOS backing-scale vs layout-zoom split): the pinned visage reuses
+#   Window::dpiScale() for BOTH the frame-tree layout scale AND the macOS physical-pixel
+#   density (MTKView contentsScale / drawable size, mouse point<->pixel conversion). The RS
+#   editor drives the window dpi as a UNIFORM ZOOM (dpi = physicalHeight/747) so the 1069x747
+#   design fills any window; on a Retina Mac that zoom is NOT the backing factor (2.0), so the
+#   shared value left the drawable undersized (black margin) and clicks offset (M1 Air/Logic).
+#   Adds a SEPARATE WindowMac backingScale() for every points<->pixels conversion and leaves
+#   dpiScale() as the pure layout scale. (It deliberately KEEPS MTKView autoResizeDrawable = YES,
+#   the default, so the drawable always tracks the view; letting bgfx be the sole writer left the
+#   drawable stale when the host shrank the view — see the note there.) macOS-only files —
+#   Windows / X11 / Emscripten unaffected.
+# 0002 (clear the window framebuffer): visage never bgfx::setViewClear's, so any pixel of the
+#   on-screen framebuffer not covered by drawn geometry is uninitialised (magenta). This clears
+#   the WINDOW layer to the warm-white theme background as a safety net (normally invisible).
+#   Cross-platform (visage_graphics), harmless where the editor already covers the surface.
+# 0003 (embedded-view backing scale + base accessor): visage's WindowMac::resetBackingScale
+#   only tracked the OS backingScaleFactor when window_handle_ was set — null for a plugin
+#   SUBVIEW — so an embedded editor's backingScale() stayed frozen at the main-screen value
+#   captured at creation. When Logic hosts the AU on a display of a different scale, the subview
+#   frame (client / backingScale points) is mis-sized and the right + bottom clip. This reads the
+#   scale from the actual host window ([view_ window]) for embedded views, and adds a virtual
+#   Window::backingScale() (default dpiScale()) so the shell can read it without a platform cast.
+# 0004 (clamp the region to its FULL native size under a dpi<1 zoom): Canvas::beginRegion
+#   passed the region's NATIVE size to setClampBounds(), which multiplies its args by the
+#   layout scale (dpiScale) to reach native — yielding a clamp of native*scale. For scale>=1
+#   that clamp is >= the region (harmless), but a dpi<1 uniform zoom made it SMALLER than the
+#   region, clipping the right/bottom ~ (1-scale) of every frame's content. This surfaced as
+#   the small-size-only, cross-host (AU + VST3) clip that every geometry value (view, drawable,
+#   canvas all == the window) could not explain. Divide by the scale so the clamp is the full
+#   region at any scale. THIS is the root-cause fix for the resize clipping.
+#
+# The patch step is idempotent by RESET (apply-visage-patches.cmake hard-resets the pinned
+# checkout, then re-applies): the patches touch overlapping regions of the same files, which
+# a reverse-check-to-skip scheme cannot handle. Re-evaluate ALL patches when the pin bumps.
+# The patch step receives the patches DIRECTORY (the script globs NNNN-*.patch,
+# sorted) — never a `;`-joined list: ExternalProject's command serialisation splits
+# an embedded list separator into a stray positional argument that `cmake -P`
+# silently ignores, dropping every patch after the first (bit us in the field:
+# 0001 applied, 0002 silently missing).
 FetchContent_Declare(visage
   GIT_REPOSITORY https://github.com/VitalAudio/visage.git
   GIT_TAG ${FACTORY_VISAGE_GIT_TAG}
+  PATCH_COMMAND ${CMAKE_COMMAND}
+                "-DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/patches"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/patches/apply-visage-patches.cmake
 )
 # As a subproject, visage sets VISAGE_BUILD_EXAMPLES / _TESTS OFF automatically
 # and (under Emscripten) skips the CLAP example + SDK fetch.

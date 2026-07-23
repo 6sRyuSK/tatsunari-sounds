@@ -203,6 +203,26 @@ support). `installer.yml` attaches the TUI installer + `catalog.json` after publ
   unittest suite.
 - **Installer** (`installer-ci.yml`, `tools/installer/**` only): `go test` / `go vet`.
 
+## Debugging host-GUI bugs (not headless-reproducible)
+The editor layer (visage / the CLAP shell) has a bug class that **no CTest, pluginval,
+or CI signal catches**: it only manifests in a real DAW host, and is often
+cross-OS/format — the resize-clip regression lived in visage core and hit Logic/AU
+*and* Cubase/VST3 alike; assume "it's host X specific" is wrong until proven. For this
+class the human's build→install→host→screenshot loop is the ONLY oracle and is
+expensive, so:
+- **Instrument before hypothesising.** Add a temporary on-editor readout of the real
+  runtime values (frame native/logical, dpiScale, canvas/drawable size, actual view/
+  parent px) and let ONE screenshot pin the fault. Reading those beat every guess here
+  — the root cause was found by reading `Canvas::beginRegion`, not by round-trips.
+- **Never push a fix you cannot verify locally as if it were verified.** Each
+  speculative push spends a human round-trip; spend it to gather a measurement, not to
+  test a hunch. Say plainly what a value would confirm or refute before asking for it.
+- **Verify the reporter's hypothesis before your own.** "The dpi<1 sizing is wrong"
+  was correct and chased too late. If the person seeing the bug offers a lead, test it
+  first.
+- Gotcha caught this way: a **dpi<1 uniform zoom** breaks visage size/clamp math that
+  silently assumes dpi≥1 (see `ui/visage/patches/` 0001–0004 + the `visage-ui` skill).
+
 ## Ask a human — do NOT decide these autonomously
 1. **Sonic / taste** judgments ("does it sound good / right").
 2. Changes to **test infrastructure, tolerances, oracles, or `disabled-tests`**

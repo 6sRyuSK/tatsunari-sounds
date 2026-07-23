@@ -526,7 +526,7 @@ int main()
         // scale 1.0 (macOS logical, or a 1x display): logical == native.
         snap (1.0, 1069, 747, w, h);   check (w == 1069 && h == 747, "snap 1.0: 1069x747 is a fixed point");
         snap (1.0, 10000, 10000, w, h); check (w == 1320 && h == 922, "snap 1.0: huge -> max 1320x922");
-        snap (1.0, 1, 1, w, h);         check (w == 940 && h == 657, "snap 1.0: tiny -> min 940x657");
+        snap (1.0, 1, 1, w, h);         check (w == 471 && h == 329, "snap 1.0: tiny -> min 471x329");
 
         // Aspect invariant for arbitrary inputs: |w*747 - h*1069| <= 747 (< ~1 logical px).
         for (std::uint32_t in : { 700u, 950u, 1100u, 1200u, 1319u, 2000u })
@@ -537,9 +537,10 @@ int main()
             check (d <= 747, "snap 1.0: aspect within 1px for a square input");
         }
 
-        // scale 1.5: the design proposal (native px) is ~713 logical wide -> min clamp
-        // -> logical 940x657 -> native 1410x986 (940*1.5, round(657*1.5)=round(985.5)).
-        snap (1.5, 1069, 747, w, h); check (w == 1410 && h == 986, "snap 1.5: native design proposal -> min -> 1410x986");
+        // scale 1.5: the design proposal (native px) is ~713 logical wide, which is now
+        // WITHIN the [471..1320] logical width band (no clamp) — aspect-correct it to
+        // logical 713x498, then back to native: round(713*1.5)=1070, round(498*1.5)=747.
+        snap (1.5, 1069, 747, w, h); check (w == 1070 && h == 747, "snap 1.5: native design proposal -> 1070x747");
 
         // scale 2.0: a huge square proposal -> logical max 1320x922 -> native 2640x1844.
         snap (2.0, 5000, 5000, w, h); check (w == 2640 && h == 1844, "snap 2.0: huge -> native max 2640x1844");
@@ -553,6 +554,91 @@ int main()
             snap (sc, 1, 1, w, h);        w2 = w; h2 = h; rs_shell::snapEditorSizeForScale (sc, w2, h2);
             check (w2 == w && h2 == h, "snap fixed point (min) at scale 1.0/1.5/2.0");
         }
+    }
+
+    // ============ 7. DYNAMIC DISPLAY MAX CLAMP (grip off-screen guard) =========
+    // snapEditorSizeForScale's optional dynamic max (maxWindowW/H): clamps the aspect-
+    // locked window to the current display's usable area so a height-driven grip drag
+    // cannot push the window (and its grip) off-screen. Aspect is preserved by re-deriving
+    // the binding axis; the minimum wins on an absurdly small display; a dynamic max at or
+    // above the static cap leaves the static behaviour untouched.
+    {
+        auto dyn = [] (std::uint32_t w, std::uint32_t h, double mw, double mh,
+                       std::uint32_t& ow, std::uint32_t& oh)
+        { ow = w; oh = h; rs_shell::snapEditorSizeForScale (1.0, ow, oh, mw, mh); };
+
+        const double aspect = 1069.0 / 747.0;
+        auto aspectOk = [&] (std::uint32_t w, std::uint32_t h)
+        { long d = (long) w * 747 - (long) h * 1069; return (d < 0 ? -d : d) <= 1069; };
+
+        std::uint32_t w = 0, h = 0;
+
+        // A square 1000x1000 display box: a huge proposal is capped to fit BOTH axes.
+        dyn (2000, 2000, 1000.0, 1000.0, w, h);
+        check (w <= 1000 && h <= 1000, "dyn: capped within 1000x1000 box");
+        check (aspectOk (w, h), "dyn: aspect preserved under square cap");
+        check (w >= 990, "dyn: width fills the binding (height-derived) axis");
+
+        // Short/wide display (height binds): width must be RE-DERIVED from the clamped
+        // height, never overshoot. maxH 500 -> height 500, width ~ 500*aspect ~ 716.
+        dyn (2000, 2000, 2000.0, 500.0, w, h);
+        check (h <= 500, "dyn: height honoured on a short display");
+        check (w <= 720 && aspectOk (w, h), "dyn: width re-derived from height (no overshoot)");
+
+        // Absurdly small display (below the usable minimum): the MINIMUM wins.
+        dyn (2000, 2000, 300.0, 300.0, w, h);
+        check (w == 471 && h == 329, "dyn: tiny display -> minimum wins (471x329)");
+
+        // Dynamic max at/above the static cap: identical to the static-only snap.
+        std::uint32_t sw, sh;
+        dyn (5000, 5000, 5000.0, 5000.0, w, h);
+        sw = 5000; sh = 5000; rs_shell::snapEditorSizeForScale (1.0, sw, sh);
+        check (w == sw && h == sh, "dyn: max >= static cap leaves static behaviour (1320x922)");
+
+        // Fixed point: re-snapping a dynamically-clamped size with the same limit is a no-op.
+        dyn (2000, 2000, 1000.0, 1000.0, w, h);
+        std::uint32_t w2 = w, h2 = h;
+        rs_shell::snapEditorSizeForScale (1.0, w2, h2, 1000.0, 1000.0);
+        check (w2 == w && h2 == h, "dyn: clamped size is a fixed point under its own limit");
+        (void) aspect;
+    }
+
+    // ============ 6. WINDOW-RESIZE LOOP GUARD (Logic AU stack overflow) =========
+    // rs_shell::shouldRelayHostResize: the predicate the onWindowContentsResized handler
+    // uses to decide whether to call host gui.request_resize. Relaying unconditionally
+    // is what recursed the AU setFrame -> setSize -> windowContentsResized -> request_resize
+    // cycle into a stack overflow. Contract: relay ONLY a genuine size change that did
+    // NOT originate from a host setSize (inSetSize) and is non-degenerate.
+    {
+        using rs_shell::shouldRelayHostResize;
+
+        // Same size as the host cache -> never relay (feeding the current size back in
+        // must be a no-op; this is the fixed point that terminates the callback chain).
+        check (! shouldRelayHostResize (706, 493, 706, 493, false), "same size -> no relay (fixed point)");
+
+        // Inside a host-driven setSize -> never relay, even for a different size (the
+        // host is the origin; echoing it back re-enters the loop).
+        check (! shouldRelayHostResize (706, 493, 940, 657, true),  "in setSize -> no relay (origin guard)");
+        check (! shouldRelayHostResize (706, 493, 706, 493, true),  "in setSize + same size -> no relay");
+
+        // A genuine OS-driven change (e.g. a real DPI move on Windows/X11 where the
+        // host-facing size is the physical window) -> relay exactly once.
+        check (shouldRelayHostResize (706, 493, 940, 657, false),   "genuine change -> relay");
+        check (shouldRelayHostResize (706, 493, 707, 493, false),   "1px width change -> relay");
+        check (shouldRelayHostResize (706, 493, 706, 494, false),   "1px height change -> relay");
+
+        // Degenerate / not-yet-realised window -> never relay.
+        check (! shouldRelayHostResize (706, 493, 0, 493, false),   "zero width -> no relay");
+        check (! shouldRelayHostResize (706, 493, 706, 0, false),   "zero height -> no relay");
+
+        // Convergence property: after relaying a change, the cache holds the new size,
+        // so re-notifying with that same size no longer relays -> the loop stops in one
+        // step instead of recursing (the shell updates curW_/curH_ before relaying).
+        std::uint32_t cw = 706, ch = 493;
+        const std::uint32_t nw = 940, nh = 657;
+        check (shouldRelayHostResize (cw, ch, nw, nh, false), "step 1: change relays");
+        cw = nw; ch = nh; // shell caches the relayed size
+        check (! shouldRelayHostResize (cw, ch, nw, nh, false), "step 2: same size no longer relays (converged)");
     }
 
     if (g_failures == 0) std::printf ("clap_shell_test: ALL PASS\n");

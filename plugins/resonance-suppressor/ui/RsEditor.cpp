@@ -130,6 +130,12 @@ namespace rs_ui
         grip_->onDragResize = [this] (float w, float h)
         {
             if (! onResizeRequest) return;
+            // The grip drags in editor-DESIGN units (the logical plane is fixed at
+            // 1069x747 and uniform-zoomed by the window), so a design-space proposal
+            // maps to a WINDOW size by the current zoom (windowScale_ = window px per
+            // design unit). Snap in window space against [kMin .. kMax], then relay.
+            w *= windowScale_;
+            h *= windowScale_;
             snapWindowSize (w, h);
             onResizeRequest (w, h);
         };

@@ -1,0 +1,50 @@
+diff --git a/visage_windowing/macos/windowing_macos.mm b/visage_windowing/macos/windowing_macos.mm
+index f8aab0d..b966b65 100644
+--- a/visage_windowing/macos/windowing_macos.mm
++++ b/visage_windowing/macos/windowing_macos.mm
+@@ -963,13 +963,21 @@ namespace visage {
+   }
+ 
+   void WindowMac::resetBackingScale() {
+-    if (window_handle_) {
+-      // [factory patch] Always track the OS backing scale. Only fold it into the
+-      // frame-tree dpi for a STANDALONE window (no embedder zoom); for a plugin
+-      // subview the dpi is the embedder's layout scale and must not be clobbered.
+-      setBackingScale([window_handle_ backingScaleFactor]);
++    // [factory patch] Track the OS backing scale from whichever NSWindow actually hosts
++    // the view. Standalone -> window_handle_; EMBEDDED plugin subview -> window_handle_
++    // is null, so read the host window the subview was added to ([view_ window]).
++    // Without this, an embedded view's backingScale() stayed frozen at the main-screen
++    // value captured at creation, so when Logic hosts the AU on a display of a different
++    // scale the subview frame (client / backingScale points) is mis-sized and the right +
++    // bottom are clipped. viewDidChangeBackingProperties calls this whenever the view
++    // moves to a window or the backing changes, keeping it correct across display moves.
++    // Only fold the scale into the frame-tree dpi for a STANDALONE window (no embedder
++    // zoom); a plugin subview's dpi is the embedder's layout/zoom scale, not the backing.
++    NSWindow* host = window_handle_ ? window_handle_ : [view_ window];
++    if (host) {
++      setBackingScale([host backingScaleFactor]);
+       if (parent_view_ == nullptr)
+-        setDpiScale([window_handle_ backingScaleFactor]);
++        setDpiScale([host backingScaleFactor]);
+     }
+   }
+ 
+diff --git a/visage_windowing/windowing.h b/visage_windowing/windowing.h
+index 0405781..8c62728 100644
+--- a/visage_windowing/windowing.h
++++ b/visage_windowing/windowing.h
+@@ -133,6 +133,13 @@ namespace visage {
+     void setDpiScale(float scale) { dpi_scale_ = scale; }
+     float dpiScale() const { return dpi_scale_; }
+ 
++    // [factory patch] Physical backing-store scale (points -> device px). Defaults to
++    // dpiScale() so non-mac / standalone paths are unchanged; WindowMac overrides it to
++    // return the OS backingScaleFactor, kept SEPARATE from the frame-tree layout dpi an
++    // embedder may drive as a uniform zoom. Exposed on the base so the plugin shell can
++    // read it without a platform cast. See ui/visage/patches.
++    virtual float backingScale() const { return dpiScale(); }
++
+     IPoint convertToNative(const Point& logical_point) const {
+       return { static_cast<int>(std::round(logical_point.x * dpi_scale_)),
+                static_cast<int>(std::round(logical_point.y * dpi_scale_)) };
