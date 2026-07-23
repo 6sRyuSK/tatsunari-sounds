@@ -227,6 +227,18 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         if (params[(size_t) b].on->load() > 0.5f && params[(size_t) b].lsn->load() > 0.5f)
         { soloBand = b; break; }
 
+    // Compact list of the bands the per-sample loop must run: the enabled ones
+    // (present and not bypassed, as configured above), in ascending index order
+    // so the series application order is unchanged. Free / bypassed slots — whose
+    // processStereo is a no-op early return — are skipped entirely, so an idle or
+    // sparsely-used instance stops spinning over all kNumBands dead bands per
+    // sample. Stack-resident, fixed size: no audio-thread allocation.
+    std::array<int, (size_t) kNumBands> activeBands;
+    int numActiveBands = 0;
+    for (int b = 0; b < kNumBands; ++b)
+        if (bands[(size_t) b].isEnabled())
+            activeBands[(size_t) numActiveBands++] = b;
+
     std::uint64_t w = ringWrite.load (std::memory_order_relaxed);
     for (int start = 0; start < numSamples; start += kSmoothChunk)
     {
@@ -262,8 +274,8 @@ void DynamicEqAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             if (soloBand >= 0)
                 bands[(size_t) soloBand].processListen (l, r); // band-pass of the dry input
             else
-                for (auto& band : bands)
-                    band.processStereo (l, r);
+                for (int idx = 0; idx < numActiveBands; ++idx)
+                    bands[(size_t) activeBands[(size_t) idx]].processStereo (l, r);
 
             analyzerRingPost[(size_t) (w & kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
             ++w;
