@@ -23,6 +23,9 @@ namespace factory_ui_visage
         void mouseDown (const visage::MouseEvent& e) override;
 
         int paramIndex() const { return index_; }
+        // Re-point at a different bool parameter (a per-band panel rebinds to the
+        // selected band). Reads the new value on the next draw.
+        void rebind (int paramIndex) { index_ = paramIndex; redraw(); }
 
     private:
         bool isOn() const { return store_.value (index_) > 0.5f; }

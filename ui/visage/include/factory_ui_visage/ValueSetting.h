@@ -29,6 +29,9 @@ namespace factory_ui_visage
         DropdownRequest requestDropdown;
 
         int paramIndex() const { return index_; }
+        // Re-point at a different Choice parameter (a per-band panel rebinds to the
+        // selected band). The choice list is re-read from the new desc on draw.
+        void rebind (int paramIndex) { index_ = paramIndex; redraw(); }
 
         // Open the choice menu programmatically (same path as a click) — used for
         // deterministic dropdown capture in the harness.

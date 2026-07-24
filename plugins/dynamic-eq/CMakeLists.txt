@@ -1,48 +1,20 @@
-# dynamic-eq — multi-band dynamic parametric EQ. Composed from factory_core.
+# dynamic-eq — Pro-Q-style multi-band dynamic parametric EQ.
+#
+# 脱JUCE CUTOVER (2.0.0): dynamic-eq SHIPS CLAP-FIRST. There is deliberately NO
+# juce_add_plugin here any more — the shipping build is the make_clapfirst shell (CLAP +
+# wrapper VST3 + AUv2-on-Apple, with the Visage editor), assembled from the root CMakeLists
+# when dynamic-eq is configured (its shell/CMakeLists.txt calls factory_clap_plugin).
+# release_plan.py resolves the release target from that shell/CMakeLists.txt (kind = "clap").
+#
+# The JUCE DynamicEqAudioProcessor sources (Source/PluginProcessor.*, PluginEditor.*) are NO
+# LONGER a shipping plugin — they are retained ONLY as the BYTE-EQUIVALENCE ORACLE compiled
+# into the JUCE-linked test console apps below (deqcore_equiv_test drives the real processor
+# against the framework-free deq_core::DeqCore; preset_test checks the factory presets + the
+# generated APVTS layout against that same processor). Both are headless ctest targets, never
+# packaged.
 
 factory_read_version(${CMAKE_CURRENT_SOURCE_DIR}/plugin.toml DEQ_VERSION)
-message(STATUS "dynamic-eq version ${DEQ_VERSION} (from plugin.toml)")
-
-set(DEQ_FORMATS VST3 Standalone)
-if(APPLE)
-  list(APPEND DEQ_FORMATS AU)
-endif()
-
-juce_add_plugin(DynamicEq
-  VERSION                     ${DEQ_VERSION}
-  PRODUCT_NAME                "Dynamic Tatsunari EQ"
-  COMPANY_NAME                "Tatsunari Sounds"
-  PLUGIN_MANUFACTURER_CODE    Ttsn
-  PLUGIN_CODE                 Dyeq
-  FORMATS                     ${DEQ_FORMATS}
-  IS_SYNTH                    FALSE
-  NEEDS_MIDI_INPUT            FALSE
-  NEEDS_MIDI_OUTPUT           FALSE
-  IS_MIDI_EFFECT              FALSE
-  COPY_PLUGIN_STEP            FALSE
-  VST3_CATEGORIES             Fx EQ)
-
-target_sources(DynamicEq PRIVATE
-  Source/PluginProcessor.cpp
-  Source/PluginEditor.cpp)
-
-target_compile_features(DynamicEq PRIVATE cxx_std_20)
-
-target_compile_definitions(DynamicEq PUBLIC
-  JUCE_WEB_BROWSER=0
-  JUCE_USE_CURL=0
-  JUCE_VST3_CAN_REPLACE_VST2=0)
-
-target_link_libraries(DynamicEq
-  PRIVATE
-    factory_core
-    factory_ui
-    factory_presets
-    juce::juce_audio_utils
-    juce::juce_dsp
-  PUBLIC
-    juce::juce_recommended_config_flags
-    juce::juce_recommended_warning_flags)
+message(STATUS "dynamic-eq version ${DEQ_VERSION} (clap-first; shell assembled from root)")
 
 # ---------------------------------------------------------------- DSP tests
 add_executable(dynamic_eq_dsp_test tests/dsp_test.cpp)
