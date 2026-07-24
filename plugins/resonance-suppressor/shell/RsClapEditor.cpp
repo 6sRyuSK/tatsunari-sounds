@@ -1,39 +1,21 @@
 //
 // RsClapEditor.cpp — the Visage-backed factory_shell::IClapEditor for the RS CLAP
-// plugin (chunk 3b). This is the SINGLE translation unit in the whole RS CLAP build
-// that links Visage; it is compiled ONLY under FACTORY_RS_CLAP_GUI. It hosts the
-// JUCE-free rs_ui::RsEditor (the full Phase-P3 port) inside a native
-// visage::ApplicationWindow and implements the clap.gui (+ Linux posix-fd) surface
-// the generic shell drives through IClapEditor.
+// plugin. Since the 共通化 refactor it DERIVES the shared
+// factory_ui_visage::ResizableVisageClapEditor (which owns the identical CLAP↔Visage
+// host boilerplate + the uniform-zoom / aspect-lock / Logic-AU resize-loop machinery),
+// so this file keeps ONLY the RS-specific pieces: constructing rs_ui::RsEditor over the
+// shell's live core/store/session, the real preset + A/B models, and the per-frame
+// gesture pump. Compiled ONLY under FACTORY_RS_CLAP_GUI (the single visage-linking TU of
+// the RS CLAP build).
 //
-// It is backed by the SAME live objects the CLAP shell owns:
-//   * rs_core::RsCore            -> rs_ui::RsFeedFromCore (the real analyser feed:
-//                                   zero-copy pointers into the core's published
-//                                   lock-free spectra — identical hand-off to the
-//                                   JUCE editor);
+// Backed by the SAME live objects the CLAP shell owns:
+//   * rs_core::RsCore            -> rs_ui::RsFeedFromCore (real analyser feed, zero-copy);
 //   * factory_params::ParamStore -> every control binds by string id;
-//   * factory_presets::PresetSession -> the REAL program list (Init + the six
-//                                   factory presets) and apply path.
-// A/B compare is the real rs_ui::AbCompareModel (RsAbState.h): two session slots of
-// {full parameter state + program index}, the exact JUCE-2.1.0 setABSlot /
-// copyActiveToOther scope. A bulk state change (preset apply / A-B switch) relays a
-// host rescan + mark-dirty so the DAW reflects it WITHOUT recording per-parameter
-// automation; individual knob edits DO reach the host as automation, via the shell's
-// GUI-edit -> CLAP output-event relay (ClapShellPlugin::emitHostWrites).
-//
-// PARENT ATTACH (host-provided window):
-//   * Linux  : clap_window.x11 is the X11 Window id; visage embeds via show(ptr)
-//              and the host pumps the X11 connection fd through posix-fd-support.
-//   * Windows: clap_window.win32 is the parent HWND; show(ptr) reparents (the
-//              wrapper build declares CLAP_WINDOW_API_WIN32 — verified on Windows).
-//   * macOS  : clap_window.cocoa is the parent NSView; show(ptr) adds the visage
-//              view as a subview (declared CLAP_WINDOW_API_COCOA; mac uses the OS
-//              run loop, not posix-fd). All three read the same clap_window union
-//              pointer, matching visage's own ClapPlugin example.
-//
-// Threading: every method here is [main-thread] (the CLAP gui contract). The audio
-// thread never touches this object; the only cross-thread data is the core's atomic
-// spectra, read lock-free by the feed.
+//   * factory_presets::PresetSession -> the REAL program list + apply path.
+// A/B compare is the real rs_ui::AbCompareModel (RsAbState.h). A bulk state change
+// (preset apply / A-B switch / undo) relays rescan + mark-dirty (no per-parameter
+// automation); individual knob edits reach the host as automation via the shell's
+// GUI-edit -> CLAP output-event relay.
 //
 #include "RsClapEditor.h"
 
@@ -47,53 +29,24 @@
 #include "factory_params/ParamStore.h"
 #include "factory_presets/PresetSession.h"
 
-#include <visage/app.h>
+#include "factory_ui_visage/ClapEditorHost.h"
 
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <cstring>
 #include <functional>
 #include <memory>
-#include <string>
 #include <utility>
 #include <vector>
 
 namespace
 {
-    // --- design geometry ------------------------------------------------------
-    // Reference layout 1069x747, resize limits 471x329..1320x922, fixed aspect
-    // 1069:747. Height is the layout driver (the editor scales by k()=height/747).
-    // The window OPENS at kDefault = 706x493 (75% of the old 940x657 default): the
-    // reference 1069x747 plus host chrome overflowed common laptop displays (the
-    // "default window too big" report), and the old default doubled as the minimum
-    // so the user could not shrink it further. The new default is comfortably below
-    // the reference, and the minimum drops to 471x329 (50% of the old default) so the
-    // whole UI — uniform-scaled by k() — can be made much smaller on demand.
-    constexpr int kDesignW = 1069, kDesignH = 747;
-    // Minimum window (used for setMinimumDimensions); the max + aspect snap live in
-    // rs_shell::snapEditorSizeForScale (RsClapEditor.h).
-    constexpr int kMinW = 471, kMinH = 329;
+    // Design geometry: reference 1069x747, resize limits 471x329..1320x922 (rs_shell::
+    // kRsGeometry), fixed aspect. The window OPENS at 706x493 (below the reference so host
+    // chrome fits a laptop; the minimum drops to 471x329 so the k()-scaled UI can shrink).
     constexpr int kDefaultW = 706, kDefaultH = 493;
 
-#if defined(_WIN32)
-    constexpr const char* kNativeApi = CLAP_WINDOW_API_WIN32;
-#elif defined(__APPLE__)
-    constexpr const char* kNativeApi = CLAP_WINDOW_API_COCOA;
-#else
-    constexpr const char* kNativeApi = CLAP_WINDOW_API_X11;
-#endif
-
     // --- REAL preset model over the shell's PresetSession ---------------------
-    // Lists Init + the six factory presets (real names). load() applies the real
-    // program values through the session, then fires onLoaded so the host re-pulls
-    // values + marks state dirty. Returning true tells the editor a preset LOADED,
-    // so it clears its undo timeline (JUCE apvts.replaceState() semantics).
-    //
-    // No trailing "Save As…" action row: until a user-preset store (UserPresetStoreFs)
-    // is wired into the CLAP shell there is nothing for it to do, so we do not surface
-    // a dead menu entry. (The tools/ui-dev harness keeps its mock action row to
-    // exercise the selector's action-row skipping, and is intentionally left as is.)
+    // Lists Init + the six factory presets. load() applies the real program values through
+    // the session, then fires onLoaded so the host re-pulls values + marks state dirty.
+    // Returning true tells the editor a preset LOADED, so it clears its undo timeline.
     class SessionPresetModel final : public rs_ui::RsPresetModel
     {
     public:
@@ -115,7 +68,7 @@ namespace
         bool load (int index) override
         {
             if (index < 0 || index >= session_.numPrograms())
-                return false; // out of range
+                return false;
             session_.applyProgram (index); // writes real values via ParamStore::setFromHost
             if (onLoaded_) onLoaded_();
             return true;
@@ -126,19 +79,13 @@ namespace
         std::function<void()>           onLoaded_;
     };
 
-    // A/B compare is the real, JUCE-2.1.0-faithful rs_ui::AbCompareModel (RsAbState.h):
-    // two session-only slots of {full parameter state + program index}, with the
-    // shell's PresetSession backing the program hooks (see ctor). Its onSwitched
-    // callback relays a host rescan + mark-dirty so the DAW reflects the switch.
-
-    // --- the IClapEditor implementation ---------------------------------------
-    class RsClapEditorImpl final : public factory_shell::IClapEditor
+    // --- the IClapEditor implementation (resizable) ---------------------------
+    class RsClapEditorImpl final : public factory_ui_visage::ResizableVisageClapEditor
     {
     public:
         RsClapEditorImpl (rs_core::RsCore& core, factory_params::ParamStore& store,
                           factory_presets::PresetSession& session, const clap_host_t* host)
-            : store_ (store),
-              host_ (host),
+            : ResizableVisageClapEditor (host, store, rs_shell::kRsGeometry, kDefaultW, kDefaultH),
               theme_ (rs_ui::RsTheme::defaults()),
               feed_ (core),
               presets_ (session, [this] { notifyHostEdited(); }),
@@ -151,449 +98,53 @@ namespace
 
         ~RsClapEditorImpl() override { destroy(); }
 
-        bool isApiSupported (const char* api, bool isFloating) const noexcept override
+    protected:
+        // Build rs_ui::RsEditor over the shell's live objects and wire its per-frame hooks.
+        visage::Frame* buildEditor() override
         {
-            if (isFloating) return false;
-            return api != nullptr && std::strcmp (api, kNativeApi) == 0;
-        }
-
-        bool getPreferredApi (const char** api, bool* isFloating) const noexcept override
-        {
-            if (api == nullptr || isFloating == nullptr) return false;
-            *api = kNativeApi;
-            *isFloating = false;
-            return true;
-        }
-
-        bool create (const char* /*api*/, bool isFloating) noexcept override
-        {
-            if (isFloating) return false;
-            if (app_) return true;
-
-            app_    = std::make_unique<visage::ApplicationWindow>();
             editor_ = std::make_unique<rs_ui::RsEditor> (theme_, store_, feed_, presets_, ab_);
 
-            // The editor's corner grip already proposes a WINDOW size (its drag runs
-            // in the fixed 1069x747 design plane and is converted to window units via
-            // the shell-synced windowScale_ — see RsEditor::setWindowScale), snapped to
-            // the aspect + STATIC limits. We additionally clamp to the DYNAMIC display
-            // limit here (the grip is height-driven, so a downward drag grows the window;
-            // without this it can exceed the screen and carry the grip itself off-screen
-            // where it can't be grabbed). Host units == window units (logical points on
-            // macOS, physical px elsewhere). This is the ONLY resize path a host with no
-            // window resize edge (Logic's AU) offers.
-            editor_->onResizeRequest = [this] (float w, float h)
+            // The editor's corner grip proposes a WINDOW size (its drag runs in the design
+            // plane, converted to window units via setEditorWindowScale); the shared base
+            // snaps it to the aspect + static + dynamic display limits and relays it. This is
+            // the ONLY resize path a host with no window resize edge (Logic's AU) offers.
+            editor_->onResizeRequest = [this] (float w, float h) { requestResizeFromEditor (w, h); };
+
+            // Per analyser frame: drain the editor's gesture queue into its undo timeline
+            // (the REAL feed refreshes itself from the audio thread), then flush pending GUI
+            // edits to the host while the plugin is inactive.
+            editor_->curve().onTick = [this]
             {
-                fetchHostExts();
-                if (hostGui_ == nullptr || hostGui_->request_resize == nullptr) return;
-                std::uint32_t rw = static_cast<std::uint32_t> (std::lround (w));
-                std::uint32_t rh = static_cast<std::uint32_t> (std::lround (h));
-                double maxW = 0.0, maxH = 0.0;
-                dynamicMaxWindowUnits (maxW, maxH); // {0,0} if unavailable -> static cap only
-                rs_shell::snapEditorSizeForScale (1.0, rw, rh, maxW, maxH);
-                hostGui_->request_resize (host_, rw, rh);
-            };
-
-            app_->addChild (*editor_);
-            setPluginDimensions (kDefaultW, kDefaultH);
-            app_->setMinimumDimensions (static_cast<float> (kMinW), static_cast<float> (kMinH));
-            syncWindowScale();               // dpi = physH/747, editor -> design bounds
-            app_->setFixedAspectRatio (true); // captures the current 1069:747 ratio
-
-            // Per analyser frame:
-            //  * drain the editor's gesture queue into its undo timeline. The REAL feed
-            //    refreshes itself from the audio thread, so (unlike the synthetic
-            //    harness feed) there is nothing to advance here; and
-            //  * while the plugin is INACTIVE there is no process()/params.flush() to
-            //    drain the store's host-write queue, so a GUI knob edit made with the
-            //    transport stopped would never reach the host. Ask the host to flush
-            //    the params when edits are pending — the CLAP contract's inactive-edit
-            //    path. While active this is harmless (the next process() drains the
-            //    queue first, so the flush finds nothing). [main-thread].
-            editor_->curve().onTick = [this] {
                 if (editor_ == nullptr) return;
                 editor_->pumpGestures();
-                if (store_.hasPendingHostWrites())
-                {
-                    fetchHostExts();
-                    if (hostParams_ != nullptr && hostParams_->request_flush != nullptr)
-                        hostParams_->request_flush (host_);
-                }
+                flushEditsIfInactive();
             };
 
-            // Undo / redo applies a bulk parameter change (the whole snapshot), so
-            // relay it to the host exactly like a preset / A-B switch: rescan(VALUES) +
-            // mark-dirty, WITHOUT punching an automation point per parameter.
+            // Undo/redo applies a bulk parameter change; relay it like a preset / A-B switch
+            // (rescan + mark-dirty, no per-parameter automation).
             editor_->onHistoryApplied = [this] { notifyHostEdited(); };
 
-            // Content-driven resize (an OS DPI move, or the cascade our own writes set
-            // off). Re-pin the editor to the fixed 1069x747 design plane via the
-            // IDEMPOTENT syncWindowScale (writing the SAME size writes nothing), then
-            // relay to the host ONLY when the window's host-facing size actually changed
-            // and we are not already mid-setSize (shouldRelayHostResize).
-            //
-            // Relaying unconditionally here is exactly what closed the Logic AU stack-
-            // overflow loop: request_resize -> host [NSView setFrame:] -> setSize ->
-            // (re)resize -> windowContentsResized -> back here. Because syncWindowScale
-            // sets the app frame's NATIVE bounds to the LIVE window client size, the
-            // follow-up notifyContentsResized -> setInternalWindowSize sees no change and
-            // early-returns, so this callback does not synchronously re-drive itself; and
-            // the guarded relay never re-enters the host. The pair is a fixed point.
-            app_->onWindowContentsResized() = [this] {
-                if (app_ == nullptr) return;
-                syncWindowScale();
-                const std::uint32_t hw = static_cast<std::uint32_t> (hostFacingWidth());
-                const std::uint32_t hh = static_cast<std::uint32_t> (hostFacingHeight());
-                if (! rs_shell::shouldRelayHostResize (curW_, curH_, hw, hh, inSetSize_))
-                    return;
-                curW_ = hw;
-                curH_ = hh;
-                fetchHostExts();
-                if (hostGui_ != nullptr && hostGui_->request_resize != nullptr)
-                    hostGui_->request_resize (host_, hw, hh);
-            };
-
-            curW_ = kDefaultW;
-            curH_ = kDefaultH;
-
-            // The analyser is now live: let the core publish display spectra + run
-            // display-time smoothing again (both skipped while no editor is attached
-            // -- see RsCore::setDisplayActive). Cleared in destroy(). Main thread, as
-            // the whole gui contract is; the core reads the flag on the audio thread.
-            feed_.setDisplayActive (true);
-            return true;
+            app_->addChild (*editor_);
+            return editor_.get();
         }
 
-        void destroy() noexcept override
-        {
-            // GUI going away: stop the core's display publish + smoothing (perf).
-            feed_.setDisplayActive (false);
-            if (app_) app_->close();
-            editor_.reset();
-            app_.reset();
-        }
+        visage::Frame* editorFrame() const override { return editor_.get(); }
+        void resetEditor() override { editor_.reset(); }
+        void setEditorWindowScale (float windowScale) override { if (editor_) editor_->setWindowScale (windowScale); }
+        void onStateReplacedHook() override { if (editor_) editor_->onStateReplaced(); }
 
-        bool setScale (double /*scale*/) noexcept override
-        {
-            // Visage works the scaling factor out from the OS itself, so (like the
-            // JUCE editor, which never implemented host scaling) we decline and let
-            // the host fall back to OS DPI.
-            return false;
-        }
-
-        bool getSize (std::uint32_t* width, std::uint32_t* height) noexcept override
-        {
-            if (width == nullptr || height == nullptr) return false;
-            // Host-facing size = WINDOW size (logical points on macOS, physical px
-            // elsewhere) — NOT the editor's logical bounds, which are now pinned at the
-            // 1069x747 design regardless of window size. On non-mac the live physical
-            // window is authoritative and moves under a DPI change; on macOS the logical
-            // point size is fixed by the host and tracked in the cache (app_->width() is
-            // now the design width, so it can't report the host size there).
-            *width  = static_cast<std::uint32_t> (hostFacingWidth());
-            *height = static_cast<std::uint32_t> (hostFacingHeight());
-            return true;
-        }
-
-        bool canResize() const noexcept override { return true; }
-
-        bool getResizeHints (clap_gui_resize_hints_t* hints) noexcept override
-        {
-            if (hints == nullptr) return false;
-            hints->can_resize_horizontally = true;
-            hints->can_resize_vertically   = true;
-            hints->preserve_aspect_ratio   = true;
-            hints->aspect_ratio_width      = static_cast<std::uint32_t> (kDesignW);
-            hints->aspect_ratio_height     = static_cast<std::uint32_t> (kDesignH);
-            return true;
-        }
-
-        bool adjustSize (std::uint32_t* width, std::uint32_t* height) noexcept override
-        {
-            if (width == nullptr || height == nullptr) return false;
-            // Snap to the 1069:747 aspect + the resize limits. The proposal AND the
-            // limits (471x329..1320x922) are both in WINDOW units — physical px on
-            // Windows/X11, logical points on macOS — so no logical<->native conversion
-            // is needed here (the editor's own uniform zoom absorbs the OS DPI factor):
-            // snap directly in window units (scale 1.0). Also clamp to the DYNAMIC
-            // display limit so a host-driven resize cannot exceed the usable screen.
-            // The pure snapEditorSizeForScale is still unit-tested (clap_shell_test).
-            double maxW = 0.0, maxH = 0.0;
-            dynamicMaxWindowUnits (maxW, maxH); // {0,0} if unavailable -> static cap only
-            rs_shell::snapEditorSizeForScale (1.0, *width, *height, maxW, maxH);
-            return true;
-        }
-
-        bool setSize (std::uint32_t width, std::uint32_t height) noexcept override
-        {
-            if (! app_) return false;
-            // IDEMPOTENT early-return: Logic re-sends the current size repeatedly during
-            // its resize handshake. Re-entering the resize machinery for a size we are
-            // already at is one arm of the stack-overflow loop (setSize -> resize ->
-            // windowContentsResized -> request_resize -> host setFrame -> setSize), so a
-            // no-op change must do nothing at all.
-            if (width == curW_ && height == curH_) return true;
-
-            // ORIGIN GUARD: the host is the source of this size, so while we apply it the
-            // onWindowContentsResized handler must NOT echo it back via request_resize
-            // (shouldRelayHostResize returns false when inSetSize_). This closes the
-            // request_resize -> setFrame -> setSize edge of the loop.
-            inSetSize_ = true;
-            // Host-driven resize (window units). Set the native/logical window size per
-            // platform, cache it as the host-facing size, then re-assert the uniform
-            // zoom (dpi = physicalHeight/747) so the editor stays the 1069x747 design.
-            setPluginDimensions (static_cast<int> (width), static_cast<int> (height));
-            curW_ = width;
-            curH_ = height;
-            syncWindowScale();
-            inSetSize_ = false;
-            return true;
-        }
-
-        bool setParent (const clap_window_t* window) noexcept override
-        {
-            if (! app_ || window == nullptr) return false;
-            fetchHostExts();
-            // X11 window id / HWND / NSView all live in the same union pointer, read
-            // exactly as visage's own ClapPlugin example does.
-            app_->show (window->ptr);
-            // Attaching creates the native window; addToWindow() seeds the frame tree
-            // from the OS DPI factor. Re-assert our uniform zoom so the editor opens at
-            // the design layout scaled to the window, not the OS-DPI logical size.
-            syncWindowScale();
-            return true;
-        }
-
-        bool show() noexcept override { if (editor_) editor_->setVisible (true);  return true; }
-        bool hide() noexcept override { if (editor_) editor_->setVisible (false); return true; }
-
-        // The shell finished a host state.load(): the restored values are in the store
-        // already, so resync the editor to the replaced state (clear + re-seed undo,
-        // rebuild the preset selector, redraw) — the JUCE setStateInformation ->
-        // replaceState follow-through. No-op when the GUI was never created.
-        void onHostStateRestored() noexcept override
-        {
-            if (editor_) editor_->onStateReplaced();
-        }
-
-        int posixFd() const noexcept override
-        {
-#ifdef __linux__
-            return (app_ && app_->window()) ? app_->window()->posixFd() : -1;
-#else
-            return -1;
-#endif
-        }
-
-        void onPosixFd (clap_posix_fd_flags_t /*flags*/) noexcept override
-        {
-#ifdef __linux__
-            if (app_ && app_->window())
-                app_->window()->processPluginFdEvents();
-#endif
-        }
+        // The analyser is live: let the core publish display spectra + run display-time
+        // smoothing (both skipped while no editor is attached). Cleared on destroy.
+        void onEditorCreated() override    { feed_.setDisplayActive (true); }
+        void onEditorDestroying() override { feed_.setDisplayActive (false); }
 
     private:
-        // CLAP/VST3 GUI sizes are LOGICAL points on macOS but PHYSICAL pixels on
-        // Windows/X11, so the visage window must be sized/read through the matching
-        // API per platform (upstream ClapPlugin example's #if __APPLE__ split). Using
-        // the native calls on a Retina mac halves the window (the Cubase 15 on macOS
-        // bug), so macOS keeps the logical-point API.
-        void setPluginDimensions (int width, int height)
-        {
-            if (! app_) return;
-#if __APPLE__
-            app_->setWindowDimensions (width, height);
-#else
-            app_->setNativeWindowDimensions (width, height);
-#endif
-        }
+        rs_ui::RsTheme        theme_;   // owned; the editor holds a const ref
+        rs_ui::RsFeedFromCore feed_;    // real feed over the shell's RsCore
+        SessionPresetModel    presets_; // real, over PresetSession
+        rs_ui::AbCompareModel ab_;      // real A/B: params + program index (RsAbState.h)
 
-        // The HOST-FACING window size (what getSize / request_resize report). Window
-        // units: logical points on macOS, physical px on Windows/X11. On non-mac the
-        // live physical window (window()->clientWidth/Height) is authoritative and
-        // moves under an OS DPI change; on macOS app_->width() is now the pinned design
-        // width, so the host-set logical point size is read from the cache instead.
-        int hostFacingWidth() const
-        {
-            if (! app_) return static_cast<int> (curW_);
-#if __APPLE__
-            return static_cast<int> (curW_);
-#else
-            visage::Window* w = app_->window();
-            return (w && w->clientWidth() > 0) ? w->clientWidth() : static_cast<int> (curW_);
-#endif
-        }
-
-        int hostFacingHeight() const
-        {
-            if (! app_) return static_cast<int> (curH_);
-#if __APPLE__
-            return static_cast<int> (curH_);
-#else
-            visage::Window* w = app_->window();
-            return (w && w->clientHeight() > 0) ? w->clientHeight() : static_cast<int> (curH_);
-#endif
-        }
-
-        // Re-assert the UNIFORM ZOOM: set the window's dpi_scale to physicalHeight/747
-        // and pin the editor to the fixed 1069x747 design plane. Because visage routes
-        // every logical<->native path (frame bounds = native/dpi, canvas dpi, mouse
-        // convertToLogical, font rasterization) through the window dpi_scale, this makes
-        // the whole editor render at the design layout uniformly scaled to the window —
-        // no per-element scaling, and the OS Retina/HiDPI factor is composited in
-        // automatically because we derive from the physical height.
-        //
-        // FIXED-POINT INVARIANT (this is what keeps the AU resize chain from recursing):
-        // the app frame's native bounds are set to the LIVE window client size
-        // (physW,physH). So the cascade this triggers — Frame::setBounds ->
-        // TopLevelFrame::resized -> ApplicationEditor::notifyContentsResized ->
-        // Window::setInternalWindowSize(nativeWidth, nativeHeight) — feeds
-        // setInternalWindowSize a size equal to the current client size, which makes it
-        // early-return WITHOUT calling windowContentsResized again. Every writable sink
-        // here is idempotent: Frame::setBounds / Frame::setDpiScale early-return on an
-        // unchanged value, and the one sink that does NOT (Window::setDpiScale is a plain
-        // assignment) is guarded by an explicit compare. Therefore running this with an
-        // unchanged window size writes nothing and starts no further callbacks — the
-        // property the Logic-loop fix depends on. `inScaleSync_` additionally blocks
-        // synchronous self-recursion within a single pass.
-        void syncWindowScale()
-        {
-            if (inScaleSync_ || app_ == nullptr || editor_ == nullptr) return;
-            visage::Window* win = app_->window();
-            // Physical pixel size of the window. clientWidth/Height() are native px and
-            // track the real drawable; before the window is attached, the app frame's
-            // native size carries the pre-set default.
-            const int physH = win ? win->clientHeight() : app_->nativeHeight();
-            const int physW = win ? win->clientWidth()  : app_->nativeWidth();
-            if (physH <= 0 || physW <= 0) return;
-            const float dpi = static_cast<float> (physH) / static_cast<float> (kDesignH);
-
-            inScaleSync_ = true;
-            // Window::setDpiScale is a bare assignment (no unchanged-value guard), so
-            // only write it when it actually moves — otherwise a same-size re-entry would
-            // dirty nothing yet still churn.
-            if (win && win->dpiScale() != dpi) win->setDpiScale (dpi);
-            // Drive the WHOLE frame tree from the corrected dpi FIRST, then recompute
-            // native bounds, so every frame ends up re-derived at the SAME dpi. Order is
-            // load-bearing: Frame::setDpiScale only ASSIGNS dpi_scale_ (+ redraw); it does
-            // NOT recompute native_bounds_ (frame.h). So a frame's native only updates when
-            // something later calls setBounds/setNativeBounds on it. app_->setDpiScale here
-            // stamps dpi onto app_, RsEditor AND its children; the explicit editor writes
-            // below then recompute their native at that dpi.
-            app_->setDpiScale (dpi);
-            app_->setNativeBounds (0, 0, physW, physH);
-            if (win) app_->setCanvasDetails();
-
-            // Fill the ACTUAL render surface (physW x physH == canvas == drawable), NOT the
-            // fixed design rect. The host (Logic's AU window) does NOT honour our aspect
-            // hint on resize — clap-wrapper's AU `[NSView setFrame:] -> set_size` bypasses
-            // adjust_size — and it can even force a size BELOW our 471x329 minimum (measured
-            // 442x327pt on an M1 Air). We treat that physical size as authoritative and paint
-            // it edge to edge rather than leave an uninitialised (magenta) overhang.
-            //
-            // WHY setNativeBounds, not setBounds(physW/dpi): pin the NATIVE to physW x physH
-            // EXACTLY (setBounds derives native = round(logical*dpi), which drifts under an
-            // off-aspect dpi; the earlier version could settle the editor at design*dpi^2 —
-            // a SECOND scale state below the children's design*dpi^1 — leaving the doubled
-            // text + magenta seen in the report). setNativeBounds fixes the native and lets
-            // setBounds derive the logical (physW/dpi x physH/dpi; the height is exactly the
-            // design 747, the width is the design 1069 only when on-aspect). RsEditor::resized
-            // then re-lays the children in that plane at the SAME single dpi (k() = height/747
-            // = 1). Belt-and-braces: stamp the editor subtree dpi again so children cannot be
-            // left at a stale dpi before their resized() layout runs.
-            editor_->setDpiScale (dpi);
-            editor_->setNativeBounds (0, 0, physW, physH);
-            // Tell the editor the current zoom so the resize grip converts its design-
-            // space drag into window units.
-            editor_->setWindowScale (static_cast<float> (hostFacingWidth()) / static_cast<float> (kDesignW));
-            // Re-raster the ENTIRE subtree: a dpi change moves every child, and visage's
-            // dirty-region cache would otherwise keep the previous size's raster for any
-            // frame we did not explicitly redraw (the doubled-text artefact). redrawAll()
-            // invalidates the editor and all descendants so the next frame is drawn clean.
-            editor_->redrawAll();
-            inScaleSync_ = false;
-        }
-
-        // Largest window size (WINDOW UNITS: logical pt on macOS, physical px elsewhere)
-        // that fits the CURRENT display's usable area, or false / {0,0} when it cannot be
-        // determined (e.g. before the window is attached) — callers then fall back to the
-        // static cap only. Source: visage's Window::maxWindowDimensions(), which returns
-        // the screen work area minus the host window border in PHYSICAL px on every
-        // platform. We convert to window units with the live backing ratio: on macOS
-        // physW == hostFacingWidth * backingScale, so (hostFacingWidth / physW) == 1 /
-        // backingScale; on Windows/X11 window units ARE physical px and hostFacingWidth ==
-        // physW, so the ratio is exactly 1. A conservative host-chrome margin is then
-        // subtracted: visage cannot hand us the embedded view's on-screen position, so we
-        // cannot compute the exact bottom-right inset; instead we reserve a fixed margin
-        // (~a Logic AU title bar + safety gap) so the window and its resize grip stay on
-        // screen. The aspect snap consumes both axes and re-derives the binding one.
-        bool dynamicMaxWindowUnits (double& maxW, double& maxH) const
-        {
-            maxW = 0.0; maxH = 0.0;
-            if (app_ == nullptr) return false;
-            visage::Window* win = app_->window();
-            if (win == nullptr) return false;
-            const int physW = win->clientWidth();
-            const int hostW = hostFacingWidth();
-            if (physW <= 0 || hostW <= 0) return false;
-            const visage::IPoint maxPhys = win->maxWindowDimensions(); // physical px, work area
-            if (maxPhys.x <= 0 || maxPhys.y <= 0) return false;
-
-            const double toWindowUnits = static_cast<double> (hostW) / static_cast<double> (physW);
-            // Reserve headroom for host plugin-window chrome (title bar / toolbar) that the
-            // screen work area does not exclude, so the window + grip stay fully on-screen.
-            constexpr double kHostChromeMargin = 80.0; // window units; conservative
-            maxW = static_cast<double> (maxPhys.x) * toWindowUnits - kHostChromeMargin;
-            maxH = static_cast<double> (maxPhys.y) * toWindowUnits - kHostChromeMargin;
-            if (maxW <= 0.0 || maxH <= 0.0) { maxW = 0.0; maxH = 0.0; return false; }
-            return true;
-        }
-
-        void fetchHostExts()
-        {
-            if (host_ == nullptr) return;
-            if (hostGui_ == nullptr)
-                hostGui_ = static_cast<const clap_host_gui_t*> (host_->get_extension (host_, CLAP_EXT_GUI));
-            if (hostParams_ == nullptr)
-                hostParams_ = static_cast<const clap_host_params_t*> (host_->get_extension (host_, CLAP_EXT_PARAMS));
-            if (hostState_ == nullptr)
-                hostState_ = static_cast<const clap_host_state_t*> (host_->get_extension (host_, CLAP_EXT_STATE));
-        }
-
-        // A GUI-driven BULK parameter change (preset load / A-B switch) went into the
-        // store via setFromHost. Tell the host to re-pull the values + text and flag
-        // the state dirty, so the DAW reflects it. This is the correct CLAP idiom for
-        // a bulk change: rescan(VALUES) updates the host WITHOUT recording an
-        // automation point per parameter (which an A/B flip must not do). Individual
-        // knob edits take the other path — setFromUi -> the shell relays them to the
-        // host as CLAP param/gesture output events (recorded automation).
-        void notifyHostEdited()
-        {
-            fetchHostExts();
-            if (hostParams_ != nullptr && hostParams_->rescan != nullptr)
-                hostParams_->rescan (host_, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
-            if (hostState_ != nullptr && hostState_->mark_dirty != nullptr)
-                hostState_->mark_dirty (host_);
-        }
-
-        factory_params::ParamStore& store_;
-        const clap_host_t*                  host_       = nullptr;
-        const clap_host_gui_t*              hostGui_    = nullptr;
-        const clap_host_params_t*           hostParams_ = nullptr;
-        const clap_host_state_t*            hostState_  = nullptr;
-
-        rs_ui::RsTheme         theme_;   // owned; the editor holds a const ref
-        rs_ui::RsFeedFromCore  feed_;    // real feed over the shell's RsCore
-        SessionPresetModel     presets_; // real, over PresetSession
-        rs_ui::AbCompareModel  ab_;      // real A/B: params + program index (RsAbState.h)
-
-        std::unique_ptr<visage::ApplicationWindow> app_;
-        std::unique_ptr<rs_ui::RsEditor>           editor_;
-        std::uint32_t curW_ = static_cast<std::uint32_t> (kDefaultW);
-        std::uint32_t curH_ = static_cast<std::uint32_t> (kDefaultH);
-        bool          inScaleSync_ = false; // synchronous re-entrancy guard for syncWindowScale()
-        bool          inSetSize_   = false; // origin guard: suppress request_resize echo during a host setSize
+        std::unique_ptr<rs_ui::RsEditor> editor_;
     };
 } // namespace
 

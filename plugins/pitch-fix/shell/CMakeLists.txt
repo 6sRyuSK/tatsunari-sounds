@@ -59,8 +59,9 @@ if(FACTORY_PF_CLAP_GUI)
 
   target_include_directories(pitch-fix-impl PRIVATE ${PF_UI_DIR})
 
-  # factory_ui_visage brings visage + the params/core includes transitively.
-  target_link_libraries(pitch-fix-impl PUBLIC factory_ui_visage)
+  # factory_ui_visage_clap_host brings the shared Visage IClapEditor host base +
+  # factory_ui_visage (visage + params/core includes) + factory_shell + clap.
+  target_link_libraries(pitch-fix-impl PUBLIC factory_ui_visage_clap_host)
 
   target_compile_definitions(pitch-fix-impl PRIVATE FACTORY_PF_CLAP_GUI=1)
 

@@ -142,6 +142,23 @@ target_link_libraries(factory_ui_visage PUBLIC
   factory_ui_visage_fonts
 )
 
+# --- CLAP editor host (native clap-first shells only) -------------------------
+# The Visage-backed factory_shell::IClapEditor base + the fixed/resizable derivations
+# every clap-first plugin's *ClapEditorImpl inherits (ClapEditorHost.{h,cpp}). Kept in a
+# SEPARATE target (NOT folded into factory_ui_visage) so the WASM gallery (tools/ui-dev)
+# and the headless theme/spectrum tests never acquire a CLAP / factory_shell dependency.
+# Only materialises inside the clap-first assembly (factory_shell + clap present).
+if(TARGET factory_shell AND TARGET clap AND NOT EMSCRIPTEN)
+  add_library(factory_ui_visage_clap_host STATIC
+    src/ClapEditorHost.cpp)
+  target_link_libraries(factory_ui_visage_clap_host PUBLIC
+    factory_ui_visage
+    factory_shell
+    clap)
+  target_compile_features(factory_ui_visage_clap_host PUBLIC cxx_std_17)
+  set_target_properties(factory_ui_visage_clap_host PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # --- host-side theme unit test (native only) ----------------------------------
 # The Theme model + JSON parser are visage-free and JUCE-free, so they can be
 # checked with a plain host compiler. Guarded on NOT EMSCRIPTEN so it never joins
