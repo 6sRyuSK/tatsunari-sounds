@@ -95,8 +95,8 @@ namespace deq_core
             currentSampleRate_.store (sampleRate, std::memory_order_relaxed);
             for (auto& band : bands_)
                 band.prepare (sampleRate);
-            ringPre_.fill (0.0f);
-            ringPost_.fill (0.0f);
+            for (auto& a : ringPre_)  a.store (0.0f, std::memory_order_relaxed);
+            for (auto& a : ringPost_) a.store (0.0f, std::memory_order_relaxed);
             ringWrite_.store (0, std::memory_order_relaxed);
 
             for (int b = 0; b < kNumBands; ++b)
@@ -208,7 +208,8 @@ namespace deq_core
                     double l = L[i];
                     double r = (R != nullptr) ? R[i] : l;
 
-                    ringPre_[(size_t) (w & (std::uint64_t) kRingMask)] = (float) (0.5 * (l + r)); // pre-EQ
+                    ringPre_[(size_t) (w & (std::uint64_t) kRingMask)]
+                        .store ((float) (0.5 * (l + r)), std::memory_order_relaxed); // pre-EQ
 
                     if (soloBand >= 0)
                         bands_[(size_t) soloBand].processListen (l, r); // band-pass of the dry input
@@ -216,7 +217,8 @@ namespace deq_core
                         for (int idx = 0; idx < numActiveBands; ++idx)
                             bands_[(size_t) activeBands[(size_t) idx]].processStereo (l, r);
 
-                    ringPost_[(size_t) (w & (std::uint64_t) kRingMask)] = (float) (0.5 * (l + r)); // post-EQ
+                    ringPost_[(size_t) (w & (std::uint64_t) kRingMask)]
+                        .store ((float) (0.5 * (l + r)), std::memory_order_relaxed); // post-EQ
                     ++w;
 
                     L[i] = (float) l;
@@ -232,16 +234,48 @@ namespace deq_core
                                                std::memory_order_relaxed);
         }
 
+        // [audio-thread] Clear the per-band filter / detector / envelope state on a host
+        // transport discontinuity (clap_plugin.reset — seek / loop / relocate), so the
+        // previous section's biquad ringing + dynamics detection cannot bleed into the new
+        // position. RT-safe: DynamicEqBand::reset() only clears in-place state (no
+        // allocation, no lock); latency is unchanged. The smoothers hold PARAMETER values
+        // (not audio state) and are left as-is; the display rings are cosmetic and untouched.
+        // The shell wires this through DeqClapPolicy::reset (detected by PolicyHasReset).
+        void reset() noexcept
+        {
+            for (auto& band : bands_)
+                band.reset();
+        }
+
         // --- published read-outs (mirror the processor's published semantics) ----
-        // Copy the latest `num` analyzer samples (mono) into dest. `post` selects
-        // the post-EQ ring instead of the pre-EQ input (mirrors copyAnalyzerSamples
-        // l.295-301). GUI thread; lock-free.
+        // Copy the latest `num` analyzer samples (mono) into dest. `post` selects the
+        // post-EQ ring instead of the pre-EQ input (mirrors copyAnalyzerSamples l.295-301).
+        // GUI thread; lock-free. Uses ringWrite_ as a seqlock generation: read the window,
+        // then confirm the writer has not advanced far enough to have wrapped over any slot
+        // in the window; if it has (num close to the ring size, or a GUI stall), retry a few
+        // times, so the returned window is a CONSISTENT snapshot rather than a torn mix of
+        // old + new samples. Element reads are relaxed atomic loads (no data race). Absent a
+        // concurrent writer (the equiv test's single-threaded path) it returns on the first
+        // pass, byte-identical to the plain-ring read.
         void copyAnalyzerSamples (float* dest, int num, bool post) const noexcept
         {
-            const std::uint64_t w = ringWrite_.load (std::memory_order_acquire);
             const auto& ring = post ? ringPost_ : ringPre_;
-            for (int i = 0; i < num; ++i)
-                dest[i] = ring[(size_t) ((w - (std::uint64_t) num + (std::uint64_t) i) & (std::uint64_t) kRingMask)];
+            const std::uint64_t safe = (num < kRingSize) ? (std::uint64_t) (kRingSize - num) : 0;
+            for (int attempt = 0; attempt < 4; ++attempt)
+            {
+                const std::uint64_t w1 = ringWrite_.load (std::memory_order_acquire);
+                for (int i = 0; i < num; ++i)
+                    dest[i] = ring[(size_t) ((w1 - (std::uint64_t) num + (std::uint64_t) i) & (std::uint64_t) kRingMask)]
+                                  .load (std::memory_order_relaxed);
+                const std::uint64_t w2 = ringWrite_.load (std::memory_order_acquire);
+                // The window is [w1-num, w1); the writer only writes positions >= w1 during
+                // the copy, so it touches the window ONLY if it advanced a full lap past the
+                // oldest slot (w2 - w1 > kRingSize - num). Otherwise the snapshot is consistent.
+                if (w2 - w1 <= safe)
+                    return;
+            }
+            // Capped: dest holds the last (atomically well-defined) pass — no UB, at worst a
+            // one-frame display tear when num ~ ring size under continuous audio.
         }
 
         // Per-band effective gain (dB) including the live dynamic offset. Lock-free;
@@ -263,12 +297,21 @@ namespace deq_core
         // identically.
         std::array<factory_core::LinearRamp<double>, kNumBands> freqS_, gainS_, qS_;
 
-        // Analyzer rings (single producer: the process thread).
-        std::array<float, kRingSize> ringPre_ {};   // pre-EQ (input)
-        std::array<float, kRingSize> ringPost_ {};  // post-EQ (output)
+        // Analyzer rings (single producer: the process thread; single consumer: the
+        // editor). Elements are std::atomic<float> (lock-free on every real target) so a
+        // GUI read concurrent with an audio-thread write of the same slot is a WELL-DEFINED
+        // relaxed atomic access, not a C++ data race / UB — the shipping JUCE processor's
+        // plain-float ring left this technically racy (a review flag on the port). Relaxed
+        // ordering suffices: the value is display-only and copyAnalyzerSamples establishes a
+        // CONSISTENT window via the ringWrite_ generation (see there). Relaxed atomic
+        // store/load compiles to a plain load/store, so this is byte-identical to the plain
+        // ring single-threaded (the equiv gate holds) and adds no RT cost.
+        std::array<std::atomic<float>, kRingSize> ringPre_ {};   // pre-EQ (input)
+        std::array<std::atomic<float>, kRingSize> ringPost_ {};  // post-EQ (output)
         // Monotonic sample counter, masked to index the ring. Unsigned + 64-bit so
         // the increment is well-defined wrapping and never wraps in a realistic run
-        // (mirrors PluginProcessor.h l.114-122).
+        // (mirrors PluginProcessor.h l.114-122). Doubles as the seqlock generation the
+        // reader uses to detect (and retry past) a wrap-overwrite of its window.
         std::atomic<std::uint64_t> ringWrite_ { 0 };
 
         // Live per-band effective gain (dB) for the editor's animated display.

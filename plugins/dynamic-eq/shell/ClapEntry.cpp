@@ -189,6 +189,12 @@ namespace
         static std::uint32_t latencySamples (const Core&) { return 0u; }
         static std::uint32_t primeFrames() { return 0u; }
 
+        // Optional shell reset hook (detected by PolicyHasReset): on a host transport
+        // discontinuity the shell clears the core's per-band biquad / dynamics state in
+        // place (no realloc, no latency change), so ringing / detection from the previous
+        // section does not bleed into the new position.
+        static void reset (Core& core) { core.reset(); }
+
 #if FACTORY_DEQ_CLAP_GUI
         // The presence of kHasEditor makes the generic shell expose CLAP_EXT_GUI
         // (+ Linux posix-fd); makeEditor builds the Visage editor over the shell's live
