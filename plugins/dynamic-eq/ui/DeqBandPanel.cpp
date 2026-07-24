@@ -2,10 +2,13 @@
 // DeqBandPanel.cpp — the Visage port of the JUCE BandControlPanel (see DeqBandPanel.h).
 //
 #include "DeqBandPanel.h"
+#include "DeqIcons.h"
 
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Icons.h"
+
+#include "factory_core/Filters.h"
 
 #include <cmath>
 #include <string>
@@ -48,11 +51,16 @@ namespace deq_ui
         listen_->setCaption ("Listen");
         dyn_->setCaption ("Dynamics");
 
-        // Value-only combo boxes (empty caption -> value + caret, no icon) to match the
-        // JUCE ComboBoxes; the glyph is unused in combo mode.
-        type_  = std::make_unique<ValueSetting> (store_, ix_.type,  theme_, icons::caret(), "");
-        slope_ = std::make_unique<ValueSetting> (store_, ix_.slope, theme_, icons::caret(), "");
-        chan_  = std::make_unique<ValueSetting> (store_, ix_.chan,  theme_, icons::caret(), "");
+        // Value-only combo boxes (empty caption -> choice + caret, no leading icon) to
+        // match the JUCE ComboBoxes; the ctor glyph is unused in combo mode.
+        type_  = std::make_unique<ValueSetting> (store_, ix_.type,  theme_, factory_ui_visage::icons::caret(), "");
+        slope_ = std::make_unique<ValueSetting> (store_, ix_.slope, theme_, factory_ui_visage::icons::caret(), "");
+        chan_  = std::make_unique<ValueSetting> (store_, ix_.chan,  theme_, factory_ui_visage::icons::caret(), "");
+
+        // Band type reads as its filter shape (Bell / shelves / HP / LP) rather than
+        // text; the slope combo enables only for HP/LP cut bands.
+        type_->setChoiceIcons (deq_ui::icons::bandTypeIcons());
+        type_->onChange = [this] { updateTypeDependent(); };
 
         // JUCE-matched dial: a small name row (top) + a fixed-diameter dial + a value row
         // (bottom), with a bounds inset so the dial does not swell to fill a wide cell (so
@@ -82,6 +90,8 @@ namespace deq_ui
                                   (visage::Frame*) rng_.get(), (visage::Frame*) atk_.get(),
                                   (visage::Frame*) rel_.get(), (visage::Frame*) knee_.get() })
             addChild (*f);
+
+        updateTypeDependent();
     }
 
     void DeqBandPanel::setDropdownRequest (factory_ui_visage::DropdownRequest req)
@@ -97,6 +107,7 @@ namespace deq_ui
         band_ = band;
         ix_ = indicesFor (band);
         rebind();
+        updateTypeDependent();
         redraw();
     }
 
@@ -110,6 +121,16 @@ namespace deq_ui
                                   (visage::Frame*) rng_.get(), (visage::Frame*) atk_.get(),
                                   (visage::Frame*) rel_.get(), (visage::Frame*) knee_.get() })
             f->redraw();
+
+        updateTypeDependent();
+    }
+
+    void DeqBandPanel::updateTypeDependent()
+    {
+        const int t = (int) store_.value (ix_.type);
+        const bool cut = (t == (int) factory_core::BandType::HighPass
+                          || t == (int) factory_core::BandType::LowPass);
+        slope_->setEnabled (cut);
     }
 
     void DeqBandPanel::rebind()
@@ -165,9 +186,11 @@ namespace deq_ui
         const float rightW = w - leftW - gap;
 
         // ---- row 1: title (left, drawn in draw) + Listen/Bypass pills (right) | Dynamics --
+        // The pills are pill(≈34px) + gap + caption, so give each cell enough width for
+        // the full "Listen"/"Bypass" caption (they were clipping at 70/76px).
         const float row1Y = pad;
         const float row1H = 24.0f;
-        const float bypassW = 76.0f, listenW = 70.0f;
+        const float bypassW = 88.0f, listenW = 88.0f;
         bypass_->setBounds (x + leftW - bypassW, row1Y, bypassW, row1H);
         listen_->setBounds (x + leftW - bypassW - 6.0f - listenW, row1Y, listenW, row1H);
         dyn_->setBounds (rightX, row1Y, 110.0f, row1H);

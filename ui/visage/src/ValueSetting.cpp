@@ -39,17 +39,30 @@ namespace factory_ui_visage
         const std::string value =
             idx < static_cast<int> (choices.size()) ? choices[static_cast<std::size_t> (idx)] : std::string();
 
-        // COMBO mode (empty caption): value (left) + a down-caret (right), no icon — a
-        // plain combo box like the JUCE ComboBox, so the value never collides with a
-        // caption in a narrow cell. LABELLED mode (non-empty caption): icon + caption +
-        // value (the RS / pitch-fix settings-row look).
+        // COMBO mode (empty caption): the choice (left) + a down-caret (right), no
+        // leading icon — a plain combo box like the JUCE ComboBox, so the value never
+        // collides with a caption in a narrow cell. The choice renders either as its
+        // filter-shape glyph (setChoiceIcons) or as text, in a light regular weight so
+        // it does not shout next to the knobs. Dimmed when disabled. LABELLED mode
+        // (non-empty caption): icon + caption + value (the RS / pitch-fix row look).
         if (caption_.empty())
         {
             const float caret = 12.0f;
-            const float valX = pad;
-            const float valW = std::max (0.0f, w - valX - pad - caret - 4.0f);
-            canvas.setColor (visage::Color (p.text));
-            canvas.text (value, boldFont (theme_.font.callout), visage::Font::kLeft, valX, 0.0f, valW, h);
+            const std::uint32_t fg = enabled_ ? p.text : p.textDim;
+            if (! choiceIcons_.empty() && idx < static_cast<int> (choiceIcons_.size()))
+            {
+                const float gsz = std::min (h - 6.0f, 20.0f);
+                canvas.setColor (visage::Color (fg));
+                icons::paintGlyph (canvas, choiceIcons_[static_cast<std::size_t> (idx)],
+                                   pad, (h - gsz) * 0.5f, gsz, gsz);
+            }
+            else
+            {
+                const float valX = pad;
+                const float valW = std::max (0.0f, w - valX - pad - caret - 4.0f);
+                canvas.setColor (visage::Color (fg));
+                canvas.text (value, regularFont (theme_.font.label), visage::Font::kLeft, valX, 0.0f, valW, h);
+            }
             canvas.setColor (visage::Color (p.textDim));
             icons::paintGlyph (canvas, icons::caret(), w - pad - caret, (h - caret) * 0.5f, caret, caret);
             return;
@@ -85,11 +98,13 @@ namespace factory_ui_visage
                          {
                              store_.setFromUiGestured (index_, static_cast<float> (chosen));
                              redraw();
+                             if (onChange) onChange();
                          });
     }
 
     void ValueSetting::mouseDown (const visage::MouseEvent&)
     {
+        if (! enabled_) return;
         openMenu();
     }
 }

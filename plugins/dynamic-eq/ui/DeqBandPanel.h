@@ -43,6 +43,9 @@ namespace deq_ui
         struct Ix { int byp, lsn, dyn, type, slope, chan, freq, gain, q, thr, rng, atk, rel, knee; };
         Ix indicesFor (int band) const;
         void rebind();
+        // Slope (dB/oct) only applies to HP/LP cut bands; dim + disable it otherwise
+        // (mirrors the JUCE BandControlPanel::updateSlopeEnablement).
+        void updateTypeDependent();
 
         const factory_ui_visage::Theme& theme_;
         factory_params::ParamStore&     store_;
