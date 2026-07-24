@@ -215,13 +215,17 @@ namespace deq_ui
         dyn_->setBounds (rightX, row1Y, 110.0f, row1H);
 
         // ---- row 2: type / slope / channel combos (left half) ------------------
+        // Type is widened (it carries an icon + text); slope/channel take the rest.
         const float row2Y = row1Y + row1H + 6.0f;
         const float row2H = 24.0f;
         const float cellGap = 5.0f;
-        const float cw = (leftW - 2.0f * cellGap) / 3.0f;
-        type_->setBounds  (x,                             row2Y, cw, row2H);
-        slope_->setBounds (x + cw + cellGap,              row2Y, cw, row2H);
-        chan_->setBounds  (x + 2.0f * (cw + cellGap),     row2Y, cw, row2H);
+        const float usable = leftW - 2.0f * cellGap;
+        const float typeW  = usable * 0.42f;
+        const float slopeW = usable * 0.31f;
+        const float chanW  = std::max (0.0f, usable - typeW - slopeW);
+        type_->setBounds  (x,                                    row2Y, typeW,  row2H);
+        slope_->setBounds (x + typeW + cellGap,                 row2Y, slopeW, row2H);
+        chan_->setBounds  (x + typeW + slopeW + 2.0f * cellGap, row2Y, chanW,  row2H);
 
         // ---- knob row -----------------------------------------------------------
         const float knobY = row2Y + row2H + 8.0f;

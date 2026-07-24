@@ -46,23 +46,23 @@ namespace deq_ui::icons
         return g;
     }
 
-    inline Glyph highPass() // rolls up from the low-frequency corner to a high plateau
+    inline Glyph highPass() // cut: the low side falls all the way to the floor, then a high plateau
     {
         Glyph g; g.box = 16.0f; g.stroke = 2.0f;
-        g.path.moveTo (2.0f, 12.5f);
-        g.path.lineTo (4.5f, 12.5f);
-        g.path.bezierTo (6.5f, 12.5f, 6.5f, 4.5f, 8.5f, 4.5f);
-        g.path.lineTo (14.0f, 4.5f);
+        g.path.moveTo (2.0f, 14.0f);
+        g.path.lineTo (4.0f, 14.0f);
+        g.path.bezierTo (6.0f, 14.0f, 7.0f, 4.0f, 9.0f, 4.0f);
+        g.path.lineTo (14.0f, 4.0f);
         return g;
     }
 
-    inline Glyph lowPass() // high plateau rolling off toward the high-frequency corner
+    inline Glyph lowPass() // cut: a high plateau, then the high side falls all the way to the floor
     {
         Glyph g; g.box = 16.0f; g.stroke = 2.0f;
-        g.path.moveTo (2.0f, 4.5f);
-        g.path.lineTo (7.5f, 4.5f);
-        g.path.bezierTo (9.5f, 4.5f, 9.5f, 12.5f, 11.5f, 12.5f);
-        g.path.lineTo (14.0f, 12.5f);
+        g.path.moveTo (2.0f, 4.0f);
+        g.path.lineTo (7.0f, 4.0f);
+        g.path.bezierTo (9.0f, 4.0f, 10.0f, 14.0f, 12.0f, 14.0f);
+        g.path.lineTo (14.0f, 14.0f);
         return g;
     }
 
