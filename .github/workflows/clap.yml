@@ -1,15 +1,16 @@
-# Linux clap-validator gate for the resonance-suppressor CLAP (3.0.0 cutover).
+# Linux clap-validator gate for the clap-first plugins (RS since the 3.0.0
+# cutover; pitch-fix since birth).
 #
-# Post-cutover, RS ships clap-first and ci.yml ALREADY builds it on macOS +
-# Windows and runs pluginval (strictness 5) on the wrapper VST3 + AU there. What
-# ci.yml does NOT run is clap-validator, so this workflow keeps that ONE unique
-# signal: it builds the RS clap-first assembly on Linux (the DSP core + shell +
-# params/preset/state model are OS-agnostic) and validates the native .clap with
+# ci.yml ALREADY builds the clap-first plugins on macOS + Windows and runs
+# pluginval (strictness 5) on the wrapper VST3 + AU there. What ci.yml does NOT
+# run is clap-validator, so this workflow keeps that ONE unique signal: it
+# builds each clap-first assembly on Linux (the DSP core + shell + params/
+# preset/state model are OS-agnostic) and validates the native .clap with
 # clap-validator. The Linux pluginval-on-the-wrapper-VST3 leg was dropped as
 # redundant with ci.yml's mac/Windows pluginval.
 #
-# No FACTORY_RS_CLAP flag any more — a default configure builds RS clap-first
-# whenever RS is in the plugin set (here -DFACTORY_PLUGINS=resonance-suppressor).
+# A default configure builds a plugin clap-first whenever it is in the plugin
+# set (here -DFACTORY_PLUGINS=<slug> per matrix leg).
 #
 # Path-scoped so it only runs when something that can affect the CLAP surface
 # changes; ci.yml remains the primary gate (build + CTest matrix + pluginval).
@@ -26,6 +27,11 @@ on:
       - 'plugins/*/shell/**'
       - 'plugins/*/RsCore.h'
       - 'plugins/*/Source/Params.h'
+      - 'plugins/*/PfCore.h'
+      - 'plugins/*/PfParams.h'
+      - 'plugins/*/PfPresets.h'
+      - 'plugins/*/ui/**'
+      - 'ui/visage/**'
       - 'cmake/**'
       - '.github/workflows/clap.yml'
   pull_request:
@@ -37,18 +43,27 @@ on:
       - 'plugins/*/shell/**'
       - 'plugins/*/RsCore.h'
       - 'plugins/*/Source/Params.h'
+      - 'plugins/*/PfCore.h'
+      - 'plugins/*/PfParams.h'
+      - 'plugins/*/PfPresets.h'
+      - 'plugins/*/ui/**'
+      - 'ui/visage/**'
       - 'cmake/**'
       - '.github/workflows/clap.yml'
   workflow_dispatch:
 
 jobs:
   linux-clap:
-    name: RS CLAP shell (Linux, clap-validator)
+    name: ${{ matrix.slug }} CLAP shell (Linux, clap-validator)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slug: [resonance-suppressor, pitch-fix]
     env:
       GH_TOKEN: ${{ github.token }}   # for `gh release download`
-      SLUG: resonance-suppressor
-      ASSETS: build-clap/resonance-suppressor_assets
+      SLUG: ${{ matrix.slug }}
+      ASSETS: build-clap/${{ matrix.slug }}_assets
     steps:
       - uses: actions/checkout@v4
 

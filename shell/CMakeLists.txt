@@ -1,6 +1,7 @@
 # shell/ — factory_clap_shell: the reusable, framework-free CLAP glue over the
-# CLAP C API. Reached ONLY under FACTORY_RS_CLAP (the root add_subdirectory(shell)
-# is gated), so nothing here is configured by the default/shipping build.
+# CLAP C API. Reached ONLY when the configured plugin set contains at least one
+# clap-first plugin (one with a shell/CMakeLists.txt — the root gates the
+# add_subdirectory), so a pure-JUCE subset configure fetches nothing CLAP-related.
 
 # Bring in the make_clapfirst wrapper macro; including it also FetchContent's the
 # pinned CLAP + VST3 + clap-wrapper SDKs (guarded to run once).

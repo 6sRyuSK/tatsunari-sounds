@@ -50,9 +50,12 @@ option(FACTORY_RS_CLAP_GUI
   "Embed the Visage RS editor into the RS CLAP (clap.gui); pulls native visage" ON)
 
 if(FACTORY_RS_CLAP_GUI)
-  # The shared Visage design-system library (native config), added once here.
-  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../ui/visage
-                   ${CMAKE_BINARY_DIR}/factory_ui_visage)
+  # The shared Visage design-system library (native config) — added once per
+  # build tree; another clap-first plugin's shell may already have added it.
+  if(NOT TARGET factory_ui_visage)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../ui/visage
+                     ${CMAKE_BINARY_DIR}/factory_ui_visage)
+  endif()
 
   set(RS_UI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../ui)
 

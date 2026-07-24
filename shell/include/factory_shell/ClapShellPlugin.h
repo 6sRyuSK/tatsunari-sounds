@@ -69,10 +69,24 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace factory_shell
 {
+    // Detect an OPTIONAL Policy reset hook: `static void Policy::reset(Core&)`. A
+    // Policy that supplies it (e.g. pitch-fix, whose core carries long delay/OLA
+    // state that must not bleed across a transport seek) gets its core reset in
+    // clap.reset; a Policy without it (RS) resolves to false and clap.reset stays
+    // the no-op it was — no behaviour change for existing plugins.
+    template <class P, class = void>
+    struct PolicyHasReset : std::false_type {};
+
+    template <class P>
+    struct PolicyHasReset<P, std::void_t<decltype (P::reset (std::declval<typename P::Core&>()))>>
+        : std::true_type {};
+
     template <class Policy>
     class ClapShellPlugin
     {
@@ -171,12 +185,16 @@ namespace factory_shell
         static bool clapStartProcessing (const clap_plugin_t*) { return true; }
         static void clapStopProcessing  (const clap_plugin_t*) {}
 
-        static void clapReset (const clap_plugin_t*)
+        static void clapReset (const clap_plugin_t* p)
         {
-            // [audio-thread] — must not allocate. The DSP cores expose no cheap,
-            // non-reallocating reset yet, so (like the S2 spike) this is a no-op; a
-            // reset() that clears the OLA/detector rings in place is a later
-            // refinement. Latency does not change on reset, so nothing to re-latch.
+            // [audio-thread] — must not allocate. A Policy MAY supply a
+            // non-reallocating `reset(Core&)` (detected at compile time) to clear
+            // its core's audio/tracking state on a transport discontinuity; pitch-fix
+            // does (long dry delay + OLA accumulator + detector history would
+            // otherwise bleed across a seek/loop). A Policy without it keeps the old
+            // no-op. Latency does not change on reset, so nothing to re-latch.
+            if constexpr (PolicyHasReset<Policy>::value)
+                Policy::reset (self (p)->core);
         }
 
         // ─────────────────────────── audio ports ────────────────────────────
