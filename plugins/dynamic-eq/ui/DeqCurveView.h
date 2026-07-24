@@ -85,6 +85,7 @@ namespace deq_ui
 
         // --- drawing layers ---
         void computeLayout();
+        void updateSpectra();   // pull feed samples + advance the models (throttled to ~30 Hz)
         void drawGrid (visage::Canvas&);
         void drawSpectrum (visage::Canvas&, int channel, bool post, std::uint32_t colour);
         void drawBandsAndResponse (visage::Canvas&);
@@ -123,5 +124,10 @@ namespace deq_ui
         factory_ui_visage::SpectrumModel modelPre_, modelPost_;
         std::vector<float> scratch_; // FFT input scratch, refilled from the feed each frame
         double lastSr_ = 0.0;
+        // Analyser advance clock: the models are pulled + smoothed at ~30 Hz (matching the
+        // JUCE editor's startTimerHz(30)), NOT at the paint rate — otherwise the trace moves
+        // twice as fast (once per vsync). `-1` = not yet advanced. Uses Canvas::time().
+        double lastAdvance_ = -1.0;
+        static constexpr double kAnalyzerFps = 30.0;
     };
 } // namespace deq_ui

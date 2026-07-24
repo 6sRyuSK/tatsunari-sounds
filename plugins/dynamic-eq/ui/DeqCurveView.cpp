@@ -125,7 +125,18 @@ namespace deq_ui
     // ── draw ───────────────────────────────────────────────────────────────────
     void DeqCurveView::draw (visage::Canvas& canvas)
     {
-        if (! frozen_ && onTick) onTick();
+        // Advance the analyser at ~30 Hz (matching the JUCE editor), decoupled from the
+        // paint rate: pull fresh samples + smooth only when a 1/30 s tick is due, so the
+        // trace does not move at the (double-speed) vsync rate.
+        const double t = canvas.time();
+        const bool advance = ! frozen_ && (lastAdvance_ < 0.0 || (t - lastAdvance_) >= (1.0 / kAnalyzerFps));
+        if (advance)
+        {
+            lastAdvance_ = t;
+            if (onTick) onTick();
+            updateSpectra();
+        }
+
         computeLayout();
 
         const auto& p = theme_.palette;
@@ -177,22 +188,38 @@ namespace deq_ui
         }
     }
 
-    void DeqCurveView::drawSpectrum (visage::Canvas& canvas, int channel, bool post, std::uint32_t colour)
+    // Pull the latest ring samples into whichever spectra are shown and advance their
+    // smoothing/peak state. Called at the ~30 Hz analyser rate, NOT per paint.
+    void DeqCurveView::updateSpectra()
     {
-        auto& model = post ? modelPost_ : modelPre_;
         const double sr = feed_.sampleRate();
         if (sr <= 0.0) return;
-        if (sr != lastSr_ && channel == 0) { modelPre_.setOrderForSampleRate (sr); modelPost_.setOrderForSampleRate (sr); lastSr_ = sr; }
-        if (model.size() <= 0) model.setOrderForSampleRate (sr);
+        if (sr != lastSr_) { modelPre_.setOrderForSampleRate (sr); modelPost_.setOrderForSampleRate (sr); lastSr_ = sr; }
 
-        const int fftSize = model.size();
-        if (fftSize <= 0) return;
-        scratch_.resize ((size_t) fftSize);
-        feed_.copyAnalyzerSamples (scratch_.data(), fftSize, post);
-        model.writeSamples (scratch_.data(), fftSize);
         factory_ui_visage::SpectrumModel::Options opt;
         opt.tiltDbPerOct = 3.0f; // flatten pink-ish spectra for display
-        model.update (sr, opt);
+
+        auto pump = [&] (factory_ui_visage::SpectrumModel& model, bool post)
+        {
+            if (model.size() <= 0) model.setOrderForSampleRate (sr);
+            const int fftSize = model.size();
+            if (fftSize <= 0) return;
+            scratch_.resize ((size_t) fftSize);
+            feed_.copyAnalyzerSamples (scratch_.data(), fftSize, post);
+            model.writeSamples (scratch_.data(), fftSize);
+            model.update (sr, opt);
+        };
+        if (showPre_)  pump (modelPre_,  false);
+        if (showPost_) pump (modelPost_, true);
+    }
+
+    void DeqCurveView::drawSpectrum (visage::Canvas& canvas, int channel, bool post, std::uint32_t colour)
+    {
+        (void) channel;
+        auto& model = post ? modelPost_ : modelPre_;
+        const double sr = feed_.sampleRate();
+        const int fftSize = model.size();
+        if (sr <= 0.0 || fftSize <= 0) return;
 
         const LogFreqAxis xAxis { plot_.x, plot_.w };
         const VerticalAxis yAxis { plot_.y, plot_.h, kMaxDb, kMinDb };
@@ -438,7 +465,12 @@ namespace deq_ui
 
         const int hit = nodeAt (pos);
 
-        if (e.repeatClickCount() >= 2)
+        // A double-click is EXACTLY the 2nd consecutive click (repeatClickCount() == 2), not
+        // ">= 2": otherwise the very next click after a double-click-add — which visage counts
+        // as click #3 — would re-trigger the add/remove branch and immediately delete the node
+        // the user just created (the reported "add then a click deletes it" bug). Click #3+ and
+        // singles both fall through to the select/drag path below.
+        if (e.repeatClickCount() == 2)
         {
             if (hit >= 0) { setParamGestured (bx_[(size_t) hit].on, 0.0f); hover_ = -1; if (onBandEdited) onBandEdited (hit); redraw(); return; }
             // Double-click empty space -> add a band whose type follows the x position.

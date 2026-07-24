@@ -1,8 +1,10 @@
 #include "factory_ui_visage/ValueSetting.h"
 #include "factory_ui_visage/Chrome.h"
 #include "factory_ui_visage/Fonts.h"
+#include "factory_ui_visage/Icons.h"
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 namespace factory_ui_visage
@@ -31,8 +33,29 @@ namespace factory_ui_visage
         paintCardShell (canvas, 0.0f, 0.0f, w, h, m.cornerRadius,
                         visage::Color (p.panel), visage::Color (p.track));
 
-        // Icon (left), caption (left of the value), value (right, accent).
         const float pad = m.paddingX;
+        const std::vector<std::string>& choices = store_.desc (index_).choices;
+        const int idx = currentIndex();
+        const std::string value =
+            idx < static_cast<int> (choices.size()) ? choices[static_cast<std::size_t> (idx)] : std::string();
+
+        // COMBO mode (empty caption): value (left) + a down-caret (right), no icon — a
+        // plain combo box like the JUCE ComboBox, so the value never collides with a
+        // caption in a narrow cell. LABELLED mode (non-empty caption): icon + caption +
+        // value (the RS / pitch-fix settings-row look).
+        if (caption_.empty())
+        {
+            const float caret = 12.0f;
+            const float valX = pad;
+            const float valW = std::max (0.0f, w - valX - pad - caret - 4.0f);
+            canvas.setColor (visage::Color (p.text));
+            canvas.text (value, boldFont (theme_.font.callout), visage::Font::kLeft, valX, 0.0f, valW, h);
+            canvas.setColor (visage::Color (p.textDim));
+            icons::paintGlyph (canvas, icons::caret(), w - pad - caret, (h - caret) * 0.5f, caret, caret);
+            return;
+        }
+
+        // Icon (left), caption (left of the value), value (right, accent).
         canvas.setColor (visage::Color (p.textSecondary));
         icons::paintGlyph (canvas, glyph_, pad, (h - m.iconSize) * 0.5f, m.iconSize, m.iconSize);
 
@@ -42,11 +65,8 @@ namespace factory_ui_visage
         canvas.text (caption_, boldFont (theme_.font.caption), visage::Font::kLeft,
                      textX, 0.0f, textW, h);
 
-        const std::vector<std::string>& choices = store_.desc (index_).choices;
-        const int idx = currentIndex();
         canvas.setColor (visage::Color (p.accent));
-        canvas.text (idx < static_cast<int> (choices.size()) ? choices[static_cast<std::size_t> (idx)] : std::string(),
-                     boldFont (theme_.font.callout), visage::Font::kRight, textX, 0.0f, textW, h);
+        canvas.text (value, boldFont (theme_.font.callout), visage::Font::kRight, textX, 0.0f, textW, h);
     }
 
     void ValueSetting::openMenu()

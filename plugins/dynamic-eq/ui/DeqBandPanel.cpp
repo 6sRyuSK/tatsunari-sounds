@@ -43,16 +43,26 @@ namespace deq_ui
         bypass_ = std::make_unique<PillToggle> (store_, ix_.byp, theme_);
         listen_ = std::make_unique<PillToggle> (store_, ix_.lsn, theme_);
         dyn_    = std::make_unique<PillToggle> (store_, ix_.dyn, theme_);
+        // Short captions (the param names are "Band N Bypass" etc.).
+        bypass_->setCaption ("Bypass");
+        listen_->setCaption ("Listen");
+        dyn_->setCaption ("Dynamics");
 
-        type_  = std::make_unique<ValueSetting> (store_, ix_.type,  theme_, icons::modeSoft(), "TYPE");
-        slope_ = std::make_unique<ValueSetting> (store_, ix_.slope, theme_, icons::quality(),  "SLOPE");
-        chan_  = std::make_unique<ValueSetting> (store_, ix_.chan,  theme_, icons::channel(),  "CH");
+        // Value-only combo boxes (empty caption -> value + caret, no icon) to match the
+        // JUCE ComboBoxes; the glyph is unused in combo mode.
+        type_  = std::make_unique<ValueSetting> (store_, ix_.type,  theme_, icons::caret(), "");
+        slope_ = std::make_unique<ValueSetting> (store_, ix_.slope, theme_, icons::caret(), "");
+        chan_  = std::make_unique<ValueSetting> (store_, ix_.chan,  theme_, icons::caret(), "");
 
+        // JUCE-matched dial: a small name row (top) + a fixed-diameter dial + a value row
+        // (bottom), with a bounds inset so the dial does not swell to fill a wide cell (so
+        // the left FREQ/GAIN/Q and the right THRESH.. dials stay the same size — the layout
+        // keeps the dial height-limited below the narrowest cell width).
         auto mkKnob = [&] (int idx, const char* name, int decimals)
         {
             auto k = std::make_unique<Knob> (store_, idx, theme_, decimals);
             k->setNameOverride (name);
-            k->setDialProfile (14.0f, 14.0f, 10.0f, 11.0f, 0.0f);
+            k->setDialProfile (16.0f, 18.0f, 11.0f, 12.0f, 6.0f);
             return k;
         };
         freq_ = mkKnob (ix_.freq, "FREQ", 0);
@@ -128,51 +138,57 @@ namespace deq_ui
         const visage::Font titleFont = boldFont (14.0f);
         const std::uint32_t bandCol = theme_.palette.bandColours[(size_t) (band_ % (int) theme_.palette.bandColours.size())];
         canvas.setColor (visage::Color (bandCol));
-        canvas.text ("BAND " + std::to_string (band_ + 1), titleFont, visage::Font::kLeft, 12.0f, 10.0f, 120.0f, 20.0f);
+        canvas.text ("BAND " + std::to_string (band_ + 1), titleFont, visage::Font::kLeft, 10.0f, 8.0f, 110.0f, 24.0f);
 
         if (dividerX_ >= 0.0f)
         {
             canvas.setColor (visage::Color (theme_.palette.track));
-            canvas.segment (dividerX_, 14.0f, dividerX_, height() - 14.0f, 1.0f, false);
+            canvas.segment (dividerX_, 12.0f, dividerX_, height() - 12.0f, 1.0f, false);
         }
     }
 
     void DeqBandPanel::resized()
     {
-        const float pad = 10.0f;
-        const float x = pad, y = pad;
+        // Tightened layout mirroring the JUCE BandControlPanel: the "BAND N" title shares
+        // row 1 with the Listen/Bypass pills (left) and the Dynamics pill (right); row 2 is
+        // the type/slope/channel combos (left); the rest is the knob row (freq/gain/q left,
+        // thresh/range/attack/release/knee right). The dial is height-limited (see the
+        // setDialProfile note) so every knob is the same diameter regardless of cell width.
+        const float pad = 8.0f;
+        const float x = pad;
         const float w = std::max (0.0f, width() - 2.0f * pad);
-        const float h = std::max (0.0f, height() - 2.0f * pad);
 
-        const float leftW = w * 0.45f;
-        const float gap = 14.0f;
+        const float leftW = w * 0.44f;
+        const float gap = 12.0f;
         dividerX_ = x + leftW + gap * 0.5f;
         const float rightX = x + leftW + gap;
         const float rightW = w - leftW - gap;
 
-        // ---- left: EQ ----
-        const float row1Y = y + 26.0f; // below the BAND title
+        // ---- row 1: title (left, drawn in draw) + Listen/Bypass pills (right) | Dynamics --
+        const float row1Y = pad;
         const float row1H = 24.0f;
-        // bypass / listen at the right of row 1.
-        bypass_->setBounds (x + leftW - 84.0f, row1Y, 84.0f, row1H);
-        listen_->setBounds (x + leftW - 84.0f - 4.0f - 76.0f, row1Y, 76.0f, row1H);
+        const float bypassW = 76.0f, listenW = 70.0f;
+        bypass_->setBounds (x + leftW - bypassW, row1Y, bypassW, row1H);
+        listen_->setBounds (x + leftW - bypassW - 6.0f - listenW, row1Y, listenW, row1H);
+        dyn_->setBounds (rightX, row1Y, 110.0f, row1H);
 
+        // ---- row 2: type / slope / channel combos (left half) ------------------
         const float row2Y = row1Y + row1H + 6.0f;
-        const float row2H = 26.0f;
-        const float cw = (leftW - 12.0f) / 3.0f;
-        type_->setBounds (x, row2Y, cw, row2H);
-        slope_->setBounds (x + cw + 6.0f, row2Y, cw, row2H);
-        chan_->setBounds (x + 2.0f * (cw + 6.0f), row2Y, cw, row2H);
+        const float row2H = 24.0f;
+        const float cellGap = 5.0f;
+        const float cw = (leftW - 2.0f * cellGap) / 3.0f;
+        type_->setBounds  (x,                             row2Y, cw, row2H);
+        slope_->setBounds (x + cw + cellGap,              row2Y, cw, row2H);
+        chan_->setBounds  (x + 2.0f * (cw + cellGap),     row2Y, cw, row2H);
 
+        // ---- knob row -----------------------------------------------------------
         const float knobY = row2Y + row2H + 8.0f;
-        const float knobH = std::max (0.0f, y + h - knobY);
+        const float knobH = std::max (0.0f, (float) height() - knobY - pad);
         const float lkw = leftW / 3.0f;
         freq_->setBounds (x,               knobY, lkw, knobH);
         gain_->setBounds (x + lkw,         knobY, lkw, knobH);
         q_->setBounds    (x + 2.0f * lkw,  knobY, lkw, knobH);
 
-        // ---- right: Dynamics ----
-        dyn_->setBounds (rightX, row1Y, 140.0f, row1H);
         const float rkw = rightW / 5.0f;
         thr_->setBounds  (rightX,               knobY, rkw, knobH);
         rng_->setBounds  (rightX + rkw,         knobY, rkw, knobH);
