@@ -30,6 +30,9 @@ on:
       - 'plugins/*/PfCore.h'
       - 'plugins/*/PfParams.h'
       - 'plugins/*/PfPresets.h'
+      - 'plugins/*/DeqCore.h'
+      - 'plugins/*/DeqParams.h'
+      - 'plugins/*/DeqStateMigration.h'
       - 'plugins/*/ui/**'
       - 'ui/visage/**'
       - 'cmake/**'
@@ -46,6 +49,9 @@ on:
       - 'plugins/*/PfCore.h'
       - 'plugins/*/PfParams.h'
       - 'plugins/*/PfPresets.h'
+      - 'plugins/*/DeqCore.h'
+      - 'plugins/*/DeqParams.h'
+      - 'plugins/*/DeqStateMigration.h'
       - 'plugins/*/ui/**'
       - 'ui/visage/**'
       - 'cmake/**'
@@ -59,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slug: [resonance-suppressor, pitch-fix]
+        slug: [resonance-suppressor, pitch-fix, dynamic-eq]
     env:
       GH_TOKEN: ${{ github.token }}   # for `gh release download`
       SLUG: ${{ matrix.slug }}
