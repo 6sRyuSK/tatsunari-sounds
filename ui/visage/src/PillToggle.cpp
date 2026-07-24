@@ -42,5 +42,6 @@ namespace factory_ui_visage
     {
         store_.setFromUiGestured (index_, isOn() ? 0.0f : 1.0f);
         redraw();
+        if (onToggle) onToggle (isOn());
     }
 }

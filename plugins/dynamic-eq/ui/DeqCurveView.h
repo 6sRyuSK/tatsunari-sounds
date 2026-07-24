@@ -120,7 +120,9 @@ namespace deq_ui
         bool frozen_   = false;
 
         // Pre/Post spectra: SpectrumModel is single-channel, so two instances (channel 0
-        // = pre, 1 = post). Rate-adaptive order (fixed order forbidden by CLAUDE.md).
+        // = pre, 1 = post). Rate-adaptive order via DeqCurveView.cpp's analyzerOrder()
+        // (order-13 / 8192-point base to match the old JUCE editor's low-frequency
+        // resolution; scales with the rate — fixed orders forbidden by CLAUDE.md).
         factory_ui_visage::SpectrumModel modelPre_, modelPost_;
         std::vector<float> scratch_; // FFT input scratch, refilled from the feed each frame
         double lastSr_ = 0.0;

@@ -3,6 +3,7 @@
 #include "factory_ui_visage/Theme.h"
 #include "factory_params/ParamStore.h"
 
+#include <functional>
 #include <string>
 #include <utility>
 
@@ -24,6 +25,12 @@ namespace factory_ui_visage
 
         void draw (visage::Canvas& canvas) override;
         void mouseDown (const visage::MouseEvent& e) override;
+
+        // Called after a click commits the new state (mirrors juce::Button::onClick),
+        // with the resulting on/off. Lets a panel react — e.g. an exclusive "Listen"
+        // that clears the other bands when it turns on. Not fired for programmatic
+        // (rebind / host) changes.
+        std::function<void (bool on)> onToggle;
 
         int paramIndex() const { return index_; }
         // Re-point at a different bool parameter (a per-band panel rebinds to the

@@ -10,6 +10,7 @@
 
 #include "factory_core/Filters.h"
 #include "factory_core/Biquad.h"
+#include "factory_core/StftResolution.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +24,17 @@ namespace deq_ui
 
     namespace
     {
+        // Analyser FFT order. Matches the old JUCE editor's 8192-point (order 13)
+        // low-frequency resolution (~5.9 Hz bins) at the 48 kHz reference, and — unlike
+        // the old fixed order — scales one order per octave of sample rate so that bin
+        // width holds through 192 kHz (fixed orders are forbidden by CLAUDE.md). Still
+        // sourced from factory_core::fftOrderForSampleRate, just with a finer base.
+        int analyzerOrder (double sampleRate)
+        {
+            return factory_core::fftOrderForSampleRate (sampleRate, /*baseOrder=*/13,
+                                                        /*refSampleRate=*/48000.0, /*maxOrder=*/15);
+        }
+
         std::string idFor (int band, const char* suffix)
         {
             return "b" + std::to_string (band) + "_" + suffix;
@@ -194,14 +206,14 @@ namespace deq_ui
     {
         const double sr = feed_.sampleRate();
         if (sr <= 0.0) return;
-        if (sr != lastSr_) { modelPre_.setOrderForSampleRate (sr); modelPost_.setOrderForSampleRate (sr); lastSr_ = sr; }
+        if (sr != lastSr_) { const int ord = analyzerOrder (sr); modelPre_.setup (ord); modelPost_.setup (ord); lastSr_ = sr; }
 
         factory_ui_visage::SpectrumModel::Options opt;
         opt.tiltDbPerOct = 3.0f; // flatten pink-ish spectra for display
 
         auto pump = [&] (factory_ui_visage::SpectrumModel& model, bool post)
         {
-            if (model.size() <= 0) model.setOrderForSampleRate (sr);
+            if (model.size() <= 0) model.setup (analyzerOrder (sr));
             const int fftSize = model.size();
             if (fftSize <= 0) return;
             scratch_.resize ((size_t) fftSize);
@@ -223,8 +235,12 @@ namespace deq_ui
 
         const LogFreqAxis xAxis { plot_.x, plot_.w };
         const VerticalAxis yAxis { plot_.y, plot_.h, kMaxDb, kMinDb };
+        const float baselineY = plot_.y + plot_.h;
 
-        visage::Path fill;
+        // Smoothed trace (line) + its filled area to the baseline, plus an independent
+        // peak-hold outline — the JUCE EqCurveComponent drew the peak line separately
+        // from the smoothed fill, and the house SpectrumView keeps all three.
+        visage::Path line, area, peak;
         bool started = false;
         float lastX = plot_.x;
         const int numBins = model.numBins();
@@ -232,20 +248,35 @@ namespace deq_ui
         {
             const float freq = factory_ui_visage::SpectrumModel::binFrequency (bin, sr, fftSize);
             if (freq < 20.0f || freq > 20000.0f) continue;
-            const float x = xAxis.freqToX (freq);
-            const float y = yAxis.toY (model.smoothedDb (bin));
-            if (! started) { fill.moveTo (x, plot_.y + plot_.h); fill.lineTo (x, y); started = true; }
-            else            fill.lineTo (x, y);
+            const float x  = xAxis.freqToX (freq);
+            const float y  = yAxis.toY (model.smoothedDb (bin));
+            const float yp = yAxis.toY (model.peakDb (bin));
+            if (! started)
+            {
+                line.moveTo (x, y);
+                area.moveTo (x, baselineY); area.lineTo (x, y);
+                peak.moveTo (x, yp);
+                started = true;
+            }
+            else
+            {
+                line.lineTo (x, y);
+                area.lineTo (x, y);
+                peak.lineTo (x, yp);
+            }
             lastX = x;
         }
         if (! started) return;
-        visage::Path area = fill;
-        area.lineTo (lastX, plot_.y + plot_.h);
+        area.lineTo (lastX, baselineY);
         area.close();
-        canvas.setColor (withAlpha (colour, 0.28f));
+
+        canvas.setColor (visage::Brush::vertical (visage::Color (withAlpha (colour, 0.28f)),
+                                                  visage::Color (withAlpha (colour, 0.02f))));
         canvas.fill (area);
-        canvas.setColor (withAlpha (colour, 0.75f));
-        canvas.fill (fill.stroke (1.4f, visage::Path::Join::Round, visage::Path::EndCap::Round));
+        canvas.setColor (withAlpha (colour, 0.55f));
+        canvas.fill (peak.stroke (1.0f, visage::Path::Join::Round, visage::Path::EndCap::Round));
+        canvas.setColor (withAlpha (colour, 0.80f));
+        canvas.fill (line.stroke (1.4f, visage::Path::Join::Round, visage::Path::EndCap::Round));
     }
 
     void DeqCurveView::drawBandsAndResponse (visage::Canvas& canvas)

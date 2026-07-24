@@ -12,9 +12,13 @@
 // writes stateVersion >= 1; a JUCE-era (or any foreign PARAMS) blob carries no such
 // attribute and reads back as 0. A version-0 state is therefore reset to defaults rather
 // than imported; a genuine StateCodec state (stateVersion >= 1) passes through untouched.
-// The identity-level half of the break is the new CLAP id + wrapper-generated VST3 UID, so
-// a host treats the 2.0.0 plugin as different from the old JUCE VST3/AU; this guard is the
-// defensive backstop against a hand-fed / mismatched foreign blob.
+// The identity-level half of the break is the new CLAP id + wrapper-generated VST3 UID and
+// the wrapper's FNV-1a param IDs — none of which match the old JUCE VST3/AU. So a host
+// treats the 2.0.0 plugin as a DIFFERENT plugin from the old JUCE build: old projects do
+// not reload it in place, and the old automation lanes do NOT carry over (the param tags
+// differ). This is an intentional clean break, NOT a drop-in replacement — see the PR /
+// release notes for the user-facing migration constraint. This guard is the defensive
+// backstop against a hand-fed / mismatched foreign blob.
 //
 #include "factory_presets/StateCodec.h"
 

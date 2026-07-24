@@ -15,7 +15,11 @@
 
 namespace deq_ui
 {
-    namespace { std::string bp (int band, const char* s) { return "b" + std::to_string (band) + "_" + s; } }
+    namespace
+    {
+        constexpr int kNumBands = 24;
+        std::string bp (int band, const char* s) { return "b" + std::to_string (band) + "_" + s; }
+    }
 
     DeqBandPanel::Ix DeqBandPanel::indicesFor (int band) const
     {
@@ -50,6 +54,21 @@ namespace deq_ui
         bypass_->setCaption ("Bypass");
         listen_->setCaption ("Listen");
         dyn_->setCaption ("Dynamics");
+
+        // Listen is exclusive across bands (mirrors the JUCE BandControlPanel): the DSP
+        // solos only the lowest-numbered listening band, so turning one on must clear
+        // the other 23 — otherwise a band can light up "Listen" yet stay inaudible.
+        listen_->onToggle = [this] (bool on)
+        {
+            if (! on) return;
+            for (int b = 0; b < kNumBands; ++b)
+                if (b != band_)
+                {
+                    const int idx = store_.indexOf (bp (b, "lsn"));
+                    if (idx >= 0 && store_.value (idx) > 0.5f)
+                        store_.setFromUiGestured (idx, 0.0f);
+                }
+        };
 
         // Value-only combo boxes (empty caption -> choice + caret, no leading icon) to
         // match the JUCE ComboBoxes; the ctor glyph is unused in combo mode.
