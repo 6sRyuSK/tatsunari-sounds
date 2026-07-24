@@ -150,9 +150,12 @@ namespace pf_core
         //
         // BLOCK-SIZE INVARIANCE: the block is cut at internal HOP boundaries, and
         // the pitch-synchronous shifter runs per span with the track state set at
-        // the hop that opens it — so the correction/PSOLA timeline is driven by the
-        // fixed hop grid, NOT by where the host's block boundaries happen to fall.
-        // The same input yields bit-identical output at any block size.
+        // the hop that opens it — so the correction timeline is independent of the
+        // host block boundaries, driven by the fixed hop grid rather than by where
+        // the host's blocks happen to fall. Output stays numerically equivalent
+        // within the regression tolerance across any block size (not bit-identical:
+        // a grain straddling a host-block boundary can reorder a few FP adds — see
+        // the block-invariance test's tolerance).
         void process (float* L, float* R, int n, const PfParamSnapshot& snap) noexcept
         {
             if (L == nullptr || n <= 0 || fs <= 0.0)
@@ -271,7 +274,9 @@ namespace pf_core
 
         // Process one span [start, start+m) whose track state was fixed by the hop
         // that opened it (the caller fires the closing hop). No hop firing here, so
-        // splitting a hop interval across a host-block boundary is bit-exact.
+        // a host-block boundary that lands inside a hop interval leaves the track
+        // state unchanged across the split — the correction timeline is unaffected,
+        // and the shifter output stays numerically equivalent within tolerance.
         void processSpan (float* L, float* R, int m) noexcept
         {
             // 1) Feed the analysis + dry rings.
@@ -347,11 +352,12 @@ namespace pf_core
 
             const double hopRate = fs / (double) hopLen;
 
-            // Correction is DISABLED at amount 0: the plugin must then be an exact
-            // pure delay for ANY input, voiced included. We force the shifter's
-            // unvoiced identity path (a bit-exact delay, ratio ignored) rather than
-            // running a ratio-1 voiced PSOLA, whose correlation re-alignment would
-            // perturb voiced material. Detection still runs (for the UI read-out).
+            // Correction is DISABLED at amount 0: the plugin must then be a
+            // transparent pure delay for ANY input, voiced included. We force the
+            // shifter's unvoiced identity path (a near-exact pure delay within the
+            // regression tolerance, ratio ignored) rather than running a ratio-1
+            // voiced PSOLA, whose correlation re-alignment would perturb voiced
+            // material. Detection still runs (for the UI read-out).
             const bool correcting = amount > 0.0;
 
             if (voiced)

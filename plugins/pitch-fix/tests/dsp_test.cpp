@@ -228,7 +228,7 @@ static void coreTests (double Fs)
             fail ("tolerance: input was pulled to the note @" + std::to_string (Fs));
     }
 
-    // --- 4. latency contract: amount 0 == exact pure delay, per mode ----------
+    // --- 4. latency contract: amount 0 == pure delay (within tol), per mode ----
     {
         for (int mode = 0; mode < 4; ++mode)
         {
@@ -487,9 +487,9 @@ static void coreTests (double Fs)
                   + ") @" + std::to_string (Fs));
     }
 
-    // --- 12. AMOUNT 0 IS EXACT PURE DELAY ON VOICED MATERIAL --------------------
+    // --- 12. AMOUNT 0 IS A PURE DELAY (WITHIN TOL) ON VOICED MATERIAL -----------
     //     (not just noise): the voiced PSOLA path is bypassed at amount 0, so a
-    //     clean sine and a vibrato tone pass through as an exact delay.
+    //     clean sine and a vibrato tone pass through as a pure delay (tol 1e-4).
     {
         const int N = (int) (1.5 * Fs);
         std::vector<std::vector<float>> inputs;
