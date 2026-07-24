@@ -18,6 +18,13 @@ include_guard(GLOBAL)
 
 include(FetchContent)
 
+# The shared, Policy-free ENTRY_SOURCE (exports clap_entry, forwarding to the
+# common-named hooks each plugin's IMPL emits via FACTORY_CLAP_ENTRY). A plugin no
+# longer ships its own tiny entry TU — factory_clap_plugin() defaults ENTRY_SOURCE
+# to this file (still override-able). See shell/src/FactoryClapEntryPoint.cpp.
+set(FACTORY_CLAP_SHARED_ENTRY_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../src/FactoryClapEntryPoint.cpp"
+    CACHE INTERNAL "Shared clap_entry ENTRY_SOURCE for factory_clap_plugin")
+
 # --- Pins (recorded in docs/migration/s2-clap-first.md) ----------------------
 set(FACTORY_CLAP_TAG           "1.2.10"                                     CACHE STRING "free-audio/clap tag")
 set(FACTORY_CLAPWRAPPER_COMMIT "35f524b771ec09f54c164720bb90f271273b37d3"  CACHE STRING "free-audio/clap-wrapper commit (v0.15.1)")
@@ -101,7 +108,9 @@ function(factory_clap_plugin slug)
     message(FATAL_ERROR "factory_clap_plugin(${slug}): IMPL_TARGET is required")
   endif()
   if(NOT FCP_ENTRY_SOURCE)
-    message(FATAL_ERROR "factory_clap_plugin(${slug}): ENTRY_SOURCE is required")
+    # Default to the shared, Policy-free entry TU (exports clap_entry -> the IMPL's
+    # common-named hooks). A plugin may still pass its own ENTRY_SOURCE to override.
+    set(FCP_ENTRY_SOURCE "${FACTORY_CLAP_SHARED_ENTRY_SOURCE}")
   endif()
   if(NOT FCP_OUTPUT_NAME)
     set(FCP_OUTPUT_NAME "${slug}")

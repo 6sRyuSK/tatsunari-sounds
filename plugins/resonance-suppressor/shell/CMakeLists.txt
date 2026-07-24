@@ -10,13 +10,14 @@
 factory_read_version(${CMAKE_CURRENT_SOURCE_DIR}/../plugin.toml RS_CLAP_VERSION)
 message(STATUS "resonance-suppressor CLAP shell: version ${RS_CLAP_VERSION} (from plugin.toml)")
 
-# The impl static library: the RS Policy + factory + entry hooks (ClapEntry.cpp).
-# The tiny per-format ENTRY_SOURCE (RsClapEntryPoint.cpp) is handed to
-# make_clapfirst_plugins separately (it is recompiled once per format).
+# The impl static library: the RS Policy + the shared factory/entry glue
+# (ClapEntry.cpp, via FACTORY_CLAP_ENTRY). The exported clap_entry lives in the
+# shared ENTRY_SOURCE (shell/src/FactoryClapEntryPoint.cpp), which
+# factory_clap_plugin() supplies by default — no per-plugin entry TU any more.
 add_library(resonance-suppressor-impl STATIC ClapEntry.cpp)
 
 target_include_directories(resonance-suppressor-impl PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}          # RsClapEntry.h
+  ${CMAKE_CURRENT_SOURCE_DIR}          # RsClapEditor.h
   ${CMAKE_CURRENT_SOURCE_DIR}/..)      # RsCore.h + Source/*.h (Params/FactoryPresets/DetailParam)
 
 target_link_libraries(resonance-suppressor-impl
@@ -86,7 +87,6 @@ endif()
 # Generated targets: resonance-suppressor_clap / _vst3 / _all.
 factory_clap_plugin(resonance-suppressor
   IMPL_TARGET        resonance-suppressor-impl
-  ENTRY_SOURCE       ${CMAKE_CURRENT_SOURCE_DIR}/RsClapEntryPoint.cpp
   OUTPUT_NAME        "Resonance TatSuppressor"
   VERSION            ${RS_CLAP_VERSION}
   AUV2_SUBTYPE_CODE  Rsup)
