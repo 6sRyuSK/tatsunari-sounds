@@ -1,5 +1,6 @@
 #include "factory_ui_visage/Dropdown.h"
 #include "factory_ui_visage/Fonts.h"
+#include "factory_ui_visage/Icons.h"
 
 #include <algorithm>
 
@@ -193,9 +194,19 @@ namespace factory_ui_visage
                 canvas.setColor (visage::Color (p.accentDim).withAlpha (hovered ? 1.0f : 0.6f));
                 canvas.roundedRectangle (panelX_ + 3.0f, ry + 1.0f, panelW_ - 6.0f, row.height - 2.0f, 6.0f);
             }
+            float textX = rowX;
+            float textW = rowW;
+            if (it.hasIcon)
+            {
+                const float gsz = 16.0f;
+                canvas.setColor (visage::Color (it.enabled ? p.textSecondary : p.textDim));
+                icons::paintGlyph (canvas, it.icon, rowX, ry + (row.height - gsz) * 0.5f, gsz, gsz);
+                textX = rowX + gsz + 8.0f;
+                textW = std::max (0.0f, rowW - gsz - 8.0f);
+            }
             canvas.setColor (visage::Color (it.enabled ? p.text : p.textDim));
             canvas.text (it.text, regularFont (theme_.font.label), visage::Font::kLeft,
-                         rowX, ry, rowW, row.height);
+                         textX, ry, textW, row.height);
         }
     }
 

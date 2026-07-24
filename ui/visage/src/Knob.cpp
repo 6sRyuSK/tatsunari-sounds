@@ -33,6 +33,14 @@ namespace factory_ui_visage
         redraw();
     }
 
+    void Knob::rebind (int paramIndex)
+    {
+        index_    = paramIndex;
+        range_    = factory_params::makeRange (store_.desc (paramIndex));
+        dragging_ = false; // drop any in-flight drag so a rebind cannot write the old param
+        redraw();
+    }
+
     void Knob::draw (visage::Canvas& canvas)
     {
         const KnobMetrics& m = theme_.knob;

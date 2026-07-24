@@ -10,13 +10,14 @@
 factory_read_version(${CMAKE_CURRENT_SOURCE_DIR}/../plugin.toml PF_CLAP_VERSION)
 message(STATUS "pitch-fix CLAP shell: version ${PF_CLAP_VERSION} (from plugin.toml)")
 
-# The impl static library: the Pf Policy + factory + entry hooks (ClapEntry.cpp).
-# The tiny per-format ENTRY_SOURCE (PfClapEntryPoint.cpp) is handed to
-# make_clapfirst_plugins separately (it is recompiled once per format).
+# The impl static library: the Pf Policy + the shared factory/entry glue
+# (ClapEntry.cpp, via FACTORY_CLAP_ENTRY). The exported clap_entry lives in the
+# shared ENTRY_SOURCE (shell/src/FactoryClapEntryPoint.cpp), which
+# factory_clap_plugin() supplies by default — no per-plugin entry TU any more.
 add_library(pitch-fix-impl STATIC ClapEntry.cpp)
 
 target_include_directories(pitch-fix-impl PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}          # PfClapEntry.h / PfClapEditor.h
+  ${CMAKE_CURRENT_SOURCE_DIR}          # PfClapEditor.h
   ${CMAKE_CURRENT_SOURCE_DIR}/..)      # PfCore.h / PfParams.h / PfPresets.h
 
 target_link_libraries(pitch-fix-impl
@@ -58,8 +59,9 @@ if(FACTORY_PF_CLAP_GUI)
 
   target_include_directories(pitch-fix-impl PRIVATE ${PF_UI_DIR})
 
-  # factory_ui_visage brings visage + the params/core includes transitively.
-  target_link_libraries(pitch-fix-impl PUBLIC factory_ui_visage)
+  # factory_ui_visage_clap_host brings the shared Visage IClapEditor host base +
+  # factory_ui_visage (visage + params/core includes) + factory_shell + clap.
+  target_link_libraries(pitch-fix-impl PUBLIC factory_ui_visage_clap_host)
 
   target_compile_definitions(pitch-fix-impl PRIVATE FACTORY_PF_CLAP_GUI=1)
 
@@ -74,7 +76,6 @@ endif()
 # Generated targets: pitch-fix_clap / _vst3 / _all.
 factory_clap_plugin(pitch-fix
   IMPL_TARGET        pitch-fix-impl
-  ENTRY_SOURCE       ${CMAKE_CURRENT_SOURCE_DIR}/PfClapEntryPoint.cpp
   OUTPUT_NAME        "Pitch TatFixer"
   VERSION            ${PF_CLAP_VERSION}
   AUV2_SUBTYPE_CODE  Pfix)
