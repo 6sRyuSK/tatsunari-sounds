@@ -63,7 +63,7 @@ target_sources(dynamic_eq_preset_test PRIVATE
   tests/preset_test.cpp
   Source/PluginProcessor.cpp
   Source/PluginEditor.cpp)
-target_include_directories(dynamic_eq_preset_test PRIVATE Source)
+target_include_directories(dynamic_eq_preset_test PRIVATE Source ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(dynamic_eq_preset_test PRIVATE cxx_std_20)
 target_compile_definitions(dynamic_eq_preset_test PUBLIC
   JUCE_WEB_BROWSER=0
@@ -73,6 +73,7 @@ target_link_libraries(dynamic_eq_preset_test
     factory_core
     factory_ui
     factory_presets
+    factory_params
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC
@@ -80,3 +81,34 @@ target_link_libraries(dynamic_eq_preset_test
     juce::juce_recommended_warning_flags)
 
 add_test(NAME dynamic_eq_preset COMMAND dynamic_eq_preset_test)
+
+# --------------------------------------------------- DeqCore equivalence (drift guard)
+# JUCE-linked console app: drives the REAL processor (the oracle) and the extracted,
+# framework-free deq_core::DeqCore side by side with identical input + parameters and
+# asserts BYTE-IDENTICAL output + published live gains + analyzer rings across the full
+# rate matrix. Links JUCE because it instantiates the processor as the oracle; heap-
+# allocates it like preset_test. The plugin ROOT dir is on the include path for
+# DeqCore.h / DeqParams.h; Source/ for PluginProcessor.h. One rate-sweeping case.
+juce_add_console_app(dynamic_eq_deqcore_equiv_test PRODUCT_NAME "dynamic_eq_deqcore_equiv_test")
+target_sources(dynamic_eq_deqcore_equiv_test PRIVATE
+  tests/deqcore_equiv_test.cpp
+  Source/PluginProcessor.cpp
+  Source/PluginEditor.cpp)
+target_include_directories(dynamic_eq_deqcore_equiv_test PRIVATE Source ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(dynamic_eq_deqcore_equiv_test PRIVATE cxx_std_20)
+target_compile_definitions(dynamic_eq_deqcore_equiv_test PUBLIC
+  JUCE_WEB_BROWSER=0
+  JUCE_USE_CURL=0)
+target_link_libraries(dynamic_eq_deqcore_equiv_test
+  PRIVATE
+    factory_core
+    factory_ui
+    factory_presets
+    factory_params
+    juce::juce_audio_utils
+    juce::juce_dsp
+  PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME dynamic_eq_deqcore_equiv COMMAND dynamic_eq_deqcore_equiv_test)
