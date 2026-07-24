@@ -131,6 +131,26 @@ static std::vector<float> run (pf_core::PfCore& core, const std::vector<float>& 
     return l;
 }
 
+// Process `x` (duplicated to stereo) through a FRESH core with a fixed
+// maxBlock (so ring sizes are identical across variants) but a caller-supplied
+// block-size SEQUENCE, isolating the test to where host block boundaries fall.
+static std::vector<float> runBlockSeq (double Fs, const std::vector<float>& x,
+                                       const pf_core::PfParamSnapshot& s,
+                                       const std::vector<int>& seq)
+{
+    pf_core::PfCore core;
+    core.prepare (Fs, 2048);
+    std::vector<float> l (x), r (x);
+    int pos = 0, bi = 0;
+    while (pos < (int) x.size())
+    {
+        const int m = std::min (seq[(size_t) (bi++ % (int) seq.size())], (int) x.size() - pos);
+        core.process (l.data() + pos, r.data() + pos, m, s);
+        pos += m;
+    }
+    return l;
+}
+
 static std::vector<double> tailOf (const std::vector<float>& y, double Fs, double fromSec)
 {
     std::vector<double> t;
@@ -378,6 +398,226 @@ static void coreTests (double Fs)
         if (fct::peakAbs (yd) > 1.5 * inPeak + 1.0e-6)
             fail ("param torture peak " + std::to_string (fct::peakAbs (yd))
                   + " exceeds bound @" + std::to_string (Fs));
+    }
+
+    // --- 10. BLOCK-SIZE INVARIANCE: correction is driven by the internal hop -----
+    //     grid, not the host block boundaries. Same input, every block size, same
+    //     output. Signal is voiced (vibrato) + a transient, amount>0 so PSOLA runs.
+    {
+        const int N = (int) (1.0 * Fs);
+        std::vector<float> x ((size_t) N);
+        double ph = 0.0;
+        for (int i = 0; i < N; ++i)
+        {
+            const double t = (double) i / Fs;
+            const double f = 200.0 * std::pow (2.0, (40.0 / 1200.0) * std::sin (2.0 * kPi * 5.0 * t));
+            ph += 2.0 * kPi * f / Fs;
+            double v = 0.4 * std::sin (ph);
+            if (i % (N / 4) == 0) v += 0.5;               // transients on the grid
+            x[(size_t) i] = (float) v;
+        }
+        pf_core::PfParamSnapshot s = tightSnapshot();      // retune 5ms, tol 0 -> active
+        const auto ref = runBlockSeq (Fs, x, s, { 512 });
+        const std::vector<std::vector<int>> seqs = {
+            { 64 }, { 127 }, { 2048 }, { 1 }, { 33, 512, 200, 1, 480, 65 }
+        };
+        for (const auto& seq : seqs)
+        {
+            const auto y = runBlockSeq (Fs, x, s, seq);
+            double maxDiff = 0.0;
+            for (int i = 0; i < N; ++i)
+                maxDiff = std::max (maxDiff, std::abs ((double) y[(size_t) i] - (double) ref[(size_t) i]));
+            if (maxDiff > 1.0e-4)
+                fail ("block-size dependence: seq[0]=" + std::to_string (seq[0])
+                      + " diff " + std::to_string (maxDiff) + " @" + std::to_string (Fs));
+        }
+    }
+
+    // --- 11. LATENCY CONSISTENCY: a mid-stream Buffer change moves the REPORTED --
+    //     latency (so the shell restarts) but NOT the actual DSP delay — the dry/
+    //     wet alignment stays at the committed lookahead until the next prepare().
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        const int N = (int) (1.2 * Fs);
+        auto x = makeNoise (N, 0.5f, 0x1A7E0u);
+        std::vector<float> l (x), r (x);
+
+        pf_core::PfParamSnapshot s;                        // amount 0 -> exact identity
+        s.amount = 0.0f;
+        s.buffer = 2;                                       // Normal
+        const int half = N / 2;
+        int pos = 0;
+        while (pos < half)                                  // pos += m: end exactly at half
+        {
+            const int m = std::min (512, half - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            pos += m;
+        }
+
+        const int committedL =
+            (int) std::lround (pf_core::PfCore::kLookaheadPeriods[2] * Fs / 75.0);
+        if (core.latencySamples() != committedL)
+            fail ("pre-switch latency wrong @" + std::to_string (Fs));
+
+        s.buffer = 0;                                       // Realtime — different lookahead
+        while (pos < N)
+        {
+            const int m = std::min (512, N - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            pos += m;
+        }
+
+        const int realtimeL =
+            (int) std::lround (pf_core::PfCore::kLookaheadPeriods[0] * Fs / 75.0);
+        // Reported latency followed the live param (so the shell will restart)...
+        if (core.latencySamples() != realtimeL)
+            fail ("reported latency did not follow Buffer change (" + std::to_string (core.latencySamples())
+                  + " != " + std::to_string (realtimeL) + ") @" + std::to_string (Fs));
+        // ...but the ACTUAL delay stayed committed: the whole stream is a pure
+        // delay of the ORIGINAL (Normal) lookahead, NOT the Realtime one.
+        double maxDiff = 0.0;
+        for (int t = 0; t < N; ++t)
+        {
+            const float d = t >= committedL ? x[(size_t) (t - committedL)] : 0.0f;
+            maxDiff = std::max (maxDiff, std::abs ((double) l[(size_t) t] - (double) d));
+        }
+        if (maxDiff > 1.0e-4)
+            fail ("actual DSP latency shifted mid-stream (diff " + std::to_string (maxDiff)
+                  + ") @" + std::to_string (Fs));
+    }
+
+    // --- 12. AMOUNT 0 IS EXACT PURE DELAY ON VOICED MATERIAL --------------------
+    //     (not just noise): the voiced PSOLA path is bypassed at amount 0, so a
+    //     clean sine and a vibrato tone pass through as an exact delay.
+    {
+        const int N = (int) (1.5 * Fs);
+        std::vector<std::vector<float>> inputs;
+        inputs.push_back (makeSine (N, Fs, 220.0, 0.5));   // steady voiced
+        {
+            std::vector<float> v ((size_t) N);             // vibrato voiced
+            double ph = 0.0;
+            for (int i = 0; i < N; ++i)
+            {
+                const double t = (double) i / Fs;
+                const double f = 330.0 * std::pow (2.0, (60.0 / 1200.0) * std::sin (2.0 * kPi * 6.0 * t));
+                ph += 2.0 * kPi * f / Fs;
+                v[(size_t) i] = (float) (0.5 * std::sin (ph));
+            }
+            inputs.push_back (v);
+        }
+        for (const auto& x : inputs)
+        {
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            pf_core::PfParamSnapshot s;
+            s.amount = 0.0f;
+            auto y = run (core, x, s);
+            const int L = core.latencySamples();
+            double maxDiff = 0.0;
+            for (int t = 0; t < N; ++t)
+            {
+                const float d = t >= L ? x[(size_t) (t - L)] : 0.0f;
+                maxDiff = std::max (maxDiff, std::abs ((double) y[(size_t) t] - (double) d));
+            }
+            if (maxDiff > 1.0e-4)
+                fail ("amount-0 voiced path not exact delay (diff " + std::to_string (maxDiff)
+                      + ") @" + std::to_string (Fs));
+        }
+    }
+
+    // --- 13. Key/Scale change drops a now-forbidden target note -----------------
+    //     Input at 545 Hz sits between C5 (523.25) and C#5 (554.37), a touch
+    //     closer to C# — so the target is UNAMBIGUOUS on each side of the change
+    //     (no C/D equidistance tie). Chromatic snaps it up to C#; switching to C
+    //     major (C# forbidden) must drop that held target and pull DOWN to C5.
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        const int N = (int) (4.0 * Fs);
+        auto x = makeSine (N, Fs, 545.0, 0.5);
+        std::vector<float> l (x), r (x);
+
+        pf_core::PfParamSnapshot s = tightSnapshot();
+        s.scale = 0;                                        // Chromatic: C# allowed
+        const int half = N / 2;
+        int pos = 0;
+        while (pos < half)
+        {
+            const int m = std::min (512, half - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            pos += m;
+        }
+        {
+            std::vector<double> seg (l.begin() + (size_t) (Fs * 1.0), l.begin() + (size_t) (Fs * 2.0));
+            const auto m = measureTone (seg, Fs);
+            if (std::abs (centsBetween (m.freqHz, 554.365)) > 12.0)
+                fail ("chromatic did not snap 545 -> C#5 (got " + std::to_string (m.freqHz)
+                      + ") @" + std::to_string (Fs));
+        }
+
+        s.key = 0; s.scale = 1;                             // C major: C# forbidden
+        while (pos < N)
+        {
+            const int m = std::min (512, N - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            pos += m;
+        }
+        std::vector<double> seg (l.begin() + (size_t) (Fs * 3.0), l.end());
+        const auto m = measureTone (seg, Fs);
+        if (std::abs (centsBetween (m.freqHz, 523.251)) > 18.0)
+            fail ("Key/Scale change kept a forbidden target (got " + std::to_string (m.freqHz)
+                  + ", want ~523.25) @" + std::to_string (Fs));
+    }
+
+    // --- 14. reset() clears audio + tracking without changing latency -----------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s = tightSnapshot();
+        auto tone = makeSine ((int) (0.6 * Fs), Fs, 330.0, 0.5);
+        auto y = run (core, tone, s);
+        const int latBefore = core.latencySamples();
+        std::vector<double> yd (y.begin(), y.end());
+        if (fct::peakAbs (yd) < 0.05)
+            fail ("pre-reset output unexpectedly silent @" + std::to_string (Fs));
+
+        core.reset();
+        if (core.latencySamples() != latBefore)
+            fail ("reset() changed the reported latency @" + std::to_string (Fs));
+
+        // Post-reset silence must come out silent immediately: no stale tone lingers
+        // in the dry ring / OLA accumulator for the lookahead span (the seek bleed).
+        const int M = latBefore + (int) (0.05 * Fs);
+        std::vector<float> sil ((size_t) M, 0.0f);
+        auto ys = run (core, sil, s);
+        std::vector<double> ysd (ys.begin(), ys.end());
+        if (fct::peakAbs (ysd) > 1.0e-3)
+            fail ("reset() left stale audio (peak " + std::to_string (fct::peakAbs (ysd))
+                  + ") @" + std::to_string (Fs));
+    }
+
+    // --- 15. Max Pitch is respected: a tone above it is out of band (unvoiced) ---
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        const int N = (int) (1.2 * Fs);
+        auto x = makeSine (N, Fs, 500.0, 0.5);              // 500 Hz
+        pf_core::PfParamSnapshot s;
+        s.amount     = 100.0f;
+        s.minPitchHz = 300.0f;
+        s.maxPitchHz = 400.0f;                              // 500 > max -> not detected
+        auto y = run (core, x, s);
+        const int L = core.latencySamples();
+        double maxDiff = 0.0;
+        for (int t = 0; t < N; ++t)
+        {
+            const float d = t >= L ? x[(size_t) (t - L)] : 0.0f;
+            maxDiff = std::max (maxDiff, std::abs ((double) y[(size_t) t] - (double) d));
+        }
+        if (maxDiff > 1.0e-4)
+            fail ("tone above Max Pitch was corrected (band widened past the UI value; diff "
+                  + std::to_string (maxDiff) + ") @" + std::to_string (Fs));
     }
 }
 

@@ -105,16 +105,54 @@ namespace pf_core
             mixRamp.setCurrentAndTargetValue (1.0);
             gainRamp.setCurrentAndTargetValue (1.0);
 
-            lookahead   = 0;   // sentinel: first process() applies the snapshot
+            // Latency latching: prepare() defers the FIRST lookahead latch to the
+            // first process() (activate() primes silently, so the settled value is
+            // reported before the host queries it). committedLookahead is what the
+            // DSP path actually delays by; pendingLookahead is what we REPORT — the
+            // two split so a mid-stream Buffer/Min-Pitch change never desyncs the
+            // host's delay compensation from the real DSP delay (see applySnapshot).
+            committedLookahead = 0;
+            pendingLookahead   = 0;
+            needsCommit        = true;
             hopCounter  = 0;
+            prevKey = -1; prevScale = -1;
             resetTracking();
             uiSampleRateHz.store ((float) fs, std::memory_order_relaxed);
         }
 
-        int latencySamples() const noexcept { return lookahead; }
+        // The latency REPORTED to the host. It reflects the live parameters, so a
+        // mid-stream change moves it and the shell requests a restart; the actual
+        // DSP delay only follows on the next activate() (see committedLookahead).
+        int latencySamples() const noexcept { return pendingLookahead; }
+
+        // Clear all audio + tracking state WITHOUT reallocating or changing the
+        // latency — for the CLAP shell to call on a transport discontinuity (seek,
+        // loop wrap) so stale audio / detector history / correction state do not
+        // bleed across the jump. Real-time safe (std::fill + scalar resets only).
+        void reset() noexcept
+        {
+            std::fill (detRing.begin(), detRing.end(), 0.0f);
+            std::fill (dryL.begin(),    dryL.end(),    0.0f);
+            std::fill (dryR.begin(),    dryR.end(),    0.0f);
+            std::fill (scratch.begin(), scratch.end(), 0.0f);
+            shifter.reset();
+            written    = 0;
+            hopCounter = 0;
+            resetTracking();
+            // Latency (committed/pending), winLen/hopLen/medLen and the live params
+            // are preserved: a reset re-zeroes buffers, it does not re-latch latency.
+            mixRamp.setCurrentAndTargetValue (mixRamp.getTargetValue());
+            gainRamp.setCurrentAndTargetValue (gainRamp.getTargetValue());
+        }
 
         // In-place stereo processing (R may be null). Snapshot applied at block
         // granularity (last write per block wins), matching the shell contract.
+        //
+        // BLOCK-SIZE INVARIANCE: the block is cut at internal HOP boundaries, and
+        // the pitch-synchronous shifter runs per span with the track state set at
+        // the hop that opens it — so the correction/PSOLA timeline is driven by the
+        // fixed hop grid, NOT by where the host's block boundaries happen to fall.
+        // The same input yields bit-identical output at any block size.
         void process (float* L, float* R, int n, const PfParamSnapshot& snap) noexcept
         {
             if (L == nullptr || n <= 0 || fs <= 0.0)
@@ -125,9 +163,21 @@ namespace pf_core
             int done = 0;
             while (done < n)
             {
-                const int m = std::min (n - done, maxBlock);
-                processChunk (L + done, R != nullptr ? R + done : nullptr, m);
-                done += m;
+                // Span = up to the next hop mark, the block end, or maxBlock.
+                const int untilHop = hopLen - hopCounter;      // > 0 (hopCounter < hopLen)
+                int m = std::min (n - done, untilHop);
+                m = std::min (m, maxBlock);
+                if (m <= 0) m = std::min (n - done, maxBlock); // defensive; untilHop is > 0
+
+                processSpan (L + done, R != nullptr ? R + done : nullptr, m);
+
+                done       += m;
+                hopCounter += m;
+                if (hopCounter >= hopLen)                       // reached a hop boundary
+                {
+                    hopCounter -= hopLen;                      // == 0 (m <= untilHop)
+                    runHop();
+                }
             }
         }
 
@@ -168,7 +218,11 @@ namespace pf_core
             tolCt    = std::clamp ((double) s.toleranceCt, 0.0, 75.0);
             hystCt   = std::clamp ((double) s.hysteresisCt, 0.0, 75.0);
             minHz    = std::clamp ((double) s.minPitchHz, kMinPitchFloorHz, 500.0);
-            maxHz    = std::clamp (std::max ((double) s.maxPitchHz, minHz * 2.0), 200.0, 4000.0);
+            // Respect the user's Max Pitch; only guarantee it sits a little above
+            // Min Pitch so the detector has a non-empty lag range. (Previously this
+            // forced max >= 2*min, silently widening the detection band well past
+            // the UI value — Min 300 / Max 400 actually searched to 600 Hz.)
+            maxHz    = std::clamp (std::max ((double) s.maxPitchHz, minHz * 1.1), 200.0, 4000.0);
             thresh   = std::clamp ((double) s.thresholdPct, 50.0, 99.0) * 0.01;
             mode     = std::clamp (s.buffer, 0, 3);
             key      = std::clamp (s.key, 0, 11);
@@ -181,47 +235,66 @@ namespace pf_core
             winLen = std::min ((int) std::lround (kWindowPeriods[mode] * fs / minHz), maxWin);
             hopLen = std::max (32, (int) std::lround (kHopSeconds[mode] * fs));
             medLen = kMedianDepth[mode];
+            if (hopCounter >= hopLen) hopCounter = 0;   // keep hopCounter < hopLen if hopLen shrank
+
+            // Key/Scale change: drop a target note that the NEW mask forbids, so a
+            // held note in the old scale is never kept as a correction target once
+            // it becomes an out-of-scale pitch (targetNote < 0 -> fresh pick, no
+            // hysteresis, at the next voiced hop).
+            if ((key != prevKey || scale != prevScale) && targetNote >= 0 && ! noteAllowed (targetNote))
+                targetNote = -1;
+            prevKey = key; prevScale = scale;
 
             const int wantLook = (int) std::lround (kLookaheadPeriods[mode] * fs / minHz);
-            if (wantLook != lookahead)
+            if (needsCommit)
             {
-                lookahead = wantLook;
-                shifter.setLookahead (lookahead);
+                // First snapshot after prepare(): latch the ACTUAL DSP latency. The
+                // shell primes silently before latching what it reports, so committed
+                // == pending == the settled value here (host compensation matches).
+                shifter.setLookahead (wantLook);
+                committedLookahead = shifter.latencySamples();  // adopt the shifter's clamp, if any
+                pendingLookahead   = committedLookahead;
+                needsCommit        = false;
                 resetTracking();
                 hopCounter = 0;
-                uiLatencySamples.store (shifter.latencySamples(), std::memory_order_relaxed);
-                lookahead = shifter.latencySamples();   // adopt the shifter's clamp, if any
             }
+            else
+            {
+                // Live change: move ONLY the reported latency. The shell sees it
+                // differ from what it announced and asks the host to restart; the
+                // real DSP delay stays at committedLookahead until that restart
+                // re-primes, so host delay-compensation and DSP delay never diverge.
+                pendingLookahead = wantLook;
+            }
+            uiLatencySamples.store (pendingLookahead, std::memory_order_relaxed);
         }
 
-        void processChunk (float* L, float* R, int m) noexcept
+        // Process one span [start, start+m) whose track state was fixed by the hop
+        // that opened it (the caller fires the closing hop). No hop firing here, so
+        // splitting a hop interval across a host-block boundary is bit-exact.
+        void processSpan (float* L, float* R, int m) noexcept
         {
-            // 1) Feed the analysis + dry rings; run the detector on hop marks.
+            // 1) Feed the analysis + dry rings.
             for (int i = 0; i < m; ++i)
             {
                 const float l = L[i];
                 const float r = R != nullptr ? R[i] : l;
-                const size_t w = (size_t) (written & detMask);
-                detRing[w] = 0.5f * (l + r);
-                const size_t dw = (size_t) (written & dryMask);
-                dryL[dw] = l;
-                dryR[dw] = r;
+                detRing[(size_t) (written & detMask)] = 0.5f * (l + r);
+                dryL[(size_t) (written & dryMask)] = l;
+                dryR[(size_t) (written & dryMask)] = r;
                 ++written;
-                if (++hopCounter >= hopLen)
-                {
-                    hopCounter = 0;
-                    runHop();
-                }
             }
 
             // 2) Wet: pitch-synchronous resynthesis (in place).
             shifter.process (L, R, m);
 
-            // 3) Dry mix + output gain (both ramped — continuous params).
+            // 3) Dry mix + output gain (both ramped). The dry delay uses the
+            //    COMMITTED lookahead so dry and wet stay time-aligned at the latency
+            //    the host is compensating for.
             for (int i = 0; i < m; ++i)
             {
                 const std::int64_t t = written - m + i;
-                const std::int64_t d = t - (std::int64_t) lookahead;
+                const std::int64_t d = t - (std::int64_t) committedLookahead;
                 const float dl = d >= 0 ? dryL[(size_t) (d & dryMask)] : 0.0f;
                 const float dr = d >= 0 ? dryR[(size_t) (d & dryMask)] : 0.0f;
                 const double mix = mixRamp.getNextValue();
@@ -274,6 +347,13 @@ namespace pf_core
 
             const double hopRate = fs / (double) hopLen;
 
+            // Correction is DISABLED at amount 0: the plugin must then be an exact
+            // pure delay for ANY input, voiced included. We force the shifter's
+            // unvoiced identity path (a bit-exact delay, ratio ignored) rather than
+            // running a ratio-1 voiced PSOLA, whose correlation re-alignment would
+            // perturb voiced material. Detection still runs (for the UI read-out).
+            const bool correcting = amount > 0.0;
+
             if (voiced)
             {
                 unvoicedHops = 0;
@@ -308,7 +388,7 @@ namespace pf_core
                 const double cr = factory_core::onePoleCoeffForMs (retuneMs, hopRate);
                 corrCents += (1.0 - cr) * (corrTarget - corrCents);
 
-                shifter.setTrack (fs / f0, true);
+                shifter.setTrack (fs / f0, correcting);   // amount 0 -> unvoiced identity
                 uiDetectedHz.store ((float) f0, std::memory_order_relaxed);
                 uiTargetHz.store ((float) (a4 * std::exp2 (noteCents (targetNote) / 1200.0)),
                                   std::memory_order_relaxed);
@@ -326,30 +406,36 @@ namespace pf_core
             }
 
             shifter.setRatio (std::exp2 (corrCents / 1200.0));
-            uiShiftCents.store ((float) corrCents, std::memory_order_relaxed);
+            uiShiftCents.store ((float) (correcting ? corrCents : 0.0), std::memory_order_relaxed);
         }
 
         // Cents of a MIDI note relative to A4 (note 69).
         static double noteCents (int note) noexcept { return (note - 69) * 100.0; }
 
-        // Nearest MIDI note whose pitch class is allowed by the key/scale mask.
-        int nearestAllowedNote (double detCents) const noexcept
+        // Is `note` (MIDI number) in the current Key/Scale mask? Chromatic (scale 0)
+        // allows every note. Shared by nearestAllowedNote and the Key/Scale-change
+        // target invalidation in applySnapshot.
+        bool noteAllowed (int note) const noexcept
         {
             static constexpr int kMajor[12] = { 1,0,1,0,1,1,0,1,0,1,0,1 };
             static constexpr int kMinor[12] = { 1,0,1,1,0,1,0,1,1,0,1,0 };
+            const int pc  = ((note % 12) + 12) % 12;
+            const int deg = ((pc - key) % 12 + 12) % 12;
+            if (scale == 1) return kMajor[deg] != 0;
+            if (scale == 2) return kMinor[deg] != 0;
+            return true;
+        }
 
+        // Nearest MIDI note whose pitch class is allowed by the key/scale mask.
+        int nearestAllowedNote (double detCents) const noexcept
+        {
             const double noteF = detCents / 100.0 + 69.0;
             const int nn = (int) std::lround (noteF);
             int    best  = nn;
             double bestD = 1.0e9;
             for (int cand = nn - 12; cand <= nn + 12; ++cand)
             {
-                const int pc  = ((cand % 12) + 12) % 12;
-                const int deg = ((pc - key) % 12 + 12) % 12;
-                bool ok = true;
-                if (scale == 1) ok = kMajor[deg] != 0;
-                if (scale == 2) ok = kMinor[deg] != 0;
-                if (! ok) continue;
+                if (! noteAllowed (cand)) continue;
                 const double d = std::abs (noteF - (double) cand);
                 if (d < bestD)
                 {
@@ -384,7 +470,12 @@ namespace pf_core
         double minHz = 75.0, maxHz = 1300.0, thresh = 0.86, a4 = 440.0;
         int    mode = 2, key = 0, scale = 0;
         int    winLen = 0, hopLen = 512, medLen = 1;
-        int    lookahead = 0;
+
+        // --- latency latching (see applySnapshot / latencySamples / prepare) ---
+        int    committedLookahead = 0;  // actual DSP delay (drives shifter + dry mix)
+        int    pendingLookahead   = 0;  // REPORTED delay (follows live params)
+        bool   needsCommit        = true;
+        int    prevKey = -1, prevScale = -1;
 
         // --- tracking state ---
         int    hopCounter = 0;

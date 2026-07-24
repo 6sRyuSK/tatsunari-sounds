@@ -174,6 +174,11 @@ namespace
             return static_cast<std::uint32_t> (core.latencySamples());
         }
 
+        // Optional shell reset hook (detected by PolicyHasReset): on a transport
+        // discontinuity the shell clears the core's delay/OLA/detector/tracking
+        // state in place (no realloc, no latency change).
+        static void reset (Core& core) { core.reset(); }
+
         // Silent frames activate() runs so the first process() call adopts the
         // live snapshot (Buffer / Min Pitch) and latencySamples() reports the
         // settled lookahead before the shell latches it.
