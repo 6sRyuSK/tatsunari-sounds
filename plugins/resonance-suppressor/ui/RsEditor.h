@@ -150,7 +150,7 @@ namespace rs_ui
         // Node selection (curve <-> panel) is internal, but exposed for the driver.
         int  selectedNode() const noexcept { return curve_ ? curve_->selectedNode() : -1; }
         void openNode (int id) { selectNode (id); }                 // driver: select a node
-        bool openNamedDropdown (int which);                          // 0=quality,1=channel,2=preset
+        bool openNamedDropdown (const std::string& name);            // "quality"|"channel"|"preset"
 
         // Rect (window px) of a control keyed by param id or a special name
         // ("preset" / "curve" / "ab" / "undo" / "redo" / "copy" / "bypass").

@@ -170,10 +170,10 @@ namespace pf_ui
         return kw < kh ? kw : kh;
     }
 
-    bool PfEditor::openNamedDropdown (int which)
+    bool PfEditor::openNamedDropdown (const std::string& name)
     {
-        if (which == 0 && key_)        { key_->openMenu();        return true; }
-        if (which == 1 && presetView_) { presetView_->openMenu(); return true; }
+        if (name == "key" && key_)           { key_->openMenu();        return true; }
+        if (name == "preset" && presetView_) { presetView_->openMenu(); return true; }
         return false;
     }
 

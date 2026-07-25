@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "factory_ui_visage/Theme.h"
 #include "factory_ui_visage/Knob.h"
 #include "factory_ui_visage/PillToggle.h"
@@ -62,7 +64,7 @@ public:
 
     // Open the shared Dropdown for a named control (0 = preset selector,
     // 1 = value setting) at its own location — for deterministic dropdown capture.
-    bool openNamedDropdown (int which);
+    bool openNamedDropdown (const std::string& name); // "preset" | "valueSetting"
 
     // Dropdown query surface (window px), so the driver can aim at rows.
     bool dropdownOpen() const { return dropdown_ && dropdown_->isOpen(); }

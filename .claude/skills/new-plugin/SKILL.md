@@ -53,7 +53,8 @@ The initial scaffold still starts with the fleet's minimal JUCE editor. Once the
 plugin has a JUCE-free Visage editor, completing the UI phase MUST also register
 it in `tools/ui-dev`:
 
-- reuse `common/PluginHarness.{h,cpp}` for the standard `window.ui` ABI;
+- reuse `common/PluginHarness.{h,cpp}` for the standard `window.ui` ABI (never
+  re-declare a `ui_*` export; dropdowns are opened by NAME, not by index);
 - reuse `common/HarnessPresetModel.h` for the real `PresetSession`;
 - add only `main.cpp`, a deterministic plugin-specific `SyntheticFeed`, and a
   thin plugin bridge under `tools/ui-dev/<slug>/`;

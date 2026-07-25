@@ -64,21 +64,21 @@ const approx = (a, b, eps = 0.6) => Math.abs(a - b) <= eps;
   const dynAfter = await page.evaluate(() => window.ui.get("b1_dyn"));
   check("panel pill click changes the rebound band parameter", dynAfter !== dynBefore, `${dynBefore} -> ${dynAfter}`);
 
-  const typeMenu = await page.evaluate(() => ({ opened: window.ui.openDropdown(0), count: window.ui.dropdownCount(), open: window.ui.dropdownOpen() }));
+  const typeMenu = await page.evaluate(() => ({ opened: window.ui.openDropdown("type"), count: window.ui.dropdownCount(), open: window.ui.dropdownOpen() }));
   check("band Type dropdown exposes five filter types", typeMenu.opened && typeMenu.open && typeMenu.count === 5,
         JSON.stringify(typeMenu));
   const typeRow = await page.evaluate(() => ({ x: window.ui.dropdownX(3), y: window.ui.dropdownRowY(3) }));
   await mouse.clickWindow(page, typeRow.x, typeRow.y);
   check("dropdown row click selects High Pass", (await page.evaluate(() => window.ui.get("b1_type"))) === 3);
 
-  const slopeMenu = await page.evaluate(() => ({ opened: window.ui.openDropdown(1), count: window.ui.dropdownCount() }));
+  const slopeMenu = await page.evaluate(() => ({ opened: window.ui.openDropdown("slope"), count: window.ui.dropdownCount() }));
   check("cut-band Slope dropdown exposes eight slopes", slopeMenu.opened && slopeMenu.count === 8,
         JSON.stringify(slopeMenu));
   const slopeRow = await page.evaluate(() => ({ x: window.ui.dropdownX(2), y: window.ui.dropdownRowY(2) }));
   await mouse.clickWindow(page, slopeRow.x, slopeRow.y);
   check("Slope dropdown writes the selected choice", (await page.evaluate(() => window.ui.get("b1_slope"))) === 2);
 
-  await page.evaluate(() => { window.ui.set("b5_lsn", 1); window.ui.set("bypass", 1); window.ui.openDropdown(3); });
+  await page.evaluate(() => { window.ui.set("b5_lsn", 1); window.ui.set("bypass", 1); window.ui.openDropdown("preset"); });
   const presetMenu = await page.evaluate(() => ({ count: window.ui.dropdownCount(), x: window.ui.dropdownX(1), y: window.ui.dropdownRowY(1) }));
   check("real Dynamic EQ preset bank is exposed (Init + 4)", presetMenu.count === 5, presetMenu.count);
   await mouse.clickWindow(page, presetMenu.x, presetMenu.y);

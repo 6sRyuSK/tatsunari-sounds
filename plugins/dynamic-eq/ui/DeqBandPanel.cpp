@@ -120,11 +120,11 @@ namespace deq_ui
         chan_->requestDropdown  = req;
     }
 
-    bool DeqBandPanel::openNamedDropdown (int which)
+    bool DeqBandPanel::openNamedDropdown (const std::string& name)
     {
-        if (which == 0 && type_)  { type_->openMenu();  return true; }
-        if (which == 1 && slope_) { slope_->openMenu(); return true; }
-        if (which == 2 && chan_)  { chan_->openMenu();  return true; }
+        if (name == "type" && type_)   { type_->openMenu();  return true; }
+        if (name == "slope" && slope_) { slope_->openMenu(); return true; }
+        if (name == "chan" && chan_)   { chan_->openMenu();  return true; }
         return false;
     }
 

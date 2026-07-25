@@ -1,16 +1,29 @@
 #pragma once
 
 #include "DeqModels.h"
+#include "DeqParams.h"
 #include "factory_params/ParamStore.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 
 class SyntheticDeqFeed final : public deq_ui::DeqFeed
 {
 public:
-    explicit SyntheticDeqFeed (factory_params::ParamStore& store) : store_ (store) {}
+    explicit SyntheticDeqFeed (factory_params::ParamStore& store) : store_ (store)
+    {
+        // Resolve every band's indices once. liveGainDb() runs per band per frame
+        // from the editor's draw path; building "b<n>_gain" strings there would
+        // allocate on every frame for no reason.
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            ix_[(std::size_t) b] = { store_.indexOf (idFor (b, "gain")),
+                                     store_.indexOf (idFor (b, "dyn")),
+                                     store_.indexOf (idFor (b, "rng")) };
+        }
+    }
 
     void copyAnalyzerSamples (float* dst, int n, bool post) const override
     {
@@ -35,18 +48,17 @@ public:
 
     float liveGainDb (int band) const override
     {
-        const int gain = store_.indexOf (idFor (band, "gain"));
-        const int dyn = store_.indexOf (idFor (band, "dyn"));
-        const int range = store_.indexOf (idFor (band, "rng"));
-        if (gain < 0) return 0.0f;
-        const float base = store_.value (gain);
-        if (dyn < 0 || store_.value (dyn) < 0.5f || range < 0) return base;
+        if (band < 0 || band >= kNumBands) return 0.0f;
+        const BandIx& ix = ix_[(std::size_t) band];
+        if (ix.gain < 0) return 0.0f;
+        const float base = store_.value (ix.gain);
+        if (ix.dyn < 0 || store_.value (ix.dyn) < 0.5f || ix.range < 0) return base;
         const float movement = (0.35f + 0.25f * (float) std::sin (phaseSamples_ * 0.001));
-        return base + store_.value (range) * movement;
+        return base + store_.value (ix.range) * movement;
     }
 
     double sampleRate() const override { return 48000.0; }
-    int numBands() const override { return 24; }
+    int numBands() const override { return kNumBands; }
 
     void setFrozen (bool frozen)
     {
@@ -57,12 +69,19 @@ public:
     void advance() { if (! frozen_) phaseSamples_ += 137.0; }
 
 private:
+    // The band count is the plugin's, never a literal: a band-count change must not
+    // leave the harness silently modelling a different plugin than the one shipping.
+    static constexpr int kNumBands = dynamic_eq_params::kNumBands;
+
+    struct BandIx { int gain = -1, dyn = -1, range = -1; };
+
     static std::string idFor (int band, const char* suffix)
     {
         return "b" + std::to_string (band) + "_" + suffix;
     }
 
     factory_params::ParamStore& store_;
+    std::array<BandIx, (std::size_t) kNumBands> ix_ {};
     double phaseSamples_ = 4096.0;
     bool frozen_ = false;
 };

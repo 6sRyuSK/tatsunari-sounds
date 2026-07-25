@@ -61,15 +61,13 @@ extern "C"
 
     KEEPALIVE int ui_reload_theme (const char* jsonText)
     {
-        if (! g_target.theme || ! jsonText) return 0;
-        auto next = *g_target.theme;
+        if (! g_target.reloadTheme || ! jsonText) return 0;
         std::string error;
-        if (! next.applyOverlay (jsonText, error))
+        if (! g_target.reloadTheme (jsonText, error))
         {
             g_error = std::move (error);
             return 0;
         }
-        *g_target.theme = std::move (next);
         g_error.clear();
         if (g_target.root) g_target.root->redrawAll();
         return 1;
@@ -78,7 +76,7 @@ extern "C"
     KEEPALIVE const char* ui_last_error() { return g_error.c_str(); }
     KEEPALIVE unsigned int ui_get_accent()
     {
-        return g_target.theme ? g_target.theme->palette.accent : 0u;
+        return g_target.accent ? g_target.accent() : 0u;
     }
 
     KEEPALIVE double ui_widget_x (const char* key)
@@ -114,9 +112,9 @@ extern "C"
     {
         if (g_target.feedSpectrum) g_target.feedSpectrum (phase);
     }
-    KEEPALIVE int ui_open_dropdown (int which)
+    KEEPALIVE int ui_open_dropdown (const char* name)
     {
-        return g_target.openDropdown && g_target.openDropdown (which) ? 1 : 0;
+        return name != nullptr && g_target.openDropdown && g_target.openDropdown (name) ? 1 : 0;
     }
     KEEPALIVE int ui_dropdown_open()
     {

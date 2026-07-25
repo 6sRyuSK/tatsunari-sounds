@@ -39,6 +39,7 @@ set(RS_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/resonance-suppressor
 add_executable(rs-editor
   rs-editor/main.cpp
   rs-editor/RsBridge.cpp
+  common/PluginHarness.cpp
   ${RS_PLUGIN_DIR}/ui/RsEditor.cpp
   ${RS_PLUGIN_DIR}/ui/RsSuppressionCurveView.cpp
   ${RS_PLUGIN_DIR}/ui/RsNodePanel.cpp
@@ -97,12 +98,19 @@ target_include_directories(dynamic-eq PRIVATE
 if(EMSCRIPTEN)
   set(FACTORY_UI_DEV_SHELL ${CMAKE_CURRENT_SOURCE_DIR}/shell.html)
 
+  # THE shared window.ui ABI — one list, exported by every app, so harness.js and
+  # the Playwright drivers can assume the same surface everywhere. Per-app extras
+  # are appended with EXPORTED_FUNCTIONS+= below; never fork this list.
+  set(FACTORY_UI_ABI_EXPORTS
+    "['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y','_ui_widget_rect','_ui_set_font','_ui_font','_ui_feed_spectrum','_ui_open_dropdown','_ui_dropdown_open','_ui_dropdown_item_count','_ui_dropdown_x','_ui_dropdown_row_y','_ui_preset_index']")
+
   target_link_options(gallery PRIVATE
     --shell-file ${FACTORY_UI_DEV_SHELL}
     -sGL_ENABLE_GET_PROC_ADDRESS
     -sALLOW_MEMORY_GROWTH
     --bind
-    "-sEXPORTED_FUNCTIONS=['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y','_ui_widget_rect','_ui_set_font','_ui_font','_ui_feed_spectrum','_ui_open_dropdown','_ui_dropdown_open','_ui_dropdown_item_count','_ui_dropdown_x','_ui_dropdown_row_y','_ui_preset_index','_ui_last_mouse_x','_ui_last_mouse_y']"
+    "-sEXPORTED_FUNCTIONS=${FACTORY_UI_ABI_EXPORTS}"
+    "-sEXPORTED_FUNCTIONS+=['_ui_last_mouse_x','_ui_last_mouse_y']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
   )
 
@@ -121,7 +129,8 @@ if(EMSCRIPTEN)
     -sGL_ENABLE_GET_PROC_ADDRESS
     -sALLOW_MEMORY_GROWTH
     --bind
-    "-sEXPORTED_FUNCTIONS=['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_rect','_ui_set_font','_ui_font','_rs_select_node','_rs_selected_node','_rs_node_x','_rs_node_y','_rs_listen_node','_rs_display_smooth','_rs_ab_slot','_rs_set_ab','_rs_copy_ab','_rs_preset_index','_rs_preset_load','_rs_ui_edit','_rs_undo','_rs_redo','_rs_can_undo','_rs_can_redo','_rs_set_clock','_rs_pump','_rs_open_dropdown','_rs_dropdown_open','_rs_dropdown_count','_rs_dropdown_x','_rs_dropdown_row_y','_rs_plot_rect','_rs_set_size','_rs_profile_db_at','_rs_mini_knob_tip']"
+    "-sEXPORTED_FUNCTIONS=${FACTORY_UI_ABI_EXPORTS}"
+    "-sEXPORTED_FUNCTIONS+=['_rs_select_node','_rs_selected_node','_rs_node_x','_rs_node_y','_rs_listen_node','_rs_display_smooth','_rs_ab_slot','_rs_set_ab','_rs_copy_ab','_rs_preset_load','_rs_ui_edit','_rs_undo','_rs_redo','_rs_can_undo','_rs_can_redo','_rs_set_clock','_rs_pump','_rs_plot_rect','_rs_set_size','_rs_profile_db_at','_rs_mini_knob_tip','_rs_mini_knob_dial','_rs_analyzer_mode_segment','_rs_value_entry_open','_rs_value_entry_text','_rs_mini_value_rect']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
   )
   set_target_properties(rs-editor PROPERTIES LINK_DEPENDS ${FACTORY_UI_DEV_SHELL})

@@ -116,11 +116,10 @@ namespace deq_ui
         redrawAll();
     }
 
-    bool DeqEditor::openNamedDropdown (int which)
+    bool DeqEditor::openNamedDropdown (const std::string& name)
     {
-        if (which >= 0 && which <= 2 && panel_) return panel_->openNamedDropdown (which);
-        if (which == 3 && preset_) { preset_->openMenu(); return true; }
-        return false;
+        if (name == "preset" && preset_) { preset_->openMenu(); return true; }
+        return panel_ && panel_->openNamedDropdown (name);
     }
 
     bool DeqEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
@@ -138,20 +137,26 @@ namespace deq_ui
         if (key == "panel") return rectOf (panel_.get());
         if (key == "plot") return curve_ && curve_->plotRectInWindow (x, y, w, h);
 
+        // "b<n>_node" -> the curve handle for band n. Parsed by hand rather than
+        // with std::stoi + catch: emcc builds this TU with exception CATCHING off,
+        // so a throwing stoi would abort the module instead of falling through.
         const auto marker = key.find ("_node");
-        if (key.rfind ("b", 0) == 0 && marker != std::string::npos)
+        if (key.rfind ("b", 0) == 0 && marker != std::string::npos && marker > 1)
         {
-            try
+            int band = 0;
+            bool digits = true;
+            for (std::size_t i = 1; i < marker; ++i)
             {
-                const int band = std::stoi (key.substr (1, marker - 1));
-                float cx = 0.0f, cy = 0.0f;
-                if (curve_ && curve_->nodeCentreInWindow (band, cx, cy))
-                {
-                    x = cx - 10.0f; y = cy - 10.0f; w = 20.0f; h = 20.0f;
-                    return true;
-                }
+                const char c = key[i];
+                if (c < '0' || c > '9') { digits = false; break; }
+                band = band * 10 + (c - '0');
             }
-            catch (...) {}
+            float cx = 0.0f, cy = 0.0f;
+            if (digits && curve_ && curve_->nodeCentreInWindow (band, cx, cy))
+            {
+                x = cx - 10.0f; y = cy - 10.0f; w = 20.0f; h = 20.0f;
+                return true;
+            }
         }
         return panel_ && panel_->widgetRectInWindow (key, x, y, w, h);
     }

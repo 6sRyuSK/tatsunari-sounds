@@ -57,7 +57,7 @@ const approx = (a, b, eps = 0.6) => Math.abs(a - b) <= eps;
   check("Scale segmented control selects Minor/Major row", (await page.evaluate(() => window.ui.get("scale"))) === 1);
 
   const dropdown = await page.evaluate(() => ({
-    opened: window.ui.openDropdown(0), open: window.ui.dropdownOpen(), count: window.ui.dropdownCount(),
+    opened: window.ui.openDropdown("key"), open: window.ui.dropdownOpen(), count: window.ui.dropdownCount(),
   }));
   check("Key dropdown opens with all 12 notes", dropdown.opened && dropdown.open && dropdown.count === 12,
         JSON.stringify(dropdown));
@@ -65,7 +65,7 @@ const approx = (a, b, eps = 0.6) => Math.abs(a - b) <= eps;
   await mouse.clickWindow(page, noteRow.x, noteRow.y);
   check("real dropdown row click changes Key", (await page.evaluate(() => window.ui.get("key"))) === 5);
 
-  await page.evaluate(() => { window.ui.set("key", 7); window.ui.openDropdown(1); });
+  await page.evaluate(() => { window.ui.set("key", 7); window.ui.openDropdown("preset"); });
   const presetMenu = await page.evaluate(() => ({ count: window.ui.dropdownCount(), x: window.ui.dropdownX(5), y: window.ui.dropdownRowY(5) }));
   check("real preset bank is exposed (Init + 10)", presetMenu.count === 11, presetMenu.count);
   await mouse.clickWindow(page, presetMenu.x, presetMenu.y);

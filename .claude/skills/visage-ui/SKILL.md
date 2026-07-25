@@ -183,7 +183,21 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
 
 - `tools/ui-dev/common/PluginHarness.{h,cpp}` が `window.ui` の標準 ABI
   (ParamStore、Theme、widget rect、Dropdown、preset)を実装する。新しい bridge で
-  同じ C export を複製しない。
+  同じ C export を複製しない — rs-editor / pitch-fix / dynamic-eq は全て
+  `ui_dev_harness::Target` を `attach` するだけで、`rs_*` / `pf_*` / `deq_*` には
+  **そのプラグイン固有の状態しか置かない**(RS の undo・A-B、PF の status feed、
+  DEQ の band/analyser feed)。gallery だけは plugin editor ではないので自前 bridge
+  だが、export する ui_* 名と署名は同一。export 一覧は CMake の
+  `FACTORY_UI_ABI_EXPORTS` が単一の真実。
+- **Dropdown は名前で開く**: `openNamedDropdown(const std::string&)` /
+  `ui.openDropdown("preset")`。gallery `"preset"`/`"valueSetting"`、RS
+  `"quality"`/`"channel"`/`"preset"`、PF `"key"`/`"preset"`、DEQ
+  `"type"`/`"slope"`/`"chan"`/`"preset"`。共有 ABI の引数にプラグインごとの
+  マジックインデックスを持ち込まない。
+- editor が独自の theme ドキュメントを持つ場合(RS の `RsTheme` = 共有 Theme +
+  `"rs"` extras)は `makeEditorTarget(editor, nullptr)` にして `Target::accent` /
+  `Target::reloadTheme` を自分で差す。既定の `useSharedTheme` を使うと extras が
+  hot reload で落ちる。
 - `tools/ui-dev/common/HarnessPresetModel.h` で実際の `PresetSession` を editor の
   preset model に接続する。
 - 新しい Visage editor を完成させるときは `tools/ui-dev/<slug>/` に

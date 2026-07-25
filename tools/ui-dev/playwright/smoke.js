@@ -177,7 +177,7 @@ const canvasShot = (page) => page.locator("#canvas").screenshot();
 
   // --- 4d. ValueSetting -> Dropdown open + row select ----------------------
   const qBefore = await page.evaluate(() => window.ui.get("quality"));
-  const vopen = await page.evaluate(() => { const ok = window.ui.openDropdown(1); return { ok, open: window.ui.dropdownOpen(), count: window.ui.dropdownCount() }; });
+  const vopen = await page.evaluate(() => { const ok = window.ui.openDropdown("valueSetting"); return { ok, open: window.ui.dropdownOpen(), count: window.ui.dropdownCount() }; });
   check("value-setting dropdown opened", vopen.ok && vopen.open && vopen.count === 4, JSON.stringify(vopen));
   // Click item index 3 ("Ultra").
   const rowPt = await page.evaluate(() => ({ x: window.ui.dropdownX(3), y: window.ui.dropdownRowY(3) }));
@@ -188,7 +188,7 @@ const canvasShot = (page) => page.locator("#canvas").screenshot();
   check("dropdown closed after select", qAfter.open === false);
 
   // --- 4e. dropdown.png: the PRESET dropdown (header + separator + Save As) --
-  const dOpen = await page.evaluate(() => { const ok = window.ui.openDropdown(0); return ok && window.ui.dropdownOpen(); });
+  const dOpen = await page.evaluate(() => { const ok = window.ui.openDropdown("preset"); return ok && window.ui.dropdownOpen(); });
   check("preset dropdown opened for capture", dOpen === true);
   await wait(page, 100);
   const dropBuf = await canvasShot(page);

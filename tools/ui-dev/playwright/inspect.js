@@ -86,7 +86,7 @@ async function main() {
         selectedNode: window.rs.selectedNode(),
         listenNode: window.rs.listenNode(),
         abSlot: window.rs.abSlot(),
-        presetIndex: window.rs.presetIndex(),
+        presetIndex: window.ui.presetIndex(),
         plotRect: window.rs.plotRect(),
       } : null;
       const plugin = app === "pitch-fix" && window.pf ? {

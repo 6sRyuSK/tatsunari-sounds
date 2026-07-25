@@ -80,7 +80,7 @@ namespace pf_ui
         const factory_ui_visage::Theme& theme() const noexcept { return theme_; }
         factory_ui_visage::Dropdown* dropdown() noexcept { return dropdown_.get(); }
         int presetIndex() const { return presets_.currentIndex(); }
-        bool openNamedDropdown (int which); // 0=key, 1=preset
+        bool openNamedDropdown (const std::string& name); // "key" | "preset"
         bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
 
     private:

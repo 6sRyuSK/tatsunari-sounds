@@ -62,7 +62,7 @@ namespace deq_ui
         int presetIndex() const { return presets_.currentIndex(); }
         int selectedBand() const noexcept { return curve_ ? curve_->selectedBand() : -1; }
         void selectBand (int band);
-        bool openNamedDropdown (int which); // 0=type,1=slope,2=channel,3=preset
+        bool openNamedDropdown (const std::string& name); // "type"|"slope"|"chan"|"preset"
         bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
 
         void draw (visage::Canvas& canvas) override;

@@ -159,11 +159,11 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
   }
   {
     const before = await page.evaluate(() => window.ui.get("quality"));
-    const open = await page.evaluate(() => { const ok = window.rs.openDropdown(0); return { ok, open: window.rs.dropdownOpen(), n: window.rs.dropdownCount() }; });
+    const open = await page.evaluate(() => { const ok = window.ui.openDropdown("quality"); return { ok, open: window.ui.dropdownOpen(), n: window.ui.dropdownCount() }; });
     check("QUALITY dropdown opened", open.ok && open.open && open.n === 3, JSON.stringify(open));
-    const row = await page.evaluate(() => ({ x: window.rs.dropdownX(2), y: window.rs.dropdownRowY(2) })); // "High"
+    const row = await page.evaluate(() => ({ x: window.ui.dropdownX(2), y: window.ui.dropdownRowY(2) })); // "High"
     await clickWindow(page, row.x, row.y);
-    const after = await page.evaluate(() => ({ q: window.ui.get("quality"), open: window.rs.dropdownOpen() }));
+    const after = await page.evaluate(() => ({ q: window.ui.get("quality"), open: window.ui.dropdownOpen() }));
     check("QUALITY dropdown pick changed choice", after.q === 2 && before !== 2, before + " -> " + after.q);
     check("QUALITY dropdown closed after pick", after.open === false);
   }
@@ -221,11 +221,11 @@ const rectCentre = (r) => ({ x: r.x + r.w * 0.5, y: r.y + r.h * 0.5 });
     const pr = await page.evaluate(() => window.ui.widgetRect("preset"));
     const arrowW = Math.min(24, pr.h);
     const nextX = pr.x + pr.w - arrowW * 0.5, prevX = pr.x + arrowW * 0.5, midY = pr.y + pr.h * 0.5;
-    const p0 = await page.evaluate(() => window.rs.presetIndex());
+    const p0 = await page.evaluate(() => window.ui.presetIndex());
     await clickWindow(page, nextX, midY); await wait(page, 50);
-    const p1 = await page.evaluate(() => window.rs.presetIndex());
+    const p1 = await page.evaluate(() => window.ui.presetIndex());
     await clickWindow(page, prevX, midY); await wait(page, 50);
-    const p2 = await page.evaluate(() => window.rs.presetIndex());
+    const p2 = await page.evaluate(() => window.ui.presetIndex());
     check("preset next stepped forward", p1 === p0 + 1, p0 + " -> " + p1);
     check("preset prev stepped back", p2 === p0, p1 + " -> " + p2);
   }

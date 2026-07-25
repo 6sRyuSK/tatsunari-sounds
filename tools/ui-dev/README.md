@@ -21,7 +21,7 @@ tools/ui-dev/
   dynamic-eq/         real Dynamic EQ editor + deterministic analyser feed + thin bridge
   common/             reusable PluginHarness bridge + PresetSession model adapter
   shell.html          emscripten shell page (baked into index.html at link)
-  harness.js          page JS: window.ui/rs/pf/deq wrappers, theme hot-reload, live reload
+  harness.js          page JS: window.ui (shared ABI) + rs/pf/deq extras, theme hot-reload, live reload
   theme.json          live-editable theme (a copy of ui/visage/theme/factory-default.json)
   dev_server.py       static server (+ /healthz, --watch rebuild, /events reload, --theme-file)
   playwright/         pinned npm project: verify/inspect runners + all four app tests
@@ -119,6 +119,14 @@ surface (parameter discovery/read/write, theme/font reload, widget geometry,
 freeze, dropdown rows, presets), and `HarnessPresetModel.h` adapts the real
 `factory_presets::PresetSession` to the editor model.
 
+`window.ui` is the SAME ABI in all four apps — gallery, rs-editor, pitch-fix and
+dynamic-eq all export the one list defined as `FACTORY_UI_ABI_EXPORTS` in
+`CMakeLists.txt`. `window.rs` / `window.pf` / `window.deq` carry only genuinely
+plugin-specific state (RS undo + A-B, the PF status feed, the DEQ band/analyser
+feed); nothing that exists in `window.ui` is duplicated there. Dropdowns are opened
+by name — `ui.openDropdown("preset")`, `"quality"`/`"channel"` (RS), `"key"` (PF),
+`"type"`/`"slope"`/`"chan"` (DEQ), `"valueSetting"` (gallery) — never by index.
+
 A new plugin supplies only the parts that cannot be inferred safely:
 
 1. A JUCE-free editor and its small discovery hooks (`store`, `dropdown`,
@@ -198,7 +206,13 @@ is the reference for every pinned version the harness depends on.
 | emsdk / emscripten | **6.0.3** | `git clone https://github.com/emscripten-core/emsdk && ./emsdk install 6.0.3 && ./emsdk activate 6.0.3 && source ./emsdk_env.sh` |
 | visage | commit `20de59464243447816d142e9d38e9723d068f755` | fetched by `ui/visage/CMakeLists.txt` (FetchContent) |
 | FreeType | tag `VER-2-14-1` | fetched by visage; **GitHub mirror** needed when `gitlab.freedesktop.org` is proxy-blocked (see below) |
-| Node / Playwright | Node `>=20`, Playwright `1.61.0`, pngjs `7.0.0` | pinned by `playwright/package-lock.json`; `setup --with-playwright` installs managed Chromium |
+| Node / Playwright | Node `>=20`, Playwright `1.61.0`, pngjs `7.0.0` | pinned by `playwright/package-lock.json`; `setup --with-playwright` **reuses** a Chromium already in `PLAYWRIGHT_BROWSERS_PATH` (the sandbox pre-provisions one) and downloads the managed build only when none is found |
+
+The pinned Playwright and a pre-provisioned browser image rarely agree on the exact
+Chromium revision, so `drive.js` resolves in this order and reports which one it used
+(`npm run doctor`): `CHROME_BIN` → Playwright's managed build → the newest
+`chromium-*` under `PLAYWRIGHT_BROWSERS_PATH` → a system Chrome/Edge. No revision
+number is hardcoded anywhere; bumping the Playwright pin does not strand the harness.
 
 Two sandbox workarounds are wired into `ui/visage/CMakeLists.txt` so you don't
 have to think about them:
