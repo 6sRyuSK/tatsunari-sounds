@@ -145,55 +145,56 @@ jobs:
           variant: ${{ matrix.entry.os == 'macOS' && 'ccache' || 'sccache' }}
           max-size: 1500M
 
-      # Narrow the configure to just the plugin being built (FACTORY_PLUGINS). This
-      # also means a JUCE-plugin build job never configures resonance-suppressor,
-      # so it never fetches the CLAP/VST3/clap-wrapper + Visage SDKs the clap-first
-      # RS build pulls in — only the RS build job pays that cost.
+      # Narrow the configure to just the plugin being built (FACTORY_PLUGINS), so a
+      # job only pays for the SDKs its own plugin needs. FACTORY_JUCE_ORACLES=OFF on
+      # top of that: the RS/dynamic-eq byte-equivalence oracles are the last JUCE in
+      # the tree and they are a CI gate (ci.yml), not a release artefact — a release
+      # build has no reason to clone JUCE and build juceaide to produce a test exe
+      # it never runs.
       - name: Configure
         shell: bash
         run: |
           if [ "${{ matrix.entry.os }}" = "macOS" ]; then L=ccache; else L=sccache; fi
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER="$L" -DCMAKE_CXX_COMPILER_LAUNCHER="$L" \
+            -DFACTORY_JUCE_ORACLES=OFF \
             -DFACTORY_PLUGINS="${{ matrix.entry.slug }}"
 
-      # clap-first plugins (kind=clap) use make_clapfirst target names (<slug>_vst3
-      # / _auv2, lowercase) and drop their assets in build/<slug>_assets/; JUCE
-      # plugins (kind=juce) use <Target>_VST3 / _AU under the artefacts tree. The
-      # native .clap is not built here — the release zip ships VST3 + AU only
+      # Every plugin ships clap-first (kind=clap): make_clapfirst target names
+      # (<slug>_vst3 / _auv2, lowercase), assets in build/<slug>_assets/. The old
+      # kind=juce branch (<Target>_VST3 / _AU under the artefacts tree) is gone —
+      # release_plan.py now rejects a juce_add_plugin outright, so an unexpected kind
+      # here means the plan schema drifted; fail rather than guess at a layout.
+      # The native .clap is not built — the release zip ships VST3 + AU only
       # (installer parity; CLAP-format installer support is a follow-up).
       - name: Build
         shell: bash
         run: |
-          if [ "${{ matrix.entry.kind }}" = "clap" ]; then
-            targets="${{ matrix.entry.target }}_vst3"
-            if [ "${{ matrix.entry.os }}" = "macOS" ]; then
-              targets="$targets ${{ matrix.entry.target }}_auv2"
-            fi
-          else
-            targets="${{ matrix.entry.target }}_VST3"
-            if [ "${{ matrix.entry.os }}" = "macOS" ]; then
-              targets="$targets ${{ matrix.entry.target }}_AU"
-            fi
+          set -euo pipefail
+          if [ "${{ matrix.entry.kind }}" != "clap" ]; then
+            echo "::error::unsupported plugin kind '${{ matrix.entry.kind }}' for ${{ matrix.entry.slug }} (expected 'clap')"
+            exit 1
+          fi
+          targets="${{ matrix.entry.target }}_vst3"
+          if [ "${{ matrix.entry.os }}" = "macOS" ]; then
+            targets="$targets ${{ matrix.entry.target }}_auv2"
           fi
           cmake --build build --target $targets
 
+      # clap-first assets: build/<slug>_assets/ — VST3 bundle flat on macOS, under
+      # VST3/ on Windows; AUv2 .component flat on macOS. (No .clap here.)
       - name: Stage binaries
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p out
-          if [ "${{ matrix.entry.kind }}" = "clap" ]; then
-            # clap-first assets: build/<slug>_assets/ — VST3 bundle flat on macOS,
-            # under VST3/ on Windows; AUv2 .component flat on macOS. (No .clap here.)
-            find "build/${{ matrix.entry.slug }}_assets" \
-              \( -type d -name '*.vst3' -o -type d -name '*.component' \) \
-              -exec cp -R {} out/ \;
-          else
-            find "build/plugins/${{ matrix.entry.slug }}" \
-              \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' \) \
-              -exec cp -R {} out/ \;
-          fi
+          find "build/${{ matrix.entry.slug }}_assets" \
+            \( -type d -name '*.vst3' -o -type d -name '*.component' \) \
+            -exec cp -R {} out/ \;
           ls -la out
+          # An empty staging dir means the asset layout moved — the zip step would
+          # otherwise publish an empty archive for this plugin.
+          [ -n "$(ls -A out)" ] || { echo "::error::no bundles staged for ${{ matrix.entry.slug }}"; exit 1; }
 
       # macOS ships AU (.component) and VST3 (.vst3) as SEPARATE zips so a user
       # can grab just the format they need. Version in the filename uses

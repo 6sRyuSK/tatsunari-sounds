@@ -19,9 +19,11 @@ import release_plan  # noqa: E402
 def make_plugin(root: Path, slug: str, *, version: str, name: str | None = None,
                 target: str | None = None, toml_body: str | None = None,
                 cmake_body: str | None = None) -> None:
-    """Write plugins/<slug>/plugin.toml + CMakeLists.txt under root. cmake_body
-    overrides the default juce_add_plugin(<target>) CMakeLists verbatim — used to
-    exercise the clap-first (factory_clap_plugin) and ambiguous declarations."""
+    """Write plugins/<slug>/plugin.toml + CMakeLists.txt under root. The default
+    CMakeLists declares the one shipping style, factory_clap_plugin(<target>), with
+    the target defaulting to the slug (a make_clapfirst TARGET_NAME, hyphens and
+    all). cmake_body overrides it verbatim — used to exercise the rejected
+    juce_add_plugin and no-macro cases."""
     d = root / "plugins" / slug
     d.mkdir(parents=True, exist_ok=True)
     if toml_body is None:
@@ -37,8 +39,8 @@ def make_plugin(root: Path, slug: str, *, version: str, name: str | None = None,
         )
     (d / "plugin.toml").write_text(toml_body, encoding="utf-8")
     if cmake_body is None:
-        tgt = target if target is not None else "".join(w.title() for w in slug.split("-"))
-        cmake_body = f"juce_add_plugin({tgt}\n  PRODUCT_NAME \"x\")\n"
+        tgt = target if target is not None else slug
+        cmake_body = f"factory_clap_plugin({tgt}\n  OUTPUT_NAME \"x\")\n"
     (d / "CMakeLists.txt").write_text(cmake_body, encoding="utf-8")
 
 
@@ -152,27 +154,39 @@ class TargetResolutionTest(TmpRepoTest):
 
 
 class KindResolutionTest(TmpRepoTest):
-    """Each target is tagged with its declaration style: "juce" for
-    juce_add_plugin, "clap" for the forward-looking factory_clap_plugin. The
-    tag rides the per-plugin structures + the build matrix, never the manifest."""
-
-    def test_juce_target_kind(self):
-        make_plugin(self.root, "alpha", version="1.0.0", target="AlphaTarget")
-        r = self.compute(prev_manifest=None)
-        self.assertEqual(r["plugins"][0]["target"], "AlphaTarget")
-        self.assertEqual(r["plugins"][0]["kind"], "juce")
-        # kind also rides the plan entry and every build-matrix include entry.
-        self.assertEqual(r["plan"][0]["kind"], "juce")
-        self.assertTrue(all(e["kind"] == "juce" for e in r["include"]))
+    """Post-脱JUCE there is exactly one shipping declaration style, "clap"
+    (factory_clap_plugin). The tag rides the per-plugin structures + the build
+    matrix, never the manifest; a shipping juce_add_plugin is rejected."""
 
     def test_clap_target_kind(self):
         make_plugin(self.root, "alpha", version="1.0.0",
-                    cmake_body="factory_clap_plugin(AlphaClap\n  PRODUCT_NAME \"x\")\n")
+                    cmake_body="factory_clap_plugin(AlphaClap\n  OUTPUT_NAME \"x\")\n")
         r = self.compute(prev_manifest=None)
         self.assertEqual(r["plugins"][0]["target"], "AlphaClap")
         self.assertEqual(r["plugins"][0]["kind"], "clap")
+        # kind also rides the plan entry and every build-matrix include entry.
         self.assertEqual(r["plan"][0]["kind"], "clap")
         self.assertTrue(all(e["kind"] == "clap" for e in r["include"]))
+
+    def test_hyphenated_slug_target_survives(self):
+        # A make_clapfirst TARGET_NAME is the slug, hyphens included.
+        make_plugin(self.root, "my-plugin", version="1.0.0")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["plugins"][0]["target"], "my-plugin")
+        self.assertEqual(r["plugins"][0]["kind"], "clap")
+
+    def test_shell_cmakelists_declaration_is_found(self):
+        # A clap-first plugin declares factory_clap_plugin in shell/CMakeLists.txt,
+        # not the main file — both are scanned.
+        make_plugin(self.root, "alpha", version="1.0.0",
+                    cmake_body="add_executable(alpha_dsp_test tests/dsp_test.cpp)\n")
+        shell = self.root / "plugins" / "alpha" / "shell"
+        shell.mkdir(parents=True)
+        (shell / "CMakeLists.txt").write_text(
+            "factory_clap_plugin(alpha\n  OUTPUT_NAME \"Alpha\")\n", encoding="utf-8")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["plugins"][0]["target"], "alpha")
+        self.assertEqual(r["plugins"][0]["kind"], "clap")
 
     def test_neither_macro_raises(self):
         # A CMakeLists with neither macro -> target unresolved, existing error.
@@ -182,24 +196,34 @@ class KindResolutionTest(TmpRepoTest):
             self.compute(prev_manifest=None)
         self.assertIn("Could not resolve version/target", str(cm.exception))
 
-    def test_both_macros_raise(self):
-        # Declaring both styles is ambiguous -> hard error, like no-target.
+    def test_shipping_juce_plugin_is_rejected(self):
+        # 脱JUCE: release.yml can only build/stage the make_clapfirst layout, so a
+        # reintroduced shipping JUCE target must fail the plan, not be packaged.
         make_plugin(self.root, "alpha", version="1.0.0",
-                    cmake_body="juce_add_plugin(AlphaJuce)\n"
-                               "factory_clap_plugin(AlphaClap)\n")
+                    cmake_body="juce_add_plugin(AlphaJuce)\n")
         with self.assertRaises(release_plan.ReleasePlanError) as cm:
             self.compute(prev_manifest=None)
         msg = str(cm.exception)
-        self.assertIn("multiple", msg)
         self.assertIn("juce_add_plugin", msg)
-        self.assertIn("factory_clap_plugin", msg)
+        self.assertIn("clap-first", msg)
+
+    def test_juce_console_app_oracle_is_not_a_shipping_target(self):
+        # The surviving RS/dynamic-eq byte-equivalence oracles use
+        # juce_add_console_app. That must NOT trip the juce_add_plugin rejection,
+        # and must not register a shipping target either — the plugin's real target
+        # still comes from its factory_clap_plugin declaration.
+        make_plugin(self.root, "alpha", version="1.0.0",
+                    cmake_body="juce_add_console_app(alpha_equiv_test)\n"
+                               "factory_clap_plugin(alpha\n  OUTPUT_NAME \"Alpha\")\n")
+        r = self.compute(prev_manifest=None)
+        self.assertEqual(r["plugins"][0]["target"], "alpha")
+        self.assertEqual(r["plugins"][0]["kind"], "clap")
 
     def test_manifest_has_no_kind_field(self):
-        # kind must never leak into manifest.json (the carry-over contract),
-        # even with a mix of juce and clap plugins in the plan.
+        # kind must never leak into manifest.json (the carry-over contract).
         make_plugin(self.root, "alpha", version="1.0.0")
         make_plugin(self.root, "beta", version="0.2.0",
-                    cmake_body="factory_clap_plugin(BetaClap\n  PRODUCT_NAME \"x\")\n")
+                    cmake_body="factory_clap_plugin(BetaClap\n  OUTPUT_NAME \"x\")\n")
         r = self.compute(prev_manifest=None)
         self.assertEqual(r["manifest"], {"alpha": "1.0.0", "beta": "0.2.0"})
         # Serialised on its own, the manifest carries no "kind" anywhere.
@@ -219,7 +243,7 @@ class ErrorTest(TmpRepoTest):
         d = self.root / "plugins" / "alpha"
         d.mkdir(parents=True)
         (d / "plugin.toml").write_text('[plugin]\nname = "a"\n', encoding="utf-8")
-        (d / "CMakeLists.txt").write_text("juce_add_plugin(Alpha)\n", encoding="utf-8")
+        (d / "CMakeLists.txt").write_text("factory_clap_plugin(alpha)\n", encoding="utf-8")
         with self.assertRaises(release_plan.ReleasePlanError) as cm:
             self.compute(prev_manifest=None)
         self.assertIn("Could not resolve version/target", str(cm.exception))

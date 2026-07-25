@@ -25,10 +25,16 @@ Output (JSON object on stdout):
   }
 
 `action` is "build" for changed plugins and "carry-over" for unchanged ones.
-`kind` is the target-declaration style — "juce" (juce_add_plugin) or "clap"
-(factory_clap_plugin) — carried on every per-plugin/per-target structure so a
-future release.yml can branch the build on it. It is deliberately kept OUT of
-`manifest`, which stays the slug->version carry-over contract with prior releases.
+`kind` is the target-declaration style, carried on every per-plugin/per-target
+structure so release.yml can branch the build on it. Post-脱JUCE there is exactly
+one shipping style left — "clap" (factory_clap_plugin) — and a `juce_add_plugin`
+declaration is now a hard error rather than a second recognised kind: no plugin
+ships a JUCE binary any more, so one appearing means someone reintroduced a
+shipping JUCE target that no part of this pipeline knows how to package. The field
+is retained (rather than dropped as a constant) so a future non-CLAP shell has a
+place to declare itself, and release.yml still asserts on it. It is deliberately
+kept OUT of `manifest`, which stays the slug->version carry-over contract with
+prior releases.
 
 Edge cases (preserved verbatim from the inline shell):
   * No previous manifest (first release, or --prev-manifest omitted / missing
@@ -58,18 +64,20 @@ from pathlib import Path
 OSES = ["macOS", "Windows"]
 
 # Extract the CMake target from the plugin's declaration macro, keyed by the
-# declaration style ("kind"). Two styles are recognised: the current JUCE
-# `juce_add_plugin(<Target> ...)` and the forward-looking clap-first
-# `factory_clap_plugin(<Target> ...)` (whose macro does not exist in the repo
-# yet — that's expected). Both mirror the workflow's grep/sed: first call of the
-# macro, first identifier after the opening paren.
+# declaration style ("kind"). Mirrors the workflow's original grep/sed: first call
+# of the macro, first identifier after the opening paren.
 # NOTE: the clap target name is the plugin SLUG (a make_clapfirst TARGET_NAME),
-# which contains hyphens (e.g. resonance-suppressor) — so its capture class must
-# include '-', unlike the JUCE CMake target identifier (e.g. ResonanceSuppressor).
+# which contains hyphens (e.g. resonance-suppressor) — hence '-' in the class.
 _TARGET_RES = {
-    "juce": re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)"),
     "clap": re.compile(r"factory_clap_plugin\(\s*([A-Za-z0-9_-]+)"),
 }
+
+# A SHIPPING juce_add_plugin target. Not a recognised kind any more (脱JUCE: every
+# active plugin ships clap-first), so this pattern exists only to produce a clear
+# error instead of the generic "could not resolve target". Deliberately narrow:
+# juce_add_console_app — which is what the surviving RS/dynamic-eq byte-equivalence
+# ORACLES use — does not match, and must not, since those never ship.
+_JUCE_PLUGIN_RE = re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)")
 
 
 class ReleasePlanError(Exception):
@@ -88,16 +96,18 @@ def _plugin_table(toml_path: Path) -> dict:
 
 
 def _resolve_target(cmake_path: Path) -> tuple[str, str]:
-    """Resolve a plugin's (target, kind) from its CMakeLists. kind is "juce" for
-    a juce_add_plugin target, "clap" for a factory_clap_plugin one. Declaring
-    both styles is ambiguous — which one ships? — so it is a hard error, in the
-    same spirit as the no-target case. A missing file or no match yields ("", ""),
+    """Resolve a plugin's (target, kind) from its CMakeLists. The only recognised
+    kind is "clap" (factory_clap_plugin). A missing file or no match yields ("", ""),
     which enumerate_plugins turns into the no-target error.
 
-    A clap-first plugin (resonance-suppressor) declares factory_clap_plugin in its
-    shell/CMakeLists.txt, not the main file, so BOTH are scanned. juce_add_console_app
-    test oracles in the main file (e.g. rscore_equiv) are NOT juce_add_plugin and so
-    never register a shipping target here."""
+    A clap-first plugin declares factory_clap_plugin in its shell/CMakeLists.txt,
+    not the main file, so BOTH are scanned. The juce_add_console_app oracle tests in
+    the main file (rscore_equiv / deqcore_equiv / preset) are not plugin targets and
+    are correctly invisible here — they are never packaged.
+
+    A shipping juce_add_plugin is rejected outright: release.yml can only build and
+    stage the make_clapfirst asset layout, so a JUCE plugin would either fail
+    cryptically or, worse, produce a release entry with no binaries."""
     texts: list[str] = []
     if cmake_path.is_file():
         texts.append(cmake_path.read_text(encoding="utf-8"))
@@ -107,19 +117,17 @@ def _resolve_target(cmake_path: Path) -> tuple[str, str]:
     if not texts:
         return "", ""
     text = "\n".join(texts)
-    found: dict[str, str] = {}
+    juce = _JUCE_PLUGIN_RE.search(text)
+    if juce:
+        raise ReleasePlanError(
+            f"{cmake_path.parent.name} declares a shipping JUCE target "
+            f"(juce_add_plugin({juce.group(1)})); every active plugin ships clap-first "
+            "via factory_clap_plugin, and release.yml can only package that layout"
+        )
     for kind, rx in _TARGET_RES.items():
         m = rx.search(text)
         if m:
-            found[kind] = m.group(1)
-    if len(found) > 1:
-        raise ReleasePlanError(
-            f"{cmake_path.parent.name} declares multiple plugin target styles "
-            f"({', '.join(sorted(found))}); expected exactly one of "
-            "juce_add_plugin / factory_clap_plugin"
-        )
-    for kind, target in found.items():
-        return target, kind
+            return m.group(1), kind
     return "", ""
 
 
