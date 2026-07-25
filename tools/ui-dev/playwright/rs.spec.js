@@ -30,6 +30,7 @@ const d = require("./drive.js");
 
 const URL = process.argv[2] || "http://127.0.0.1:8080/index.html";
 const OUT = process.argv[3] || __dirname;
+fs.mkdirSync(OUT, { recursive: true });
 
 const asserts = [];
 function check(name, ok, detail) {

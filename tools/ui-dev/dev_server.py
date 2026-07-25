@@ -55,7 +55,12 @@ WATCH_ROOTS = [
     os.path.join(REPO, "ui", "visage"),
     os.path.join(HERE, "gallery"),
     os.path.join(HERE, "rs-editor"),
+    os.path.join(HERE, "common"),
+    os.path.join(HERE, "pitch-fix"),
+    os.path.join(HERE, "dynamic-eq"),
     os.path.join(REPO, "plugins", "resonance-suppressor", "ui"),
+    os.path.join(REPO, "plugins", "pitch-fix", "ui"),
+    os.path.join(REPO, "plugins", "dynamic-eq", "ui"),
     os.path.join(HERE, "shell.html"),
 ]
 WATCH_EXTS = (".h", ".hpp", ".cpp", ".cc", ".txt", ".cmake")
@@ -196,6 +201,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         route = self.path.split("?", 1)[0]
+        if route == "/healthz":
+            payload = json.dumps({"ok": True, "target": args.target, "watch": args.watch,
+                                  "version": _version}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if route == "/events":
             self._handle_events()
             return
