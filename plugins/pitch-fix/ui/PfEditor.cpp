@@ -170,6 +170,42 @@ namespace pf_ui
         return kw < kh ? kw : kh;
     }
 
+    bool PfEditor::openNamedDropdown (int which)
+    {
+        if (which == 0 && key_)        { key_->openMenu();        return true; }
+        if (which == 1 && presetView_) { presetView_->openMenu(); return true; }
+        return false;
+    }
+
+    bool PfEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
+    {
+        auto rectOf = [&] (const visage::Frame* frame)
+        {
+            if (frame == nullptr) return false;
+            const auto p = frame->positionInWindow();
+            x = p.x; y = p.y; w = frame->width(); h = frame->height();
+            return true;
+        };
+
+        if (key == "preset") return rectOf (presetView_.get());
+        if (key == "status") return rectOf (status_.get());
+        if (key == "amount") return rectOf (amount_.get());
+        if (key == "retune") return rectOf (retune_.get());
+        if (key == "glide") return rectOf (glide_.get());
+        if (key == "tolerance") return rectOf (tolerance_.get());
+        if (key == "hysteresis") return rectOf (hysteresis_.get());
+        if (key == "min_pitch") return rectOf (minPitch_.get());
+        if (key == "max_pitch") return rectOf (maxPitch_.get());
+        if (key == "threshold") return rectOf (threshold_.get());
+        if (key == "mix") return rectOf (mix_.get());
+        if (key == "out") return rectOf (out_.get());
+        if (key == "key") return rectOf (key_.get());
+        if (key == "scale") return rectOf (scale_.get());
+        if (key == "a4") return rectOf (a4_.get());
+        if (key == "buffer") return rectOf (buffer_.get());
+        return false;
+    }
+
     void PfEditor::presentDropdown (std::vector<Dropdown::Item> items, int selected,
                                     visage::Frame* anchor, std::function<void (int)> onSelect)
     {

@@ -108,6 +108,54 @@ namespace deq_ui
         }
     }
 
+    void DeqEditor::selectBand (int band)
+    {
+        if (band < 0 || band >= DeqCurveView::kNumBands) return;
+        curve_->setSelectedBand (band);
+        panel_->setBand (band);
+        redrawAll();
+    }
+
+    bool DeqEditor::openNamedDropdown (int which)
+    {
+        if (which >= 0 && which <= 2 && panel_) return panel_->openNamedDropdown (which);
+        if (which == 3 && preset_) { preset_->openMenu(); return true; }
+        return false;
+    }
+
+    bool DeqEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
+    {
+        auto rectOf = [&] (const visage::Frame* frame)
+        {
+            if (frame == nullptr) return false;
+            const auto p = frame->positionInWindow();
+            x = p.x; y = p.y; w = frame->width(); h = frame->height();
+            return true;
+        };
+        if (key == "preset") return rectOf (preset_.get());
+        if (key == "bypass") return rectOf (bypass_.get());
+        if (key == "curve") return rectOf (curve_.get());
+        if (key == "panel") return rectOf (panel_.get());
+        if (key == "plot") return curve_ && curve_->plotRectInWindow (x, y, w, h);
+
+        const auto marker = key.find ("_node");
+        if (key.rfind ("b", 0) == 0 && marker != std::string::npos)
+        {
+            try
+            {
+                const int band = std::stoi (key.substr (1, marker - 1));
+                float cx = 0.0f, cy = 0.0f;
+                if (curve_ && curve_->nodeCentreInWindow (band, cx, cy))
+                {
+                    x = cx - 10.0f; y = cy - 10.0f; w = 20.0f; h = 20.0f;
+                    return true;
+                }
+            }
+            catch (...) {}
+        }
+        return panel_ && panel_->widgetRectInWindow (key, x, y, w, h);
+    }
+
     void DeqEditor::presentDropdown (std::vector<factory_ui_visage::Dropdown::Item> items, int selected,
                                      visage::Frame* anchor, std::function<void (int)> onSelect)
     {

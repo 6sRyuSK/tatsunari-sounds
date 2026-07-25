@@ -53,6 +53,47 @@ target_include_directories(rs-editor PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
 )
 
+# Real plugin editors using the reusable PluginHarness bridge. Adding another
+# JUCE-free Visage editor follows this same small target + adapter pattern.
+set(PF_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/pitch-fix)
+add_executable(pitch-fix
+  pitch-fix/main.cpp
+  pitch-fix/PitchFixBridge.cpp
+  common/PluginHarness.cpp
+  ${PF_PLUGIN_DIR}/ui/PfEditor.cpp
+)
+target_link_libraries(pitch-fix PRIVATE factory_ui_visage)
+target_include_directories(pitch-fix PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/common
+  ${CMAKE_CURRENT_SOURCE_DIR}/pitch-fix
+  ${PF_PLUGIN_DIR}
+  ${PF_PLUGIN_DIR}/ui
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../presets/include
+)
+
+set(DEQ_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/dynamic-eq)
+add_executable(dynamic-eq
+  dynamic-eq/main.cpp
+  dynamic-eq/DynamicEqBridge.cpp
+  common/PluginHarness.cpp
+  ${DEQ_PLUGIN_DIR}/ui/DeqEditor.cpp
+  ${DEQ_PLUGIN_DIR}/ui/DeqCurveView.cpp
+  ${DEQ_PLUGIN_DIR}/ui/DeqBandPanel.cpp
+)
+target_link_libraries(dynamic-eq PRIVATE factory_ui_visage)
+target_include_directories(dynamic-eq PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/common
+  ${CMAKE_CURRENT_SOURCE_DIR}/dynamic-eq
+  ${DEQ_PLUGIN_DIR}
+  ${DEQ_PLUGIN_DIR}/ui
+  ${DEQ_PLUGIN_DIR}/Source
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../presets/include
+)
+
 if(EMSCRIPTEN)
   set(FACTORY_UI_DEV_SHELL ${CMAKE_CURRENT_SOURCE_DIR}/shell.html)
 
@@ -90,7 +131,42 @@ if(EMSCRIPTEN)
     OUTPUT_NAME "index"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web-rs"
   )
+
+  set(PLUGIN_HARNESS_EXPORTS
+    "['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y','_ui_widget_rect','_ui_set_font','_ui_font','_ui_feed_spectrum','_ui_open_dropdown','_ui_dropdown_open','_ui_dropdown_item_count','_ui_dropdown_x','_ui_dropdown_row_y','_ui_preset_index']")
+
+  target_link_options(pitch-fix PRIVATE
+    --shell-file ${FACTORY_UI_DEV_SHELL}
+    -sGL_ENABLE_GET_PROC_ADDRESS
+    -sALLOW_MEMORY_GROWTH
+    --bind
+    "-sEXPORTED_FUNCTIONS=${PLUGIN_HARNESS_EXPORTS}"
+    "-sEXPORTED_FUNCTIONS+=['_pf_set_feed','_pf_detected','_pf_target','_pf_shift','_pf_latency']"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
+  )
+  set_target_properties(pitch-fix PROPERTIES
+    LINK_DEPENDS ${FACTORY_UI_DEV_SHELL}
+    SUFFIX ".html"
+    OUTPUT_NAME "index"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web-pf"
+  )
+
+  target_link_options(dynamic-eq PRIVATE
+    --shell-file ${FACTORY_UI_DEV_SHELL}
+    -sGL_ENABLE_GET_PROC_ADDRESS
+    -sALLOW_MEMORY_GROWTH
+    --bind
+    "-sEXPORTED_FUNCTIONS=${PLUGIN_HARNESS_EXPORTS}"
+    "-sEXPORTED_FUNCTIONS+=['_deq_select_band','_deq_selected_band','_deq_node_x','_deq_node_y','_deq_set_phase','_deq_live_gain','_deq_plot_rect']"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
+  )
+  set_target_properties(dynamic-eq PROPERTIES
+    LINK_DEPENDS ${FACTORY_UI_DEV_SHELL}
+    SUFFIX ".html"
+    OUTPUT_NAME "index"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web-deq"
+  )
 else()
-  message(WARNING "gallery/rs-editor are WASM targets; configure with `emcmake cmake ...` "
+  message(WARNING "UI-dev apps are WASM targets; configure with `emcmake cmake ...` "
                   "(this non-Emscripten configure will not produce a runnable page).")
 endif()

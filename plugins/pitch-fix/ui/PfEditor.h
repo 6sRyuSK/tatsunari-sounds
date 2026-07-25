@@ -28,6 +28,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace pf_ui
@@ -72,6 +73,15 @@ namespace pf_ui
 
         void draw (visage::Canvas& canvas) override;
         void resized() override;
+
+        // Harness / driver surface. These are read-only UI-discovery hooks; all
+        // edits still travel through the real widget gesture path.
+        factory_params::ParamStore& store() noexcept { return store_; }
+        const factory_ui_visage::Theme& theme() const noexcept { return theme_; }
+        factory_ui_visage::Dropdown* dropdown() noexcept { return dropdown_.get(); }
+        int presetIndex() const { return presets_.currentIndex(); }
+        bool openNamedDropdown (int which); // 0=key, 1=preset
+        bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
 
     private:
         void presentDropdown (std::vector<factory_ui_visage::Dropdown::Item> items,

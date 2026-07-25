@@ -118,6 +118,27 @@ namespace deq_ui
 
     void DeqCurveView::setSelectedBand (int b) { if (selected_ != b) { selected_ = b; redraw(); } }
     void DeqCurveView::setFrozen (bool frozen) { frozen_ = frozen; redraw(); }
+    void DeqCurveView::refreshAnalyzer() { updateSpectra(); redraw(); }
+
+    bool DeqCurveView::nodeCentreInWindow (int band, float& x, float& y) const
+    {
+        if (band < 0 || band >= kNumBands || ! bandOn (band)) return false;
+        const auto local = nodePos (band);
+        const auto origin = positionInWindow();
+        x = origin.x + local.x;
+        y = origin.y + local.y;
+        return true;
+    }
+
+    bool DeqCurveView::plotRectInWindow (float& x, float& y, float& w, float& h) const
+    {
+        const auto origin = positionInWindow();
+        x = origin.x + plot_.x;
+        y = origin.y + plot_.y;
+        w = plot_.w;
+        h = plot_.h;
+        return plot_.w > 0.0f && plot_.h > 0.0f;
+    }
 
     void DeqCurveView::resized() { computeLayout(); }
 

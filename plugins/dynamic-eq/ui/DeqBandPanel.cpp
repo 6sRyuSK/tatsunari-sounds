@@ -120,6 +120,40 @@ namespace deq_ui
         chan_->requestDropdown  = req;
     }
 
+    bool DeqBandPanel::openNamedDropdown (int which)
+    {
+        if (which == 0 && type_)  { type_->openMenu();  return true; }
+        if (which == 1 && slope_) { slope_->openMenu(); return true; }
+        if (which == 2 && chan_)  { chan_->openMenu();  return true; }
+        return false;
+    }
+
+    bool DeqBandPanel::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
+    {
+        auto rectOf = [&] (const visage::Frame* frame)
+        {
+            if (frame == nullptr) return false;
+            const auto p = frame->positionInWindow();
+            x = p.x; y = p.y; w = frame->width(); h = frame->height();
+            return true;
+        };
+        if (key == bp (band_, "byp")) return rectOf (bypass_.get());
+        if (key == bp (band_, "lsn")) return rectOf (listen_.get());
+        if (key == bp (band_, "dyn")) return rectOf (dyn_.get());
+        if (key == bp (band_, "type")) return rectOf (type_.get());
+        if (key == bp (band_, "slope")) return rectOf (slope_.get());
+        if (key == bp (band_, "chan")) return rectOf (chan_.get());
+        if (key == bp (band_, "freq")) return rectOf (freq_.get());
+        if (key == bp (band_, "gain")) return rectOf (gain_.get());
+        if (key == bp (band_, "q")) return rectOf (q_.get());
+        if (key == bp (band_, "thr")) return rectOf (thr_.get());
+        if (key == bp (band_, "rng")) return rectOf (rng_.get());
+        if (key == bp (band_, "atk")) return rectOf (atk_.get());
+        if (key == bp (band_, "rel")) return rectOf (rel_.get());
+        if (key == bp (band_, "knee")) return rectOf (knee_.get());
+        return false;
+    }
+
     void DeqBandPanel::setBand (int band)
     {
         if (band < 0) return;

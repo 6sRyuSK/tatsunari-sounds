@@ -73,6 +73,29 @@
     miniValueRect:  function (which){ var s = cc('rs_mini_value_rect', 'string', ['number'], [which]); try { return JSON.parse(s); } catch (e) { return null; } }
   };
 
+  // Real plugin harness extensions. The generic parameter/theme/dropdown API is
+  // always window.ui; these namespaces only expose plugin-specific live state.
+  window.pf = {
+    setFeed:  function (detected, target, shift, latency, sampleRate) {
+      cc('pf_set_feed', null, ['number', 'number', 'number', 'number', 'number'],
+         [detected, target, shift, latency, sampleRate]);
+    },
+    detected:function () { return cc('pf_detected', 'number', [], []); },
+    target:  function () { return cc('pf_target', 'number', [], []); },
+    shift:   function () { return cc('pf_shift', 'number', [], []); },
+    latency: function () { return cc('pf_latency', 'number', [], []); }
+  };
+
+  window.deq = {
+    selectBand:  function (i) { cc('deq_select_band', null, ['number'], [i]); },
+    selectedBand:function ()  { return cc('deq_selected_band', 'number', [], []); },
+    nodeX:       function (i) { return cc('deq_node_x', 'number', ['number'], [i]); },
+    nodeY:       function (i) { return cc('deq_node_y', 'number', ['number'], [i]); },
+    setPhase:    function (p) { cc('deq_set_phase', null, ['number'], [p]); },
+    liveGain:    function (i) { return cc('deq_live_gain', 'number', ['number'], [i]); },
+    plotRect:    function ()  { var s = cc('deq_plot_rect', 'string', [], []); try { return JSON.parse(s); } catch (e) { return null; } }
+  };
+
   // ---- dev nicety 1: theme.json hot reload ----------------------------------
   var lastModified = null;
   function pollTheme() {

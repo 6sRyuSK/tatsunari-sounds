@@ -18,6 +18,7 @@
 #include <visage_ui/frame.h>
 
 #include <memory>
+#include <string>
 
 namespace deq_ui
 {
@@ -35,6 +36,8 @@ namespace deq_ui
 
         // Wire the editor's shared Dropdown overlay into the choice controls.
         void setDropdownRequest (factory_ui_visage::DropdownRequest req);
+        bool openNamedDropdown (int which); // 0=type, 1=slope, 2=channel
+        bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
 
         void draw (visage::Canvas& canvas) override;
         void resized() override;

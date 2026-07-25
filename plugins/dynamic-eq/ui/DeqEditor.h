@@ -26,6 +26,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace deq_ui
@@ -53,6 +54,16 @@ namespace deq_ui
         void onStateReplaced();
 
         DeqCurveView& curve() noexcept { return *curve_; }
+
+        // Harness / driver surface.
+        factory_params::ParamStore& store() noexcept { return store_; }
+        const factory_ui_visage::Theme& theme() const noexcept { return theme_; }
+        factory_ui_visage::Dropdown* dropdown() noexcept { return dropdown_.get(); }
+        int presetIndex() const { return presets_.currentIndex(); }
+        int selectedBand() const noexcept { return curve_ ? curve_->selectedBand() : -1; }
+        void selectBand (int band);
+        bool openNamedDropdown (int which); // 0=type,1=slope,2=channel,3=preset
+        bool widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const;
 
         void draw (visage::Canvas& canvas) override;
         void resized() override;
