@@ -1,10 +1,10 @@
 # tools/ui-dev — the Visage UI daily-development loop (Phase P2a/P2b)
 
-The vertical slice of the new Visage-based UI foundation: a widget gallery built
-to **WebAssembly**, served locally, driven + screenshotted under headless
-Chromium. Edit a widget's C++ (or the theme JSON) → see it in the browser in
-seconds. This is a **local dev harness only** — it is not wired into the
-repository-root build or CI.
+The local development harness for the JUCE-free Visage UI layer. It builds the
+widget gallery and three real plugin editors (Resonance Suppressor, Pitch Fix,
+Dynamic EQ) to **WebAssembly**, serves them locally, and drives + screenshots
+them under headless Chromium. Edit C++ (or the theme JSON) → get objective browser
+feedback in seconds. It is not wired into the repository-root build or CI.
 
 Phase P2b completed the widget set: the gallery now has a **second card** with a
 Segmented strip, IconButtons, a ValueSetting, a LinkSlider, a PresetSelectorView
@@ -17,14 +17,18 @@ tools/ui-dev/
   gallery/            visage app: GalleryFrame + main + the JS<->WASM Bridge
   rs-editor/          Phase P3 app: main + RsBridge + SyntheticFeed + Mocks (the RS
                       editor itself lives JUCE-free in plugins/resonance-suppressor/ui/)
+  pitch-fix/          real Pitch Fix editor + deterministic status feed + thin bridge
+  dynamic-eq/         real Dynamic EQ editor + deterministic analyser feed + thin bridge
+  common/             reusable PluginHarness bridge + PresetSession model adapter
   shell.html          emscripten shell page (baked into index.html at link)
-  harness.js          page JS: bridge wrappers (window.ui + window.rs), theme hot-reload, live reload
+  harness.js          page JS: window.ui/rs/pf/deq wrappers, theme hot-reload, live reload
   theme.json          live-editable theme (a copy of ui/visage/theme/factory-default.json)
-  dev_server.py       static server (+ --watch rebuild + /events reload + --theme-file)
-  playwright/         drive.js (reusable driver) + smoke.js (gallery) + rs.spec.js (rs-editor)
-  CMakeLists.txt      STANDALONE project; add_subdirectory(../../ui/visage); targets: gallery, rs-editor
-  CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs — both build gallery + rs-editor
-  setup.sh / dev.sh   one-command bootstrap + daily loop (macOS/Linux); *.ps1 = Windows (UNTESTED)
+  dev_server.py       static server (+ /healthz, --watch rebuild, /events reload, --theme-file)
+  playwright/         pinned npm project: verify/inspect runners + all four app tests
+  artifacts/          ignored Playwright screenshots + machine-readable result/state JSON
+  CMakeLists.txt      STANDALONE project; targets: gallery, rs-editor, pitch-fix, dynamic-eq
+  CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs — both build all apps
+  setup.sh / dev.sh   one-command bootstrap + daily loop (macOS/Linux); *.ps1 = Windows
 ```
 
 ## Quick start (one command)
@@ -43,8 +47,12 @@ with live rebuild + browser auto-reload:
 ```bash
 ./tools/ui-dev/dev.sh                   # rs-editor       -> http://127.0.0.1:8081
 ./tools/ui-dev/dev.sh --gallery         # widget gallery  -> http://127.0.0.1:8080
+./tools/ui-dev/dev.sh --app pitch-fix   # Pitch Fix       -> http://127.0.0.1:8082
+./tools/ui-dev/dev.sh --app dynamic-eq  # Dynamic EQ      -> http://127.0.0.1:8083
 ./tools/ui-dev/dev.sh --rel             # -O2 preset (small wasm, slower link)
 ./tools/ui-dev/dev.sh --no-serve        # configure + build only, no server
+./tools/ui-dev/dev.sh --verify          # build + temporary server + RS Playwright suite
+./tools/ui-dev/dev.sh --gallery --verify # same one-shot verification for the gallery
 ```
 
 `dev.sh` runs `setup.sh` for you when `.emsdk` is missing, so a bare
@@ -56,8 +64,80 @@ so the same script works in-container and on a normal machine. Everything below 
 what these two scripts automate.
 
 **Windows:** `setup.ps1` / `dev.ps1` mirror the bash scripts (winget/choco hints,
-emsdk via `emsdk.bat`) but are **UNTESTED** — authored on Linux; verify on a real
-Windows box before relying on them.
+emsdk via `emsdk.bat`). The build + Playwright paths are exercised on Windows;
+use `-Verify`, `-Gallery`, `-App pitch-fix`, `-App dynamic-eq`, `-Rel`, and
+`-NoServe` as the PowerShell equivalents.
+
+## Autonomous UI iteration
+
+The shortest objective feedback loop is one command. It builds the requested
+WASM target, starts a temporary server on a free loopback port, runs Playwright,
+stores all screenshots/JSON under `tools/ui-dev/artifacts/<app>/`, and always
+stops the temporary server:
+
+```bash
+./tools/ui-dev/setup.sh --with-playwright # once: npm ci + managed Chromium
+./tools/ui-dev/dev.sh --verify            # RS editor: 56 interaction/layout checks
+./tools/ui-dev/dev.sh --gallery --verify  # widget gallery smoke/interaction checks
+./tools/ui-dev/dev.sh --app pitch-fix --verify
+./tools/ui-dev/dev.sh --app dynamic-eq --verify
+
+# Windows
+.\tools\ui-dev\setup.ps1 -WithPlaywright
+.\tools\ui-dev\dev.ps1 -Verify
+.\tools\ui-dev\dev.ps1 -Gallery -Verify
+.\tools\ui-dev\dev.ps1 -App pitch-fix -Verify
+.\tools\ui-dev\dev.ps1 -App dynamic-eq -Verify
+```
+
+For a fast agent-readable observation instead of the full suite, build once and
+capture a frozen state. `ui.png` is paired with `ui-state.json`, which contains
+the full parameter surface, every exposed widget rectangle, WebGL renderer,
+canvas metrics, RS model state, and console/page/HTTP errors:
+
+```bash
+cd tools/ui-dev/playwright
+npm run doctor
+npm run capture -- --app rs-editor --set depth=65 --size 940x657
+npm run capture -- --app gallery
+npm run capture -- --app pitch-fix --set amount=100
+npm run capture -- --app dynamic-eq --set b0_on=1 --set b0_freq=3000
+```
+
+`capture` and `test:*` start their own temporary server from `../build/dev`;
+there is no need to keep `dev.sh` running. Use `--url <url>` with `verify.js`
+only when intentionally driving an already-running server. `CHROME_BIN` can
+override browser discovery; otherwise the runner prefers Playwright's managed
+Chromium and falls back to a system Chrome/Edge installation. Set
+`PW_HEADLESS=0` or pass `--headed` to `verify.js` for interactive debugging.
+
+## Adding the harness to a new plugin
+
+It is deliberately a thin integration once the plugin owns a JUCE-free Visage
+editor. `common/PluginHarness.{h,cpp}` already implements the stable `window.ui`
+surface (parameter discovery/read/write, theme/font reload, widget geometry,
+freeze, dropdown rows, presets), and `HarnessPresetModel.h` adapts the real
+`factory_presets::PresetSession` to the editor model.
+
+A new plugin supplies only the parts that cannot be inferred safely:
+
+1. A JUCE-free editor and its small discovery hooks (`store`, `dropdown`,
+   `presetIndex`, `widgetRectInWindow`, `openNamedDropdown`).
+2. A deterministic synthetic implementation of the plugin's feed seam.
+3. A thin `<Plugin>Bridge.cpp` for genuinely plugin-specific state, plus `main.cpp`.
+4. One CMake target/app mapping and one Playwright spec.
+
+The `new-plugin` agent workflow now treats this as the UI phase's completion
+checklist. Fully zero-configuration generation is intentionally not claimed:
+an analyser, pitch detector, meter, and no-feed editor have different contracts,
+and guessing those semantics would create a harness that renders but tests the
+wrong thing. The reusable bridge removes the boilerplate; the feed and meaningful
+assertions remain explicit product code.
+
+Pitch Fix and Dynamic EQ are the compact reference integrations:
+`tools/ui-dev/pitch-fix/` and `tools/ui-dev/dynamic-eq/`. Their tests exercise real
+mouse gestures, dropdown rows, factory presets and exclusion rules—not only
+direct bridge writes.
 
 ## rs-editor (Phase P3) — the resonance-suppressor editor
 
@@ -74,14 +154,14 @@ freezable) and mock preset / A-B models. The editor + its RS theme overlay live 
 :8081 with the RS theme overlay); the manual form is:
 
 ```bash
-cmake --build --preset dev            # builds gallery + rs-editor -> build/dev/{web,web-rs}
+cmake --build --preset dev            # builds all four apps -> build/dev/web*
 # serve rs-editor; theme-rs.json is served at /theme.json so the shared harness.js
 # hot-reloads the RS chunky-knob overlay (the "rs" extras block is applied at load).
 python3 dev_server.py --web-dir build/dev/web-rs --port 8081 \
         --theme-file ../../plugins/resonance-suppressor/ui/theme-rs.json \
         --watch --cmake-build-dir build/dev --target rs-editor
-# verify (30 asserts + 4 screenshots rs-default/busy/min/max):
-cd playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node rs.spec.js http://127.0.0.1:8081/index.html .
+# verify (temporary server + 56 checks + screenshots/result JSON):
+cd playwright && npm run test:rs
 ```
 
 The rs-editor canvas is fixed at the **max** resize size (1320×922) and the editor
@@ -118,7 +198,7 @@ is the reference for every pinned version the harness depends on.
 | emsdk / emscripten | **6.0.3** | `git clone https://github.com/emscripten-core/emsdk && ./emsdk install 6.0.3 && ./emsdk activate 6.0.3 && source ./emsdk_env.sh` |
 | visage | commit `20de59464243447816d142e9d38e9723d068f755` | fetched by `ui/visage/CMakeLists.txt` (FetchContent) |
 | FreeType | tag `VER-2-14-1` | fetched by visage; **GitHub mirror** needed when `gitlab.freedesktop.org` is proxy-blocked (see below) |
-| Node / Playwright | Playwright `1.55.0`, pngjs `7.0.0`, Chromium at `/opt/pw-browsers` | `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`; never `playwright install` |
+| Node / Playwright | Node `>=20`, Playwright `1.61.0`, pngjs `7.0.0` | pinned by `playwright/package-lock.json`; `setup --with-playwright` installs managed Chromium |
 
 Two sandbox workarounds are wired into `ui/visage/CMakeLists.txt` so you don't
 have to think about them:
@@ -181,9 +261,21 @@ Then open `http://127.0.0.1:8080/index.html`.
 
 ```bash
 cd playwright
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node smoke.js http://127.0.0.1:8080/index.html .
-# quick non-blank-only check: node drive.js <url> out.png
+npm run test:gallery            # temporary server + gallery regression suite
+npm run test:rs                 # temporary server + RS regression suite
+npm run test:pitch-fix          # real Pitch Fix editor suite
+npm run test:dynamic-eq         # real Dynamic EQ editor suite
+npm test                        # all four (all WASM targets must already be built)
+npm run capture -- --app rs-editor --set depth=65
 ```
+
+The `dev.sh --verify` / `dev.ps1 -Verify` entry points are preferred because
+they build before invoking these npm scripts. `verify.js` checks `/healthz`, uses
+a free loopback port, creates app-specific artifact directories, and propagates
+test failures. `drive.js` validates `CHROME_BIN`, discovers managed/system
+Chromium across Windows/macOS/Linux, waits for the actual WASM bridge (not merely
+page load), and reports the runtime/canvas/status state when initialization times
+out.
 
 `smoke.js` asserts the P2a foundation (bridge lists the 9 params, store
 round-trip, a knob **drag** moves the bound param, gallery non-blank, **theme hot

@@ -47,6 +47,25 @@ python tools/scaffold_plugin.py <slug> \
 
 ## 4. テスト → ビルド
 
+### Visage UI phase: register the autonomous browser harness
+
+The initial scaffold still starts with the fleet's minimal JUCE editor. Once the
+plugin has a JUCE-free Visage editor, completing the UI phase MUST also register
+it in `tools/ui-dev`:
+
+- reuse `common/PluginHarness.{h,cpp}` for the standard `window.ui` ABI;
+- reuse `common/HarnessPresetModel.h` for the real `PresetSession`;
+- add only `main.cpp`, a deterministic plugin-specific `SyntheticFeed`, and a
+  thin plugin bridge under `tools/ui-dev/<slug>/`;
+- register the CMake target, `dev.sh` / `dev.ps1`, `verify.js` / `inspect.js`, and
+  a Playwright spec with at least one real mouse gesture and dropdown selection;
+- run `dev.sh --app <slug> --verify` (or `dev.ps1 -App <slug> -Verify`).
+
+Do not auto-generate fake feed semantics: analyser/pitch/meter contracts differ.
+The standard bridge is boilerplate-free; the synthetic feed and assertions must
+model the plugin's real UI seam explicitly. Follow the `visage-ui` skill for the
+full contract.
+
 `write-dsp-test` スキルに従い spec ベースの検証を書く(スタブは書くまで赤)。
 
 ```bash
