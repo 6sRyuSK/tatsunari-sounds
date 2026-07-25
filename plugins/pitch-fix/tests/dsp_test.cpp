@@ -16,7 +16,9 @@
 //
 #include "PfCore.h"
 
+#include "factory_core/Biquad.h"
 #include "factory_core/FFT.h"
+#include "factory_core/Filters.h"
 #include "factory_core/testing/DspInvariants.h"
 
 #include <algorithm>
@@ -618,6 +620,160 @@ static void coreTests (double Fs)
         if (maxDiff > 1.0e-4)
             fail ("tone above Max Pitch was corrected (band widened past the UI value; diff "
                   + std::to_string (maxDiff) + ") @" + std::to_string (Fs));
+    }
+
+    // --- 16. sub-Min-Pitch energy must not destroy detection --------------------
+    // A male fundamental sits at 80-160 Hz, so the source is never high-passed
+    // hard and proximity build-up / stage rumble rides underneath it. Such a
+    // component does not merely bias the NSDF: when its period exceeds the whole
+    // lag range the NSDF decays monotonically across [lagMin, lagMax], MPM finds
+    // no local maximum, and the frame comes back UNVOICED — the correction stops
+    // dead on perfectly good voiced material.
+    //
+    // Oracle is music theory: a 41-cent-sharp G2 contaminated with a 38 Hz tone
+    // 9 dB below it — well under Min Pitch, so the detector may reject it but
+    // nothing may filter it out of the AUDIO — must still be pulled onto G2.
+    // At this level the pre-fix core corrected NOTHING (output stayed at the
+    // +41 ct input); the tolerance below is set to separate "corrected" from
+    // "not corrected at all", not to pin the residual accuracy.
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        auto s = tightSnapshot();
+        s.minPitchHz = 75.0f;
+        const double g2   = 98.0;                            // G2, ET at A4=440
+        const double fIn  = 98.0 * std::pow (2.0, 41.0 / 1200.0);
+        const int    N    = (int) (4.0 * Fs);
+        auto x = makeSine (N, Fs, fIn, 0.45);
+        const auto rumble = makeSine (N, Fs, 38.0, 0.45 * std::pow (10.0, -9.0 / 20.0));
+        for (int i = 0; i < N; ++i)
+            x[(size_t) i] = (float) (x[(size_t) i] + rumble[(size_t) i]);
+
+        auto y = run (core, x, s);
+
+        // The plugin must not filter the AUDIO, so the rumble is still in the
+        // output and would win a plain peak-pick. Strip it in the MEASUREMENT
+        // instrument (a test-side 4th-order Butterworth at 60 Hz, well below G2)
+        // and read the surviving tone with the same rate-following analysis FFT
+        // used everywhere else: its parabolic interpolation resolves the 2.4 Hz
+        // between G2 and the uncorrected input pitch far inside one bin.
+        auto seg = tailOf (y, Fs, 2.0);
+        {
+            factory_core::Biquad m1, m2;
+            m1.setCoeffs (factory_core::designHpLpStage (
+                factory_core::BandType::HighPass, 60.0, 0.70710678118654752440, 0, 2, Fs));
+            m2.setCoeffs (factory_core::designHpLpStage (
+                factory_core::BandType::HighPass, 60.0, 0.70710678118654752440, 1, 2, Fs));
+            for (auto& v : seg)
+                v = m2.processSample (m1.processSample (v));
+        }
+        const auto m = measureTone (seg, Fs);
+        if (std::abs (centsBetween (m.freqHz, g2)) > 20.0)
+            fail ("sub-Min-Pitch energy killed detection: got " + std::to_string (m.freqHz)
+                  + " Hz, want " + std::to_string (g2) + " (input was "
+                  + std::to_string (fIn) + ") @" + std::to_string (Fs));
+    }
+
+    // --- 17. PSOLA budget: no silently-uncorrected band at the bottom -----------
+    // PsolaShifter demands 2*P + P/4 + 4 <= lookahead for a VOICED grain and
+    // degrades to its unvoiced IDENTITY path otherwise — silently, so the pitch
+    // still shows in the UI while nothing is corrected. The lookahead table is
+    // written in periods of Min Pitch, so the guarantee only holds while the
+    // tracked period stays <= Fs/minPitch.
+    //
+    // The invariant that keeps the two in step is: ANY pitch the core reports as
+    // tracked must be one the shifter can actually correct. PitchDetector accepts
+    // down to 0.9*Min Pitch, which at Realtime (2.35 periods) needs 2.5 — so the
+    // pre-fix core tracked and DISPLAYED roughly a semitone at the bottom of the
+    // range that it then quietly refused to correct. Sweep across that boundary
+    // and assert the invariant directly against the reported latency, so it stays
+    // formula-independent (no re-derivation of the mode table here).
+    {
+        for (int mode = 0; mode < 4; ++mode)
+        {
+            const double minPitch = 75.0;
+            for (double mult : { 0.86, 0.90, 0.93, 0.97, 1.0, 1.1, 1.4 })
+            {
+                pf_core::PfCore core;
+                core.prepare (Fs, 512);
+                auto s = tightSnapshot();
+                s.buffer     = mode;
+                s.minPitchHz = (float) minPitch;
+                auto x = makeSine ((int) (1.5 * Fs), Fs, minPitch * mult, 0.5);
+                std::vector<float> l (x), r (x);
+                for (int pos = 0; pos < (int) x.size(); pos += 512)
+                {
+                    const int m = std::min (512, (int) x.size() - pos);
+                    core.process (l.data() + pos, r.data() + pos, m, s);
+                    const double det = core.uiDetectedHz.load();
+                    if (det <= 0.0)
+                        continue;
+                    const double needed =
+                        pf_core::PfCore::kPsolaBudgetPeriods * Fs / det + 4.0;
+                    if (needed > (double) core.latencySamples())
+                        fail ("mode " + std::to_string (mode) + ": tracked " + std::to_string (det)
+                              + " Hz needs " + std::to_string (needed)
+                              + " samples of lookahead but only "
+                              + std::to_string (core.latencySamples())
+                              + " is reported — correction silently disabled @"
+                              + std::to_string (Fs));
+                }
+            }
+        }
+
+        // And the end-to-end consequence at the worst case the budget must cover:
+        // a tone AT Min Pitch has to be really corrected in every mode, not passed
+        // through. Oracle: music theory (a 40-cent-sharp D2 must land on D2).
+        for (int mode = 0; mode < 4; ++mode)
+        {
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            auto s = tightSnapshot();
+            s.buffer     = mode;
+            s.minPitchHz = 73.416f;                     // D2
+            const double fIn = 73.416 * std::pow (2.0, 40.0 / 1200.0);
+            auto y = run (core, makeSine ((int) (4.0 * Fs), Fs, fIn, 0.5), s);
+            const auto m = measureTone (tailOf (y, Fs, 2.5), Fs);
+            if (std::abs (centsBetween (m.freqHz, 73.416)) > 12.0)
+                fail ("mode " + std::to_string (mode)
+                      + ": tone at Min Pitch left uncorrected (got "
+                      + std::to_string (m.freqHz) + " Hz, want 73.416) @"
+                      + std::to_string (Fs));
+        }
+    }
+
+    // --- 18. a wrong note at the onset must not own the whole note -------------
+    // targetNote is latched from the first voiced hop with NO hysteresis and then
+    // DEFENDED by it. The onset is the least reliable frame in the note (its
+    // analysis window is still half attack transient), so one bad frame could own
+    // everything after it: latched onto A#4, a steady 49-cent-sharp A4 can never
+    // leave, because defending A#4 only costs 49 + 18 < 51.
+    //
+    // Reproduce it deterministically — 12 ms of A#4 (inside the settling window),
+    // then a steady A4 + 49 ct. Oracle is music theory: the sustained pitch is
+    // nearer A4, so that is where it must land.
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        auto s = tightSnapshot();
+        const int    nPre = (int) (0.012 * Fs);
+        const int    N    = (int) (3.0 * Fs);
+        const double fPre = 440.0 * std::pow (2.0, 100.0 / 1200.0);   // A#4
+        const double fIn  = 440.0 * std::pow (2.0, 49.0 / 1200.0);
+
+        std::vector<float> x ((size_t) N);
+        double ph = 0.0;
+        for (int i = 0; i < N; ++i)
+        {
+            ph += 2.0 * kPi * (i < nPre ? fPre : fIn) / Fs;
+            x[(size_t) i] = (float) (0.5 * std::sin (ph));            // phase-continuous
+        }
+
+        auto y = run (core, x, s);
+        const auto m = measureTone (tailOf (y, Fs, 1.5), Fs);
+        if (std::abs (centsBetween (m.freqHz, 440.0)) > 10.0)
+            fail ("a wrong onset note was latched for the whole note: got "
+                  + std::to_string (m.freqHz) + " Hz (want 440) @" + std::to_string (Fs));
     }
 }
 

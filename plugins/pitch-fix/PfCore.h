@@ -6,7 +6,7 @@
 // dsp_test drives it directly. No JUCE, no CLAP, no allocation in process().
 //
 // SIGNAL PATH (per block)
-//   in L/R ──┬─ mid sum → detector ring ──(every hop)── PitchDetector (MPM)
+//   in L/R ──┬─ mid sum → HP(minPitch) → detector ring ──(hop)── PitchDetector
 //            │                                   │ median filter (mode depth)
 //            │                                   │ scale quantiser + hysteresis
 //            │                                   │ tolerance deadzone → amount
@@ -30,6 +30,8 @@
 // ratio to [0.5, 2] as well) — the worst-case buffer sizing is derived from
 // exactly these bounds plus the parameter floors (min pitch >= 25 Hz).
 //
+#include "factory_core/Biquad.h"
+#include "factory_core/Filters.h"
 #include "factory_core/PitchDetector.h"
 #include "factory_core/PsolaShifter.h"
 #include "factory_core/LinearRamp.h"
@@ -54,7 +56,7 @@ namespace pf_core
         float hysteresisCt  = 18.0f;   // cents note-switch margin (0..75)
         float minPitchHz    = 75.0f;   // Hz  (25..500)
         float maxPitchHz    = 1300.0f; // Hz  (200..4000)
-        float thresholdPct  = 86.0f;   // %   detector clarity threshold (50..99)
+        float thresholdPct  = 80.0f;   // %   detector clarity threshold (50..99)
         int   buffer        = 2;       // 0 Realtime / 1 Fast / 2 Normal / 3 Quality
         int   key           = 0;       // 0 = C .. 11 = B
         int   scale         = 0;       // 0 Chromatic / 1 Major / 2 Minor
@@ -76,6 +78,18 @@ namespace pf_core
         static constexpr double kUnvoicedReleaseMs = 60.0; // correction release
         static constexpr double kTargetHoldSec     = 0.4;  // note memory across gaps
         static constexpr double kMaxShiftCents     = 1200.0;
+
+        // The PSOLA budget: PsolaShifter demands 2*P + P/4 + 4 <= lookahead for a
+        // VOICED grain and degrades to its identity path otherwise — silently, so
+        // the pitch would still read out in the UI while nothing gets corrected.
+        // The lookahead table is written in periods of Min Pitch, so every mode's
+        // entry clears 2.25 only while the tracked period stays <= fs/minPitch.
+        // Today PitchDetector's lag search is itself capped at fs/minHz, so that
+        // already holds; runHop bounds the tracked pitch at minHz anyway so the
+        // guarantee is PfCore's own rather than a side effect of a shared header's
+        // internal clamp (PitchDetector's documented acceptance is 0.9*minHz, which
+        // would NOT clear the budget at Realtime). dsp_test asserts the invariant.
+        static constexpr double kPsolaBudgetPeriods = 2.25;
 
         void prepare (double sampleRate, int maxBlockIn)
         {
@@ -100,6 +114,9 @@ namespace pf_core
             dryR.assign ((size_t) drySize, 0.0f);
 
             written = 0;
+            detHp[0].reset();
+            detHp[1].reset();
+            hpDesignedHz = 0.0;          // force a design on the first snapshot
             mixRamp.reset (fs, 0.02);
             gainRamp.reset (fs, 0.02);
             mixRamp.setCurrentAndTargetValue (1.0);
@@ -115,7 +132,7 @@ namespace pf_core
             pendingLookahead   = 0;
             needsCommit        = true;
             hopCounter  = 0;
-            prevKey = -1; prevScale = -1;
+            prevKey = -1; prevScale = -1; prevMedLen = -1;
             resetTracking();
             uiSampleRateHz.store ((float) fs, std::memory_order_relaxed);
         }
@@ -136,6 +153,8 @@ namespace pf_core
             std::fill (dryR.begin(),    dryR.end(),    0.0f);
             std::fill (scratch.begin(), scratch.end(), 0.0f);
             shifter.reset();
+            detHp[0].reset();            // state only — the design follows minHz
+            detHp[1].reset();
             written    = 0;
             hopCounter = 0;
             resetTracking();
@@ -208,6 +227,7 @@ namespace pf_core
             glidedCents    = 0.0;
             targetNote     = -1;
             unvoicedHops   = 0;
+            targetHeldHops = 0;
             uiDetectedHz.store (0.0f, std::memory_order_relaxed);
             uiTargetHz.store (0.0f, std::memory_order_relaxed);
             uiShiftCents.store (0.0f, std::memory_order_relaxed);
@@ -239,6 +259,46 @@ namespace pf_core
             hopLen = std::max (32, (int) std::lround (kHopSeconds[mode] * fs));
             medLen = kMedianDepth[mode];
             if (hopCounter >= hopLen) hopCounter = 0;   // keep hopCounter < hopLen if hopLen shrank
+
+            // The median window is a ring of medLen entries; a Buffer change that
+            // SHRINKS the depth would otherwise leave medCount > medLen, so the
+            // majority vote below would keep counting entries that are no longer
+            // being refreshed (a deep-mode history voting on a shallow-mode window).
+            if (medLen != prevMedLen)
+            {
+                std::fill (std::begin (medBuf), std::end (medBuf), 0.0);
+                medCount   = 0;
+                medPos     = 0;
+                prevMedLen = medLen;
+            }
+
+            // Analysis-path high-pass, DETECTOR FEED ONLY (the audio that reaches
+            // the output comes from the dry ring and the shifter's own rings, so
+            // this cannot colour the signal).
+            //
+            // A male fundamental sits at 80-160 Hz, so the source is never
+            // high-passed hard and proximity build-up, plosive thumps and stage
+            // rumble ride along underneath it. That sub-fundamental energy does
+            // not merely bias the NSDF — a component whose period exceeds the
+            // whole lag range makes the NSDF decay monotonically across
+            // [lagMin, lagMax], leaving MPM with NO local maximum to pick, so the
+            // frame comes back UNVOICED. Measured on a 110 Hz vowel with 40 Hz
+            // rumble: 12 dB below the voice already loses 7.6% of frames, 6 dB
+            // below loses 71%. That is the "it doesn't hear my voice" failure.
+            //
+            // The detector never searches below Min Pitch, so everything under it
+            // is noise by definition — hence the corner sits exactly at minHz
+            // (4th-order Butterworth). Measured at 6 dB rumble, 110 Hz: 71% of
+            // frames rejected unfiltered vs 0% at this corner.
+            if (minHz != hpDesignedHz)
+            {
+                // Transcendentals only — no allocation, lock or syscall — and only
+                // when Min Pitch actually moves.
+                for (int i = 0; i < 2; ++i)
+                    detHp[i].setCoeffs (factory_core::designHpLpStage (
+                        factory_core::BandType::HighPass, minHz, kButterQ, i, 2, fs));
+                hpDesignedHz = minHz;
+            }
 
             // Key/Scale change: drop a target note that the NEW mask forbids, so a
             // held note in the old scale is never kept as a correction target once
@@ -284,7 +344,9 @@ namespace pf_core
             {
                 const float l = L[i];
                 const float r = R != nullptr ? R[i] : l;
-                detRing[(size_t) (written & detMask)] = 0.5f * (l + r);
+                const double m = detHp[1].processSample (
+                                     detHp[0].processSample (0.5 * ((double) l + (double) r)));
+                detRing[(size_t) (written & detMask)] = (float) m;
                 dryL[(size_t) (written & dryMask)] = l;
                 dryR[(size_t) (written & dryMask)] = r;
                 ++written;
@@ -325,9 +387,15 @@ namespace pf_core
 
             const auto est = detector.estimate (scratch.data(), W, minHz, maxHz, thresh);
 
+            // Keep the tracked pitch inside the band the PSOLA budget is sized
+            // for (see kPsolaBudgetPeriods): PitchDetector's documented acceptance
+            // reaches 0.9*minHz, which at Realtime would need 2.5 periods against
+            // a 2.35-period lookahead — tracked and displayed, never corrected.
+            const bool inRange = est.voiced && est.f0Hz >= minHz;
+
             // Median over the last medLen hops (octave-glitch suppression; the
             // depth is the Buffer mode's quality lever).
-            medBuf[(size_t) medPos] = est.voiced ? est.f0Hz : 0.0;
+            medBuf[(size_t) medPos] = inRange ? est.f0Hz : 0.0;
             medPos = (medPos + 1) % medLen;
             if (medCount < medLen) ++medCount;
 
@@ -369,15 +437,23 @@ namespace pf_core
                 const int cand = nearestAllowedNote (detCents);
                 if (targetNote < 0)
                 {
-                    targetNote  = cand;
-                    glidedCents = noteCents (targetNote);   // fresh note: no stale glide
+                    targetNote     = cand;
+                    glidedCents    = noteCents (targetNote); // fresh note: no stale glide
+                    targetHeldHops = 0;                      // open the settling window
                 }
-                else if (cand != targetNote)
+                else
                 {
-                    const double dCand = std::abs (detCents - noteCents (cand));
-                    const double dCur  = std::abs (detCents - noteCents (targetNote));
-                    if (dCand + hystCt < dCur)
-                        targetNote = cand;
+                    if (cand != targetNote)
+                    {
+                        const double dCand = std::abs (detCents - noteCents (cand));
+                        const double dCur  = std::abs (detCents - noteCents (targetNote));
+                        if (targetHeldHops < settleHops() || dCand + hystCt < dCur)
+                            targetNote = cand;
+                    }
+                    // Hops since the note was picked FRESH (not since the last
+                    // switch), so an on-the-boundary pitch cannot hold the window
+                    // open by flip-flopping.
+                    ++targetHeldHops;
                 }
 
                 // -- note glide (portamento between targets) --
@@ -418,6 +494,27 @@ namespace pf_core
         // Cents of a MIDI note relative to A4 (note 69).
         static double noteCents (int note) noexcept { return (note - 69) * 100.0; }
 
+        // Hops a freshly picked target may keep following the nearest-note
+        // candidate before hysteresis takes over.
+        //
+        // Hysteresis defends the CURRENT target, but the first pick of a note is
+        // made from the least reliable estimate there is: at the onset the
+        // analysis window still straddles whatever came before, and the median is
+        // still refilling. That pick is latched with NO hysteresis and then
+        // defended by it, so one bad onset estimate owns the whole note — a tone
+        // 49 cents sharp of A4 (so 51 flat of A#4) latched onto A#4 can never
+        // leave, because defending it only costs 49 + 18 < 51.
+        //
+        // So the window must outlast the detector's OWN settling, not a magic
+        // constant: the analysis window has to flush the transition (winLen) and
+        // the median has to refill (medLen hops). Derived rather than tuned, it
+        // scales with Buffer mode and sample rate for free. Past it, hysteresis
+        // resumes, so vibrato crossing a semitone boundary is still held.
+        int settleHops() const noexcept
+        {
+            return (hopLen > 0 ? (winLen + hopLen - 1) / hopLen : 0) + medLen;
+        }
+
         // Is `note` (MIDI number) in the current Key/Scale mask? Chromatic (scale 0)
         // allows every note. Shared by nearestAllowedNote and the Key/Scale-change
         // target invalidation in applySnapshot.
@@ -452,11 +549,13 @@ namespace pf_core
             return best;
         }
 
-        static constexpr int kMaxMedian = 7;
+        static constexpr int    kMaxMedian = 7;
+        static constexpr double kButterQ   = 0.70710678118654752440; // 1/sqrt(2)
 
         // --- composition ---
         factory_core::PitchDetector detector;
         factory_core::PsolaShifter  shifter;
+        factory_core::Biquad        detHp[2];   // 4th-order Butterworth HP, analysis only
         factory_core::LinearRamp<double> mixRamp { 1.0 }, gainRamp { 1.0 };
 
         // --- config ---
@@ -473,9 +572,10 @@ namespace pf_core
         // --- live params (block-latched) ---
         double amount = 1.0, retuneMs = 80.0, glideMs = 60.0;
         double tolCt = 12.0, hystCt = 18.0;
-        double minHz = 75.0, maxHz = 1300.0, thresh = 0.86, a4 = 440.0;
+        double minHz = 75.0, maxHz = 1300.0, thresh = 0.80, a4 = 440.0;
         int    mode = 2, key = 0, scale = 0;
         int    winLen = 0, hopLen = 512, medLen = 1;
+        double hpDesignedHz = 0.0;   // minHz the detHp cascade is currently designed for
 
         // --- latency latching (see applySnapshot / latencySamples / prepare) ---
         int    committedLookahead = 0;  // actual DSP delay (drives shifter + dry mix)
@@ -486,9 +586,10 @@ namespace pf_core
         // --- tracking state ---
         int    hopCounter = 0;
         double medBuf[kMaxMedian] = {};
-        int    medPos = 0, medCount = 0;
+        int    medPos = 0, medCount = 0, prevMedLen = -1;
         double corrCents = 0.0, glidedCents = 0.0;
         int    targetNote = -1;
         std::int64_t unvoicedHops = 0;
+        int    targetHeldHops = 0;   // voiced hops since targetNote was picked fresh
     };
 } // namespace pf_core
