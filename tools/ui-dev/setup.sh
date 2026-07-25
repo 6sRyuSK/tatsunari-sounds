@@ -119,8 +119,20 @@ if [ "$WITH_PLAYWRIGHT" -eq 1 ]; then
     hint npm node "nodejs npm" >&2
     exit 1
   fi
-  ( cd "$HERE/playwright" && npm ci && npx playwright install chromium && node doctor.js )
-  echo "playwright deps + Chromium installed"
+  # --ignore-scripts skips Playwright's postinstall browser download; doctor.js then
+  # decides whether one is actually needed. Images that pre-provision a Chromium in
+  # PLAYWRIGHT_BROWSERS_PATH (the agent sandbox does) must not fetch a second copy
+  # just because our pinned Playwright wants a different revision.
+  (
+    cd "$HERE/playwright"
+    npm ci --ignore-scripts
+    if node doctor.js >/dev/null 2>&1; then
+      echo "reusing the Chromium already available to this machine"
+    else
+      npx playwright install chromium
+    fi
+    node doctor.js
+  )
 fi
 
 # --- summary -----------------------------------------------------------------

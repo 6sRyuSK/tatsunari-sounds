@@ -109,10 +109,17 @@ if ($WithPlaywright) {
     if (-not (Have npm)) { Write-Error "npm is required for -WithPlaywright"; exit 1 }
     Push-Location (Join-Path $Here "playwright")
     try {
-        npm ci
+        # --ignore-scripts skips Playwright's postinstall browser download; doctor.js
+        # then decides whether one is actually needed (see setup.sh for the rationale).
+        npm ci --ignore-scripts
         if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-        npx playwright install chromium
-        if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed" }
+        node doctor.js *> $null
+        if ($LASTEXITCODE -ne 0) {
+            npx playwright install chromium
+            if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed" }
+        } else {
+            Write-Host "  reusing the Chromium already available to this machine"
+        }
         node doctor.js
         if ($LASTEXITCODE -ne 0) { throw "Playwright doctor failed" }
     } finally { Pop-Location }

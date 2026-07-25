@@ -17,6 +17,35 @@ function firstExisting(candidates) {
   return null;
 }
 
+// Any Chromium build already sitting in PLAYWRIGHT_BROWSERS_PATH, newest revision
+// first. Pre-provisioned images (the agent sandbox pins one at /opt/pw-browsers)
+// rarely carry the exact revision our package-lock's Playwright asks for, and the
+// mismatch is not a reason to download a second copy. Scanning beats hardcoding a
+// revision, which silently rots the moment either side moves.
+function browsersPathChromium() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !fs.existsSync(root)) return null;
+  let entries;
+  try {
+    entries = fs.readdirSync(root).filter((name) => name.startsWith("chromium-"));
+  } catch (error) {
+    return null;
+  }
+  const revision = (name) => Number(name.slice("chromium-".length)) || 0;
+  entries.sort((a, b) => revision(b) - revision(a));
+  // chrome-linux64 is the modern layout, chrome-linux the older one.
+  const relative = process.platform === "win32"
+    ? [path.join("chrome-win", "chrome.exe")]
+    : process.platform === "darwin"
+    ? [path.join("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")]
+    : [path.join("chrome-linux64", "chrome"), path.join("chrome-linux", "chrome")];
+  for (const entry of entries) {
+    const found = firstExisting(relative.map((suffix) => path.join(root, entry, suffix)));
+    if (found) return found;
+  }
+  return null;
+}
+
 // Prefer Playwright's pinned browser, but keep the harness usable on developer
 // machines that already have Chrome/Edge and intentionally skipped the browser
 // download. CHROME_BIN always wins and is validated so failures are actionable.
@@ -32,6 +61,11 @@ function resolveChromiumExecutable() {
   const managed = chromium.executablePath();
   if (managed && fs.existsSync(managed)) {
     return { path: managed, source: "playwright", available: true };
+  }
+
+  const provisioned = browsersPathChromium();
+  if (provisioned) {
+    return { path: provisioned, source: "PLAYWRIGHT_BROWSERS_PATH", available: true };
   }
 
   const localAppData = process.env.LOCALAPPDATA;
@@ -53,7 +87,6 @@ function resolveChromiumExecutable() {
     "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
-    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
   ]);
   return system
     ? { path: system, source: "system", available: true }
