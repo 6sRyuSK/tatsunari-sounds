@@ -37,6 +37,15 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
            COMMAND resonance_suppressor_dsp_test ${_fs})
 endforeach()
 
+# ============================ JUCE-LINKED ORACLE TESTS ========================
+# Everything below the guard compiles the frozen JUCE ResonanceSuppressorAudio-
+# Processor as an ORACLE — it is the only JUCE left in this plugin, and the only
+# reason a resonance-suppressor configure fetches JUCE at all. FACTORY_JUCE_ORACLES
+# (root CMakeLists, default ON) gates both the targets and that fetch: ci.yml keeps
+# it ON, so the equivalence + preset gates run exactly as before; clap.yml's Linux
+# leg passes OFF, where these targets were built but never run.
+if(FACTORY_JUCE_ORACLES)
+
 # ------------------------------------------------------------ preset wiring test
 # JUCE-linked console app: builds the processor headless and checks the factory
 # preset table against the live parameter layout (IDs exist, values in range,
@@ -93,6 +102,9 @@ target_link_libraries(resonance_suppressor_rscore_equiv_test
     juce::juce_recommended_warning_flags)
 
 add_test(NAME resonance_suppressor_rscore_equiv COMMAND resonance_suppressor_rscore_equiv_test)
+
+endif()  # FACTORY_JUCE_ORACLES
+# ========================== end JUCE-LINKED ORACLE TESTS ======================
 
 # ------------------------------------------------------ RS theme roundtrip test
 # Host-compiler console app (no JUCE, no visage): asserts the compiled

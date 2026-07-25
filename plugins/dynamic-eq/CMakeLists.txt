@@ -26,6 +26,15 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
            COMMAND dynamic_eq_dsp_test ${_fs})
 endforeach()
 
+# ============================ JUCE-LINKED ORACLE TESTS ========================
+# Everything below the guard compiles the frozen JUCE DynamicEqAudioProcessor as an
+# ORACLE — it is the only JUCE left in this plugin, and the only reason a dynamic-eq
+# configure fetches JUCE at all. FACTORY_JUCE_ORACLES (root CMakeLists, default ON)
+# gates both the targets and that fetch: ci.yml keeps it ON, so the equivalence +
+# preset gates run exactly as before; clap.yml's Linux leg passes OFF, where these
+# targets were built but never run.
+if(FACTORY_JUCE_ORACLES)
+
 # ------------------------------------------------------------ preset wiring test
 # JUCE-linked console app: builds the processor headless and checks the factory
 # preset table against the live parameter layout (IDs exist, values in range,
@@ -84,3 +93,6 @@ target_link_libraries(dynamic_eq_deqcore_equiv_test
     juce::juce_recommended_warning_flags)
 
 add_test(NAME dynamic_eq_deqcore_equiv COMMAND dynamic_eq_deqcore_equiv_test)
+
+endif()  # FACTORY_JUCE_ORACLES
+# ========================== end JUCE-LINKED ORACLE TESTS ======================
