@@ -72,46 +72,64 @@ namespace
         int bypass;
     };
 
-    DeqIx computeDeqIx (const factory_params::ParamStore& store)
+    DeqIx computeDeqIx (const std::vector<factory_params::ParamDesc>& table)
     {
+        const auto indexOf = [&table] (const std::string& id)
+        {
+            for (std::size_t i = 0; i < table.size(); ++i)
+                if (table[i].id == id)
+                    return static_cast<int> (i);
+            return -1;
+        };
+
         DeqIx ix {};
         for (int b = 0; b < deq_core::kNumBands; ++b)
         {
             const std::string p = "b" + std::to_string (b) + "_";
-            ix.on[b]    = store.indexOf (p + "on");
-            ix.byp[b]   = store.indexOf (p + "byp");
-            ix.lsn[b]   = store.indexOf (p + "lsn");
-            ix.dyn[b]   = store.indexOf (p + "dyn");
-            ix.chan[b]  = store.indexOf (p + "chan");
-            ix.type[b]  = store.indexOf (p + "type");
-            ix.slope[b] = store.indexOf (p + "slope");
-            ix.freq[b]  = store.indexOf (p + "freq");
-            ix.gain[b]  = store.indexOf (p + "gain");
-            ix.q[b]     = store.indexOf (p + "q");
-            ix.thr[b]   = store.indexOf (p + "thr");
-            ix.rng[b]   = store.indexOf (p + "rng");
-            ix.atk[b]   = store.indexOf (p + "atk");
-            ix.rel[b]   = store.indexOf (p + "rel");
-            ix.knee[b]  = store.indexOf (p + "knee");
+            ix.on[b]    = indexOf (p + "on");
+            ix.byp[b]   = indexOf (p + "byp");
+            ix.lsn[b]   = indexOf (p + "lsn");
+            ix.dyn[b]   = indexOf (p + "dyn");
+            ix.chan[b]  = indexOf (p + "chan");
+            ix.type[b]  = indexOf (p + "type");
+            ix.slope[b] = indexOf (p + "slope");
+            ix.freq[b]  = indexOf (p + "freq");
+            ix.gain[b]  = indexOf (p + "gain");
+            ix.q[b]     = indexOf (p + "q");
+            ix.thr[b]   = indexOf (p + "thr");
+            ix.rng[b]   = indexOf (p + "rng");
+            ix.atk[b]   = indexOf (p + "atk");
+            ix.rel[b]   = indexOf (p + "rel");
+            ix.knee[b]  = indexOf (p + "knee");
         }
-        ix.bypass = store.indexOf ("bypass");
+        ix.bypass = indexOf ("bypass");
         return ix;
     }
 
-    // First touch happens on the main thread inside activate()'s latency priming (or the
-    // first process for a zero-prime core), so the magic-static init never races.
-    const DeqIx& deqIndices (const factory_params::ParamStore& store)
-    {
-        static const DeqIx ix = computeDeqIx (store);
-        return ix;
-    }
+    // Built ONCE during STATIC INITIALISATION (module load), not lazily on first use.
+    //
+    // dynamic-eq is a zero-prime core (primeFrames() == 0), so activate() never runs a prime
+    // block and the first touch of a function-local static would be clapProcess — i.e. on
+    // the AUDIO THREAD, where it would build 360 temporary std::strings, run 361 linear
+    // ParamStore::indexOf scans and acquire the thread-safe-static guard. Allocating and
+    // locking there is exactly what the real-time rule forbids (one block's worth of work is
+    // enough for a dropout when the plugin is inserted live). A namespace-scope const with
+    // dynamic initialisation is constructed before the host can call anything, so the audio
+    // path only ever reads it.
+    //
+    // It is derived from the descriptor TABLE rather than from a live ParamStore because a
+    // store index IS the position in the table it was constructed from — ClapShellPlugin
+    // builds `store` directly over `Policy::params()`, and ParamStore keeps values / epochs /
+    // ranges as parallel vectors in descriptor order (indexOf returns that position). Same
+    // numbers, available before any store exists.
+    const DeqIx s_ix = computeDeqIx (dynamic_eq_params::buildDeqParams());
 
     // Snapshot the live ParamStore into the core's per-block parameter form, mirroring the
     // processor's atomic reads exactly (`> 0.5f` toggles, `(int)` choices, `(double)`
     // continuous) so the core is fed bit-for-bit what the shipping processor feeds its bands.
     void fillSnapshot (const factory_params::ParamStore& store, deq_core::DeqParamSnapshot& s) noexcept
     {
-        const DeqIx& ix = deqIndices (store);
+        const DeqIx& ix = s_ix;
         for (int b = 0; b < deq_core::kNumBands; ++b)
         {
             auto& bs = s.bands[(std::size_t) b];

@@ -114,15 +114,21 @@ namespace deq_ui
 
         int  selected_ = 0;
         int  dragging_ = -1;
+        // Whether the in-flight node drag opened a GAIN gesture. Latched at begin (a cut
+        // band's node only moves in x, so mouseDrag writes no gain and a gain gesture would
+        // be an empty BEGIN/END pair that latches the host lane into touch/write) and read
+        // back at end, so a mid-drag type change cannot orphan or double-close it.
+        bool dragGainGesture_ = false;
         int  hover_    = -1;
         bool showPre_  = true;
         bool showPost_ = false;
         bool frozen_   = false;
 
         // Pre/Post spectra: SpectrumModel is single-channel, so two instances (channel 0
-        // = pre, 1 = post). Rate-adaptive order via DeqCurveView.cpp's analyzerOrder()
-        // (order-13 / 8192-point base to match the old JUCE editor's low-frequency
-        // resolution; scales with the rate — fixed orders forbidden by CLAUDE.md).
+        // = pre, 1 = post). Rate-adaptive order via deq_analyzer::fftOrder (order-13 /
+        // 8192-point base to match the old JUCE editor's low-frequency resolution; scales
+        // with the rate — fixed orders forbidden by CLAUDE.md). That helper also sizes the
+        // core's rings, so the window we request always fits (DeqAnalyzerWindow.h).
         factory_ui_visage::SpectrumModel modelPre_, modelPost_;
         std::vector<float> scratch_; // FFT input scratch, refilled from the feed each frame
         double lastSr_ = 0.0;

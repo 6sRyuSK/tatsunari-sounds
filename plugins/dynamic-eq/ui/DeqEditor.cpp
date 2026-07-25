@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace deq_ui
 {
@@ -25,14 +26,27 @@ namespace deq_ui
         preset_->onChange = [this] (int itemRow) { loadPreset (itemRow); };
         addChild (*preset_);
 
-        const int bypassIx = store_.indexOf ("bypass");
-        bypass_ = std::make_unique<PillToggle> (store_, bypassIx, theme_);
+        bypassIx_ = store_.indexOf ("bypass");
+        bypass_ = std::make_unique<PillToggle> (store_, bypassIx_, theme_);
         addChild (*bypass_);
+
+        // Map each parameter to the band it belongs to ("b<N>_<suffix>"), so the host-change
+        // sweep can refresh the band panel only when the band it is SHOWING moved.
+        bandOfParam_.assign ((std::size_t) store_.size(), -1);
+        for (int i = 0; i < store_.size(); ++i)
+        {
+            const std::string& id = store_.desc (i).id;
+            if (id.empty() || id[0] != 'b') continue;
+            std::size_t p = 1;
+            while (p < id.size() && id[p] >= '0' && id[p] <= '9') ++p;
+            if (p == 1 || p >= id.size() || id[p] != '_') continue;
+            bandOfParam_[(std::size_t) i] = std::stoi (id.substr (1, p - 1));
+        }
 
         curve_ = std::make_unique<DeqCurveView> (theme_, store_, feed_);
         curve_->onSelectBand = [this] (int b) { panel_->setBand (b); };
         curve_->onBandEdited = [this] (int b) { if (panel_->band() == b) panel_->refresh(); };
-        curve_->onTick = [this] { if (frameTick_) frameTick_(); };
+        curve_->onTick = [this] { pumpHostChanges(); if (frameTick_) frameTick_(); };
         addChild (*curve_);
 
         panel_ = std::make_unique<DeqBandPanel> (theme_, store_);
@@ -54,6 +68,29 @@ namespace deq_ui
         rebuildPresetMenu();
         panel_->setBand (curve_->selectedBand());
         redrawAll();
+    }
+
+    // Redraw every widget whose parameter changed since the last tick — the sweep that makes
+    // the editor follow edits it did not make itself (automation playback, the host's generic
+    // UI, host undo, MIDI learn: all setFromHost, which touches no widget). Runs on the
+    // curve's ~30 Hz analyser tick. The UI's own edits bump the same epochs and land here
+    // too, but redraw() only marks a frame dirty, so the extra mark costs nothing. The curve
+    // view self-redraws every frame and needs no nudge.
+    void DeqEditor::pumpHostChanges()
+    {
+        const int shown = panel_ != nullptr ? panel_->band() : -1;
+        bool panelChanged = false;
+        sweeper_.sweep (store_, [&] (int i)
+        {
+            if (i == bypassIx_ && bypass_ != nullptr) { bypass_->redraw(); return; }
+            if (i >= 0 && (std::size_t) i < bandOfParam_.size()
+                && bandOfParam_[(std::size_t) i] == shown)
+                panelChanged = true;
+        });
+        // refresh() redraws the band's widgets AND re-evaluates the slope enablement, so a
+        // host-driven band-type change dims / undims Slope exactly as a UI-driven one does.
+        if (panelChanged && panel_ != nullptr)
+            panel_->refresh();
     }
 
     void DeqEditor::rebuildPresetMenu()

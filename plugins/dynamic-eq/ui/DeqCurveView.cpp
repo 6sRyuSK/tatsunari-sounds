@@ -8,9 +8,10 @@
 #include "factory_ui_visage/Fonts.h"
 #include "factory_ui_visage/Chrome.h"
 
+#include "DeqAnalyzerWindow.h" // analyser FFT order (shared with the core's ring sizing)
+
 #include "factory_core/Filters.h"
 #include "factory_core/Biquad.h"
-#include "factory_core/StftResolution.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,16 +25,12 @@ namespace deq_ui
 
     namespace
     {
-        // Analyser FFT order. Matches the old JUCE editor's 8192-point (order 13)
-        // low-frequency resolution (~5.9 Hz bins) at the 48 kHz reference, and — unlike
-        // the old fixed order — scales one order per octave of sample rate so that bin
-        // width holds through 192 kHz (fixed orders are forbidden by CLAUDE.md). Still
-        // sourced from factory_core::fftOrderForSampleRate, just with a finer base.
-        int analyzerOrder (double sampleRate)
-        {
-            return factory_core::fftOrderForSampleRate (sampleRate, /*baseOrder=*/13,
-                                                        /*refSampleRate=*/48000.0, /*maxOrder=*/15);
-        }
+        // Analyser FFT order — deq_analyzer::fftOrder, the SAME helper the core sizes its
+        // display rings from (DeqAnalyzerWindow.h). Keeping the order and the ring capacity
+        // in one place is what guarantees the window we request always fits in the ring
+        // with seqlock margin; deriving the order here independently is what let the two
+        // cross at >= 88.2 kHz.
+        int analyzerOrder (double sampleRate) { return deq_analyzer::fftOrder (sampleRate); }
 
         std::string idFor (int band, const char* suffix)
         {
@@ -472,15 +469,24 @@ namespace deq_ui
         return -1;
     }
 
+    // A node drag always moves freq; it moves gain only for a NON-cut band (mouseDrag skips
+    // the gain write for HP/LP). Opening a gain gesture for a cut band would emit a
+    // BEGIN/END pair with no value between them, which some hosts latch as a touch and turn
+    // into a spurious automation point in write mode. Latch the decision here so a mid-drag
+    // type change can neither orphan the begin nor double-close it.
     void DeqCurveView::beginNodeGesture (int b)
     {
         store_.beginGesture (bx_[(size_t) b].freq);
-        store_.beginGesture (bx_[(size_t) b].gain);
+        dragGainGesture_ = ! isCutType (b);
+        if (dragGainGesture_)
+            store_.beginGesture (bx_[(size_t) b].gain);
     }
     void DeqCurveView::endNodeGesture (int b)
     {
         store_.endGesture (bx_[(size_t) b].freq);
-        store_.endGesture (bx_[(size_t) b].gain);
+        if (dragGainGesture_)
+            store_.endGesture (bx_[(size_t) b].gain);
+        dragGainGesture_ = false;
     }
     void DeqCurveView::setParamUi (int paramIndex, float value) { store_.setFromUi (paramIndex, value); redraw(); }
     void DeqCurveView::setParamGestured (int paramIndex, float value) { store_.setFromUiGestured (paramIndex, value); redraw(); }
@@ -567,8 +573,16 @@ namespace deq_ui
     {
         const int band = (hover_ >= 0) ? hover_ : nodeAt (e.position);
         if (band < 0) return false;
+
+        // Same delta source as the shared Knob: a macOS trackpad / inertial scroll reports
+        // the movement in precise_wheel_delta_y with wheel_delta_y left at 0, so reading
+        // only the latter makes Q dead under a trackpad.
+        const float raw = e.wheel_delta_y != 0.0f ? e.wheel_delta_y : e.precise_wheel_delta_y;
+        if (raw == 0.0f) return false;
+
         const float q = store_.value (bx_[(size_t) band].q);
-        const float nq = std::clamp (q * std::exp (e.wheel_delta_y * 1.2f), 0.1f, 18.0f);
+        const float nq = std::clamp (q * std::exp (raw * 1.2f), 0.1f, 18.0f);
+        if (nq == q) return true; // at a rail (or a null delta): no value change, so no gesture
         setParamGestured (bx_[(size_t) band].q, nq);
         if (onBandEdited) onBandEdited (band);
         return true;

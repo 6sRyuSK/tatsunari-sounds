@@ -26,6 +26,7 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace deq_ui
 {
@@ -61,6 +62,7 @@ namespace deq_ui
                               visage::Frame* anchor, std::function<void (int)> onSelect);
         void rebuildPresetMenu();
         void loadPreset (int itemIndex);
+        void pumpHostChanges();
 
         float k() const { return height() > 0.0f ? (float) height() / (float) kDesignH : 1.0f; }
         float S (float v) const { return v * k(); }
@@ -75,6 +77,16 @@ namespace deq_ui
         std::unique_ptr<DeqCurveView>                          curve_;
         std::unique_ptr<DeqBandPanel>                          panel_;
         std::unique_ptr<factory_ui_visage::Dropdown>           dropdown_; // shared overlay (frontmost)
+
+        // Host-driven change observer: a non-consuming per-frame sweep over the store's
+        // epochs. Visage only repaints frames that were redraw()n, and every widget except
+        // the self-driving curve view is redrawn only by its OWN mouse handling — so without
+        // this sweep, automation playback / the host's generic UI / host undo / MIDI-learn
+        // would move the curve while the band panel's knobs and the header bypass pill kept
+        // showing stale values. (Same mechanism as RsEditor's fix F1.)
+        factory_params::ChangeSweeper sweeper_;
+        std::vector<int>              bandOfParam_; // param index -> band, or -1
+        int                           bypassIx_ = -1;
 
         float windowScale_ = 1.0f;
         std::function<void()> frameTick_;

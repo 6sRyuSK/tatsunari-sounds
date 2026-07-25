@@ -29,6 +29,8 @@
 // sizes/settles every buffer up front; process() never allocates, locks, or makes
 // a syscall.
 //
+#include "DeqAnalyzerWindow.h"
+
 #include "factory_core/DynamicEqBand.h"
 #include "factory_core/LinearRamp.h"
 
@@ -41,8 +43,12 @@ namespace deq_core
     // Transcribed from PluginProcessor.h: kNumBands, kSmoothChunk, kRingSize/Mask.
     inline constexpr int kNumBands    = 24;
     inline constexpr int kSmoothChunk = 32;        // samples per coefficient update
-    inline constexpr int kRingSize    = 1 << 14;   // 16384 (>= analyzer FFT, with margin)
-    inline constexpr int kRingMask    = kRingSize - 1;
+    // Display-ring capacity: derived from the analyser's LARGEST window rather than
+    // hardcoded, so `kRingSize >= 2 * fftSize` holds at every rate (see
+    // DeqAnalyzerWindow.h — a hardcoded 1<<14 tore the window at >= 88.2 kHz). The JUCE
+    // oracle uses the same header, so the two stay in lockstep.
+    inline constexpr int kRingSize    = deq_analyzer::kRingSize;
+    inline constexpr int kRingMask    = deq_analyzer::kRingMask;
 
     // Ramp length for the continuous Freq / Gain / Q (~30 ms), matching
     // prepareToPlay's kRampSeconds (l.153).
