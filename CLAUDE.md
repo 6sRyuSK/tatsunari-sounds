@@ -2,11 +2,11 @@
 
 ## What this is
 A factory that builds audio plugins with **CMake**. Active plugins are
-`dynamic-eq` (**JUCE 8** VST3/AU) and `resonance-suppressor` (everything else
-is archived under `archive/plugins/` — see `archive/README.md`);
-`resonance-suppressor` ships **CLAP-first** (clap-wrapper's
-`make_clapfirst` → CLAP + wrapper VST3, AUv2 on Apple) with a JUCE-free
-**Visage** editor. All compose a shared, versioned DSP core (`core/`), shared
+`resonance-suppressor`, `pitch-fix` and `dynamic-eq` (everything else is
+archived under `archive/plugins/` — see `archive/README.md`). **All three ship
+CLAP-first** (clap-wrapper's `make_clapfirst` → CLAP + wrapper VST3, AUv2 on
+Apple) with JUCE-free **Visage** editors; no plugin ships a JUCE binary any
+more. All compose a shared, versioned DSP core (`core/`), shared
 parameter/preset models (`params/`, `presets/`), and the shared UI design
 systems (`ui/`). Correctness is verified automatically where it is objective;
 humans judge taste and authorize shipping. A cross-platform Go TUI installer
@@ -50,10 +50,11 @@ skill builds on.
   treated as a stable API; `testing/DspInvariants.h` holds the reusable
   regression checks.
 - `ui/include/factory_ui/` — the shared **header-only** JUCE "kawaii" warm-white
-  design system (all JUCE plugins + RS's test oracles); don't fork per-plugin
-  palettes. `ui/visage/` — `factory_ui_visage`, the **compiled Visage** design
-  system used by the RS editor (widgets, `theme/factory-default.json`, fonts,
-  own tests); it owns the pinned + sandbox-patched visage dependency.
+  design system (the scaffold's JUCE editors + the surviving test oracles);
+  don't fork per-plugin palettes. `ui/visage/` — `factory_ui_visage`, the
+  **compiled Visage** design system every shipping editor is built from (widgets,
+  `theme/factory-default.json`, fonts, own tests); it owns the pinned +
+  sandbox-patched visage dependency.
 - `shell/include/factory_shell/` — framework-free CLAP glue over the CLAP C API
   (`ClapShellPlugin<Policy>`, param/state bridges, `ClapEditor`, `DenormalGuard`);
   `shell/cmake/FactoryClapPlugin.cmake` pins the CLAP / VST3 / clap-wrapper
@@ -67,11 +68,14 @@ skill builds on.
 - `params/include/factory_params/` — shared **header-only** parameter model:
   `ParamDesc.h`/`Range.h`/`Text.h`/`ParamStore.h`/`UndoStack.h` (JUCE-free),
   `juce/ApvtsAdapter.h` (generates the APVTS layout from a `ParamDesc` table).
-- `plugins/<slug>/` — one plugin each: `plugin.toml`, `Source/` (thin
-  `AudioProcessor`/`Editor` wrapper), `tests/`, `CMakeLists.txt`.
-  resonance-suppressor deviates (clap-first): `RsCore.h` (framework-free core),
-  `ui/` (JUCE-free Visage editor), `shell/` (CLAP entry); its `Source/` JUCE
-  processor remains **only** as the byte-equivalence test oracle, never shipped.
+- `plugins/<slug>/` — one plugin each: `plugin.toml`, `tests/`, `CMakeLists.txt`
+  plus the clap-first trio every active plugin now has: `<X>Core.h` (the
+  framework-free DSP core — `RsCore.h` / `PfCore.h` / `DeqCore.h`), `ui/` (the
+  JUCE-free Visage editor), `shell/` (the CLAP Policy + entry). Where a `Source/`
+  JUCE `AudioProcessor` still exists (RS, dynamic-eq) it is **only** the
+  byte-equivalence test oracle — change it and its core in lockstep, never
+  package it. The scaffold still emits the JUCE `Source/` layout, so a NEW plugin
+  starts as a thin `AudioProcessor`/`Editor` wrapper until it is cut over.
 - `archive/plugins/<slug>/` — archived plugins (same layout; see
   `archive/README.md`): not built by default, excluded from CI/releases/
   installer. Local opt-in build: `-DFACTORY_INCLUDE_ARCHIVED=ON`. Don't do
@@ -91,9 +95,9 @@ skill builds on.
 - `roadmap.toml` — planned plugins (remove an entry once it gets a `plugin.toml`).
 - Root `CMakeLists.txt` auto-includes `plugins/*/CMakeLists.txt`, pins JUCE
   `8.0.13`, and takes `-DFACTORY_PLUGINS=<slugs>` (comma/semicolon-separated)
-  to configure a subset; whenever RS is in the configured set it also assembles
-  the clap-first shell, fetching the pinned CLAP/VST3/clap-wrapper + Visage SDKs
-  (`FACTORY_RS_CLAP` is a legacy no-op).
+  to configure a subset; any plugin with a `shell/CMakeLists.txt` (all active
+  ones) also assembles its clap-first shell, fetching the pinned
+  CLAP/VST3/clap-wrapper + Visage SDKs (`FACTORY_RS_CLAP` is a legacy no-op).
 
 ## Building & testing locally
 ```bash
@@ -105,19 +109,19 @@ DSP tests link only `factory_core` (no JUCE, headless); each test exe takes the
 sample rate as argv[1] and CTest registers one case per standard rate (the
 shared `core`/`params`/`presets` model suites register from the root too).
 `-DFACTORY_PLUGINS=<slug>[,<slug>]` narrows the configure to a subset (CI uses
-it as well); any set including resonance-suppressor also fetches the CLAP/VST3/
+it as well); any set with an active plugin in it also fetches the CLAP/VST3/
 clap-wrapper + Visage SDKs on first configure.
 On Windows without `-G Ninja`, CMake defaults to the Visual Studio
 **multi-config** generator, which ignores `CMAKE_BUILD_TYPE` — pick the config
 at build/test time instead: `cmake --build build --config Release` and
-`ctest --test-dir build -C Release`. CI builds RS's clap-first assembly with
+`ctest --test-dir build -C Release`. CI builds the clap-first assemblies with
 Ninja; `tools/build-clap.ps1` reproduces that path locally (VS toolchain
 bootstrap included).
 On a fresh Linux box the JUCE configure step needs the X11/ALSA dev packages
 first (`libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev
 libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev
-libfontconfig1-dev`, plus `mesa-common-dev libgl1-mesa-dev` for RS's Visage
-GUI); Linux builds are for local verification only — it is not a shipping target.
+libfontconfig1-dev`, plus `mesa-common-dev libgl1-mesa-dev` for the Visage
+GUIs); Linux builds are for local verification only — it is not a shipping target.
 
 ## Architecture rules
 - DSP lives in a plain C++ class **separable from the plugin framework**,
@@ -126,15 +130,19 @@ GUI); Linux builds are for local verification only — it is not a shipping targ
 - Compose `core/` primitives instead of reinventing DSP; JUCE editors compose
   `factory_ui`, the Visage editor composes `factory_ui_visage` — no bespoke
   look-and-feel either way.
-- resonance-suppressor ships clap-first: the binaries come from the
+- Every active plugin ships clap-first: the binaries come from the
   `make_clapfirst` shell (CLAP + wrapper VST3, AUv2 on Apple) embedding the
-  Visage editor. Its `Source/` JUCE processor exists **only** as the oracle for
-  `rscore_equiv_test` (byte-identical output vs `rs_core::RsCore`) — change
+  Visage editor. Where a `Source/` JUCE processor survives it exists **only** as
+  the oracle for the equivalence gate (`rscore_equiv_test` vs `rs_core::RsCore`,
+  `deqcore_equiv_test` vs `deq_core::DeqCore` — byte-identical output) — change
   both sides in lockstep; never package it.
-- Don't hand-write the shared plumbing: state save/load rides
-  `factory_presets::stateToXml`/`applyStateXml`, and the editor's preset
-  selector + host program sync ride `factory_ui::PresetSelectorController`
-  (the scaffold emits both; details in the `add-preset` skill).
+- Don't hand-write the shared plumbing. On the **CLAP/Visage** path (all
+  shipping plugins) state rides `factory_presets::StateCodec` +
+  `PresetSession`, and the editor's preset selector is
+  `factory_ui_visage::PresetSelectorView` over that session. On the **JUCE**
+  path (the scaffold's starting point + the remaining oracles) it is
+  `factory_presets::stateToXml`/`applyStateXml` and
+  `factory_ui::PresetSelectorController` (details in the `add-preset` skill).
 
 ## Adding / changing a plugin
 1. New plugin: `python tools/scaffold_plugin.py <slug> --name "…" --category …
@@ -185,19 +193,20 @@ One consolidated GitHub Release per run (tag `<year>.<n>`, manual
 `workflow_dispatch` only). A run rebuilds **only** plugins whose `plugin.toml`
 version changed since the previous release's `manifest.json` (the decision core
 is `tools/release_plan.py`); unchanged plugins carry over verbatim — bumping
-`version` is the ship trigger. RS builds as kind `clap`, but its release zips
-ship **VST3 + AU parity only** (bundling the native `.clap` waits on installer
-support). `installer.yml` attaches the TUI installer + `catalog.json` after publish.
+`version` is the ship trigger. Every active plugin builds as kind `clap`, but the
+release zips ship **VST3 + AU parity only** (bundling the native `.clap` waits on
+installer support). `installer.yml` attaches the TUI installer + `catalog.json` after publish.
 
 ## CI gate (a PR is NOT done until)
 - **Plugins** (`ci.yml`, path-scoped to build-affecting sources): macOS +
-  Windows builds (RS clap-first included), CTest across the full rate matrix,
-  and **pluginval strictness 5 headless** for every built format — VST3 both
-  OS, AU on macOS, RS's wrapper VST3/AU among them. Linux is not a supported
-  target.
-- **CLAP** (`clap.yml`, scoped to shell/core/params/presets + RS shell): Linux
-  build of the RS clap-first assembly + **clap-validator** on the native
-  `.clap` — the one signal ci.yml doesn't produce.
+  Windows builds (the clap-first assemblies included), CTest across the full rate
+  matrix, and **pluginval strictness 5 headless** for every built format — the
+  wrapper VST3 on both OS, AU on macOS. Linux is not a supported target.
+- **CLAP** (`clap.yml`, scoped to shell/core/params/presets + each plugin's
+  shell/core/params/presets/ui): one Linux leg PER active plugin — build the
+  clap-first assembly + **clap-validator** on the native `.clap`, the one signal
+  ci.yml doesn't produce. Adding a shell-visible header means adding it to BOTH
+  the push and pull_request `paths` blocks, or the gate silently stops running.
 - **Factory tools** (`factory-tools-ci.yml`, scoped to tools/tomls/README):
   `gen_catalog.py --check` (README catalog freshness) + the `tools/tests`
   unittest suite.

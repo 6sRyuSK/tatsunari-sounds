@@ -5,6 +5,7 @@
 #include "factory_core/DynamicEqBand.h"
 #include "factory_presets/ProgramAdapter.h"
 #include "FactoryPresets.h"
+#include "DeqAnalyzerWindow.h" // analyser window order + the ring capacity it implies
 
 #include <array>
 #include <atomic>
@@ -110,9 +111,12 @@ private:
 
     double currentSampleRate = 44100.0;
 
-    // Analyzer ring buffer (single producer: audio thread).
-    static constexpr int kRingSize = 1 << 14; // 16384 (>= analyzer FFT, with margin)
-    static constexpr int kRingMask = kRingSize - 1;
+    // Analyzer ring buffer (single producer: audio thread). The capacity comes from
+    // DeqAnalyzerWindow.h — sized for the LARGEST analyser window so it can never be
+    // shorter than the FFT the editor requests — and DeqCore uses the same header, so the
+    // core and this oracle stay in lockstep.
+    static constexpr int kRingSize = deq_analyzer::kRingSize;
+    static constexpr int kRingMask = deq_analyzer::kRingMask;
     std::array<float, kRingSize> analyzerRing {};     // pre-EQ (input)
     std::array<float, kRingSize> analyzerRingPost {}; // post-EQ (output)
     // Monotonic sample counter, masked to index the ring. Unsigned + 64-bit so

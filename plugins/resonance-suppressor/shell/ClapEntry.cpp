@@ -20,9 +20,7 @@
 //
 #include <clap/clap.h>
 
-#include "factory_shell/ClapShellPlugin.h"
-
-#include "RsClapEntry.h"
+#include "factory_shell/ClapEntryPoint.h" // ClapShellPlugin + the shared factory/entry glue
 
 #if FACTORY_RS_CLAP_GUI
  // Visage-free declaration (the definition — the only visage TU — is RsClapEditor.cpp,
@@ -256,37 +254,10 @@ namespace
 #endif
     };
 
-    using RsShell = factory_shell::ClapShellPlugin<RsClapPolicy>;
-
-    // ── factory ───────────────────────────────────────────────────────────────
-    uint32_t factory_get_plugin_count (const clap_plugin_factory_t*) { return 1; }
-
-    const clap_plugin_descriptor_t* factory_get_plugin_descriptor (const clap_plugin_factory_t*,
-                                                                   uint32_t index)
-    {
-        return index == 0 ? &s_desc : nullptr;
-    }
-
-    const clap_plugin_t* factory_create_plugin (const clap_plugin_factory_t*,
-                                                const clap_host_t* host, const char* plugin_id)
-    {
-        if (! clap_version_is_compatible (host->clap_version)) return nullptr;
-        if (std::strcmp (plugin_id, s_desc.id) != 0)           return nullptr;
-        return RsShell::create (host);
-    }
-
-    const clap_plugin_factory_t s_factory = {
-        factory_get_plugin_count,
-        factory_get_plugin_descriptor,
-        factory_create_plugin
-    };
 } // namespace
 
-// ── entry hooks (consumed by RsClapEntryPoint.cpp's clap_entry) ───────────────
-bool rs_clap_entry_init (const char*) { return true; }
-void rs_clap_entry_deinit (void) {}
-const void* rs_clap_entry_get_factory (const char* factory_id)
-{
-    if (std::strcmp (factory_id, CLAP_PLUGIN_FACTORY_ID) == 0) return &s_factory;
-    return nullptr;
-}
+// The single-plugin CLAP factory + the three common-named entry hooks. The exported
+// clap_entry symbol lives in the shared ENTRY_SOURCE (shell/src/FactoryClapEntryPoint
+// .cpp) and forwards here. RsClapPolicy is visible from the anonymous namespace above
+// within this TU.
+FACTORY_CLAP_ENTRY (RsClapPolicy)

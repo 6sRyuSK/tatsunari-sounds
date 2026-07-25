@@ -1,6 +1,7 @@
 #pragma once
 
 #include "factory_ui_visage/Theme.h"
+#include "factory_ui_visage/Icons.h"
 
 #include <visage_ui/frame.h>
 
@@ -38,12 +39,26 @@ namespace factory_ui_visage
             {
                 return { Kind::item, std::move (text), enabled };
             }
+            // Item with a leading glyph (e.g. an EQ band type shown as its filter
+            // shape, matching the collapsed control).
+            static Item makeIcon (std::string text, icons::Glyph glyph, bool enabled = true)
+            {
+                Item it;
+                it.kind = Kind::item;
+                it.text = std::move (text);
+                it.enabled = enabled;
+                it.icon = std::move (glyph);
+                it.hasIcon = true;
+                return it;
+            }
             static Item header (std::string text) { return { Kind::header, std::move (text), true }; }
             static Item separator() { return { Kind::separator, {}, true }; }
 
-            Kind        kind = Kind::item;
-            std::string text;
-            bool        enabled = true;
+            Kind         kind = Kind::item;
+            std::string  text;
+            bool         enabled = true;
+            icons::Glyph icon;            // drawn when hasIcon (leading glyph)
+            bool         hasIcon = false;
         };
 
         explicit Dropdown (const Theme& theme);

@@ -36,6 +36,7 @@
 #include "Source/StateMigration.h"  // resonance_suppressor_state::cleanBreakMigrate()
 #include "ui/RsAbState.h"           // rs_ui::AbCompareModel
 #include "shell/RsClapEditor.h"     // rs_shell::snapEditorSizeForScale (T2; visage-free header)
+#include "factory_shell/ResizableEditorGeometry.h" // the shared snap, exercised with a 2nd geometry
 
 #include <clap/clap.h>
 
@@ -553,6 +554,65 @@ int main()
             check (w2 == w && h2 == h, "snap fixed point (max) at scale 1.0/1.5/2.0");
             snap (sc, 1, 1, w, h);        w2 = w; h2 = h; rs_shell::snapEditorSizeForScale (sc, w2, h2);
             check (w2 == w && h2 == h, "snap fixed point (min) at scale 1.0/1.5/2.0");
+        }
+    }
+
+    // ============ 5b. EDITOR SIZE SNAP — A SECOND GEOMETRY ====================
+    // The snap moved into factory_shell::ResizableEditorGeometry so RS and dynamic-eq could
+    // share it, but every case above pins it with RS's ONE box (1069x747 / 471x329 /
+    // 1320x922). A shared helper verified at a single parameterisation can regress for
+    // another caller without turning this test red, so run the same contract through
+    // dynamic-eq's box: design 740x520, limits 620x440 .. 1280x900.
+    //
+    // Note the max corner differs in KIND from RS's: 1280 logical wide is aspect-locked to
+    // 1280*520/740 = 899.46 -> 899, i.e. the HEIGHT cap (900) never binds and the corner is
+    // aspect-exact. RS's corner is the marginally off-aspect box corner instead. Expected
+    // values are hand-computed from the geometry, not re-derived from the implementation.
+    {
+        constexpr factory_shell::EditorGeometry deq {
+            /*designW*/ 740.0, /*designH*/ 520.0, /*minW*/ 620.0, /*minH*/ 440.0,
+            /*maxW*/ 1280.0, /*maxH*/ 900.0
+        };
+        auto snap = [&deq] (double scale, std::uint32_t w, std::uint32_t h,
+                            std::uint32_t& ow, std::uint32_t& oh)
+        { ow = w; oh = h; factory_shell::snapEditorSizeForScale (deq, scale, ow, oh); };
+
+        std::uint32_t w = 0, h = 0;
+
+        snap (1.0, 740, 520, w, h);     check (w == 740 && h == 520,  "deq snap 1.0: 740x520 is a fixed point");
+        snap (1.0, 10000, 10000, w, h); check (w == 1280 && h == 899, "deq snap 1.0: huge -> max 1280x899");
+        snap (1.0, 1, 1, w, h);         check (w == 620 && h == 440,  "deq snap 1.0: tiny -> min 620x440");
+
+        // scale 1.5: the design proposal in native px is 493 logical wide, BELOW the 620
+        // logical minimum -> clamped to the min box, then back to native (620*1.5 = 930,
+        // 440*1.5 = 660).
+        snap (1.5, 740, 520, w, h);     check (w == 930 && h == 660,  "deq snap 1.5: below min -> native 930x660");
+        // scale 2.0: a huge proposal -> logical 1280x899 -> native 2560x1798.
+        snap (2.0, 5000, 5000, w, h);   check (w == 2560 && h == 1798, "deq snap 2.0: huge -> native 2560x1798");
+
+        // Aspect invariant for in-band widths (below ~626 logical the height clamp binds and
+        // the min corner is intentionally off-aspect, exactly as in RS's box).
+        for (std::uint32_t in : { 700u, 900u, 1100u, 1279u })
+        {
+            snap (1.0, in, in, w, h);
+            long d = (long) w * 520 - (long) h * 740;
+            if (d < 0) d = -d;
+            check (d <= 740, "deq snap 1.0: aspect within 1px for an in-band square input");
+        }
+
+        // Fixed point at each scale — the property the Logic-AU resize loop depends on.
+        for (double sc : { 1.0, 1.5, 2.0 })
+        {
+            std::uint32_t w2, h2;
+            snap (sc, 5000, 5000, w, h); w2 = w; h2 = h;
+            factory_shell::snapEditorSizeForScale (deq, sc, w2, h2);
+            check (w2 == w && h2 == h, "deq snap fixed point (max) at scale 1.0/1.5/2.0");
+            snap (sc, 1, 1, w, h);       w2 = w; h2 = h;
+            factory_shell::snapEditorSizeForScale (deq, sc, w2, h2);
+            check (w2 == w && h2 == h, "deq snap fixed point (min) at scale 1.0/1.5/2.0");
+            snap (sc, 740, 520, w, h);   w2 = w; h2 = h;
+            factory_shell::snapEditorSizeForScale (deq, sc, w2, h2);
+            check (w2 == w && h2 == h, "deq snap fixed point (design) at scale 1.0/1.5/2.0");
         }
     }
 

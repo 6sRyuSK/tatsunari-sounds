@@ -31,9 +31,10 @@ namespace factory_ui_visage
         canvas.setColor (visage::Color (0xffffffff));
         canvas.circle (kx, y + inset, knobD);
 
-        // Caption to the right.
+        // Caption to the right (short override, else the parameter display name).
         canvas.setColor (visage::Color (theme_.palette.text));
-        canvas.text (desc.name, boldFont (theme_.font.labelBold), visage::Font::kLeft,
+        canvas.text (caption_.empty() ? desc.name : caption_,
+                     boldFont (theme_.font.labelBold), visage::Font::kLeft,
                      boxW + tg.textGap, 0.0f, std::max (0.0f, width() - boxW - tg.textGap), height());
     }
 
@@ -41,5 +42,6 @@ namespace factory_ui_visage
     {
         store_.setFromUiGestured (index_, isOn() ? 0.0f : 1.0f);
         redraw();
+        if (onToggle) onToggle (isOn());
     }
 }

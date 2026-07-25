@@ -33,6 +33,24 @@ namespace factory_ui_visage
         redraw();
     }
 
+    void Knob::rebind (int paramIndex)
+    {
+        // Close an in-flight drag on the OLD parameter BEFORE index_ moves. Dropping
+        // dragging_ alone would strand the beginGesture mouseDown sent: mouseUp then sees
+        // dragging_ == false and sends nothing, so the host is left holding a
+        // PARAM_GESTURE_BEGIN with no END and can latch that parameter in touch/write with
+        // no way back. (Reachable via DeqBandPanel::setBand -> rebind() firing from the
+        // curve's onSelectBand while a panel knob is mid-drag.)
+        if (dragging_)
+        {
+            store_.endGesture (index_);
+            dragging_ = false;
+        }
+        index_ = paramIndex;
+        range_ = factory_params::makeRange (store_.desc (paramIndex));
+        redraw();
+    }
+
     void Knob::draw (visage::Canvas& canvas)
     {
         const KnobMetrics& m = theme_.knob;

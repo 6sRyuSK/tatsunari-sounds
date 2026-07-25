@@ -137,6 +137,13 @@ namespace factory_ui_visage
 
         int paramIndex() const { return index_; }
 
+        // Re-point this knob at a DIFFERENT parameter index. A per-band control panel
+        // (e.g. dynamic-eq's DeqBandPanel) rebinds its knobs to the newly-selected band
+        // rather than owning one control set per band. Recomputes the range from the new
+        // desc and DROPS any in-flight drag, so a rebind mid-drag can never write the
+        // band you just left. redraw()s to pick up the new value immediately.
+        void rebind (int paramIndex);
+
     private:
         float currentNorm() const;    // live store value -> normalised 0..1
         void  writeNorm (float norm); // normalised -> real, store via setFromUi, redraw

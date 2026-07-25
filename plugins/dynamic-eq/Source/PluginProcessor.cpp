@@ -1,18 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-namespace
-{
-    // Bands start empty (off); the user adds them by double-clicking the curve,
-    // which sets type/freq/gain. These defaults only seed an unused band's
-    // parameters: frequencies log-spread across the spectrum, all bells.
-    float defaultFreq (int band)
-    {
-        const float t = (DynamicEqAudioProcessor::kNumBands > 1)
-                          ? (float) band / (float) (DynamicEqAudioProcessor::kNumBands - 1) : 0.0f;
-        return 20.0f * std::pow (1000.0f, t); // 20 Hz .. 20 kHz
-    }
-}
+#include "DeqParams.h"
+#include "factory_params/juce/ApvtsAdapter.h"
 
 juce::String DynamicEqAudioProcessor::pid (int band, const char* suffix)
 {
@@ -22,90 +12,12 @@ juce::String DynamicEqAudioProcessor::pid (int band, const char* suffix)
 juce::AudioProcessorValueTreeState::ParameterLayout
 DynamicEqAudioProcessor::createParameterLayout()
 {
-    juce::AudioProcessorValueTreeState::ParameterLayout layout;
-
-    juce::NormalisableRange<float> freqRange { 20.0f, 20000.0f };
-    freqRange.setSkewForCentre (632.455f);
-
-    for (int b = 0; b < kNumBands; ++b)
-    {
-        layout.add (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { pid (b, "on"), 1 }, "Band " + juce::String (b + 1) + " On", false));
-
-        // Present-but-bypassed: the band stays on the graph but is not processed.
-        layout.add (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { pid (b, "byp"), 1 }, "Band " + juce::String (b + 1) + " Bypass", false));
-
-        // Solo / listen: audition only this band's range (exclusive, enforced in UI).
-        layout.add (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { pid (b, "lsn"), 1 }, "Band " + juce::String (b + 1) + " Listen", false));
-
-        // Channel target.
-        layout.add (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID { pid (b, "chan"), 1 }, "Band " + juce::String (b + 1) + " Channel",
-            juce::StringArray { "Stereo", "Left", "Right", "Mid", "Side" }, 0));
-
-        layout.add (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID { pid (b, "type"), 1 }, "Band " + juce::String (b + 1) + " Type",
-            juce::StringArray { "Bell", "Low Shelf", "High Shelf", "High Pass", "Low Pass" },
-            0));
-
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "freq"), 1 }, "Band " + juce::String (b + 1) + " Freq",
-            freqRange, defaultFreq (b), juce::AudioParameterFloatAttributes().withLabel (" Hz")));
-
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "gain"), 1 }, "Band " + juce::String (b + 1) + " Gain",
-            juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, 0.0f,
-            juce::AudioParameterFloatAttributes().withLabel (" dB")));
-
-        juce::NormalisableRange<float> qRange { 0.1f, 18.0f };
-        qRange.setSkewForCentre (1.0f);
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "q"), 1 }, "Band " + juce::String (b + 1) + " Q",
-            qRange, 0.707f));
-
-        // High/Low-pass slope: 12..96 dB/oct (Butterworth cascade). Index k => (k+1) sections.
-        layout.add (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID { pid (b, "slope"), 1 }, "Band " + juce::String (b + 1) + " Slope",
-            juce::StringArray { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct",
-                                "60 dB/oct", "72 dB/oct", "84 dB/oct", "96 dB/oct" }, 0));
-
-        layout.add (std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { pid (b, "dyn"), 1 }, "Band " + juce::String (b + 1) + " Dynamics", false));
-
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "thr"), 1 }, "Band " + juce::String (b + 1) + " Threshold",
-            juce::NormalisableRange<float> { -60.0f, 0.0f, 0.01f }, -24.0f,
-            juce::AudioParameterFloatAttributes().withLabel (" dB")));
-
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "rng"), 1 }, "Band " + juce::String (b + 1) + " Range",
-            juce::NormalisableRange<float> { -24.0f, 24.0f, 0.01f }, 0.0f,
-            juce::AudioParameterFloatAttributes().withLabel (" dB")));
-
-        juce::NormalisableRange<float> atkRange { 0.05f, 100.0f };
-        atkRange.setSkewForCentre (10.0f);
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "atk"), 1 }, "Band " + juce::String (b + 1) + " Attack",
-            atkRange, 10.0f, juce::AudioParameterFloatAttributes().withLabel (" ms")));
-
-        juce::NormalisableRange<float> relRange { 5.0f, 2000.0f };
-        relRange.setSkewForCentre (120.0f);
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "rel"), 1 }, "Band " + juce::String (b + 1) + " Release",
-            relRange, 120.0f, juce::AudioParameterFloatAttributes().withLabel (" ms")));
-
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { pid (b, "knee"), 1 }, "Band " + juce::String (b + 1) + " Knee",
-            juce::NormalisableRange<float> { 0.0f, 24.0f, 0.01f }, 6.0f,
-            juce::AudioParameterFloatAttributes().withLabel (" dB")));
-    }
-
-    layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "bypass", 1 }, "Bypass", false));
-
-    return layout;
+    // GENERATED from the declarative table (dynamic_eq_params::buildDeqParams,
+    // DeqParams.h) via factory_params::buildApvtsLayout — the SAME table the CLAP
+    // shell drives, so oracle == shell parameter surface. The generated layout is
+    // bit-identical to the former hand-written declaration (guarded by preset_test's
+    // "paramdesc parity" check).
+    return factory_params::buildApvtsLayout (dynamic_eq_params::buildDeqParams());
 }
 
 DynamicEqAudioProcessor::DynamicEqAudioProcessor()
