@@ -4,10 +4,19 @@ name: CI
 # strictness 5 (headless) passes for every built format — VST3 on every OS, AU
 # on macOS.
 #
+# Every active plugin SHIPS clap-first, so every bundle pluginval sees here comes
+# out of a make_clapfirst shell (wrapper VST3 + AUv2), never juce_add_plugin. JUCE
+# survives in this gate for ONE reason: resonance-suppressor and dynamic-eq keep a
+# frozen JUCE AudioProcessor as the byte-equivalence oracle their headless
+# equivalence/preset tests run against. Those tests run HERE (this is the workflow
+# with CTest), so this workflow leaves FACTORY_JUCE_ORACLES at its default ON and
+# pays the JUCE fetch; clap.yml's Linux legs pass OFF and skip it.
+#
 # Builds use the Ninja generator + a compiler cache (ccache, or sccache for
-# MSVC) persisted across runs, so unchanged JUCE modules are not recompiled.
-# build/_deps is cached separately so the JUCE clone + juceaide helper build
-# (both happen at configure time, outside the compiler cache) are skipped too.
+# MSVC) persisted across runs, so unchanged dependency TUs are not recompiled.
+# build/_deps is cached separately so the configure-time work outside the
+# compiler cache (the JUCE clone + juceaide helper build, the CLAP/VST3/
+# clap-wrapper + visage clones) is skipped too.
 
 # Path-scoped: this gate only builds/tests/validates the plugins, so it runs only
 # when a build-affecting source changes. core/ ui/ presets/ params/ shell/ cmake/ and
@@ -87,18 +96,19 @@ jobs:
           variant: ${{ matrix.ccache }}
           max-size: 1500M
 
-      # FetchContent clones JUCE and builds the juceaide helper during
-      # configure — neither is covered by the compiler cache. Caching
-      # build/_deps (sources + subbuild stamps + juceaide build tree) turns
-      # both into no-ops. Keyed on the root CMakeLists.txt, which carries the
-      # JUCE version pin, so bumping JUCE invalidates it automatically.
-      - name: Cache JUCE (FetchContent deps)
+      # FetchContent clones every SDK and builds the juceaide helper during
+      # configure — none of that is covered by the compiler cache. Caching
+      # build/_deps (sources + subbuild stamps + juceaide build tree) turns it
+      # all into a no-op.
+      - name: Cache FetchContent deps (JUCE oracles + CLAP/VST3/visage SDKs)
         uses: actions/cache@v4
         with:
           path: build/_deps
-          # Post-cutover the _deps content also tracks the CLAP/VST3/AudioUnitSDK
-          # pins in shell/cmake/FactoryClapPlugin.cmake, not just the JUCE pin here.
-          key: juce-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'shell/cmake/FactoryClapPlugin.cmake') }}
+          # The key must hash EVERY file carrying a dependency pin, or a bump
+          # silently reuses the old sources: the JUCE pin (root CMakeLists.txt),
+          # the CLAP/VST3/clap-wrapper/AudioUnitSDK pins (FactoryClapPlugin.cmake)
+          # and the visage pin, FACTORY_VISAGE_GIT_TAG (ui/visage/CMakeLists.txt).
+          key: factory-deps-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt', 'shell/cmake/FactoryClapPlugin.cmake', 'ui/visage/CMakeLists.txt') }}
 
       # Decide which plugins can have changed binaries. Shared code (core/ ui/
       # presets/ params/ shell/ cmake/ the root CMakeLists.txt, this workflow) affects every
@@ -129,10 +139,10 @@ jobs:
           if [ -n "$scope" ]; then echo "Building subset: $scope"; else echo "Building all plugins"; fi
 
       # The OBJCXX launcher matters on macOS: the root CMakeLists enables the
-      # OBJCXX language (3.0.0 cutover), so JUCE's .mm module unities compile
-      # under OBJCXX rules — without this launcher they bypass ccache entirely
-      # (~200 heavy TUs recompiled every run, Build 2min -> 20min). Inert on
-      # Windows, where OBJCXX is never enabled.
+      # OBJCXX language (3.0.0 cutover), so the .mm module unities of the JUCE
+      # oracle apps compile under OBJCXX rules — without this launcher they bypass
+      # ccache entirely (~200 heavy TUs recompiled every run, Build 2min -> 20min).
+      # Inert on Windows, where OBJCXX is never enabled.
       - name: Configure
         run: >
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -154,11 +164,17 @@ jobs:
         run: ctest --test-dir build --output-on-failure --parallel 4 --no-tests=error
 
       # ---- pluginval ----------------------------------------------------------
-      # JUCE plugins land their bundles under a .../VST3/ or .../AU/ path segment;
-      # the clap-first resonance-suppressor (wrapper VST3 + AUv2) lands them FLAT in
-      # build/<slug>_assets/ on macOS (no VST3/ or AU/ segment), so the discovery
-      # matches BOTH shapes. (The native .clap is validated by clap.yml's Linux
-      # clap-validator, not pluginval.)
+      # Every shipping bundle now comes from a make_clapfirst shell, which drops its
+      # wrapper VST3 + AUv2 FLAT in build/<slug>_assets/ on macOS (no VST3/ or AU/
+      # path segment — that shape belonged to juce_add_plugin and no longer exists,
+      # so the discovery no longer looks for it).
+      # (The native .clap is validated by clap.yml's Linux clap-validator, not pluginval.)
+      #
+      # The empty-discovery guard is load-bearing: with no bundles found the loop
+      # body never runs and the step exits 0 — a green gate that validated nothing.
+      # Every configured plugin ships binaries, so zero found means the discovery
+      # pattern or the plugin selection is wrong. Fail loudly, same rule as CTest's
+      # --no-tests=error above.
       - name: Validate plugins (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -170,14 +186,20 @@ jobs:
           mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
           while IFS= read -r c; do
             cp -R "$c" "$HOME/Library/Audio/Plug-Ins/Components/"
-          done < <(find build \( -type d -path '*/AU/*.component' -o -type d -path '*_assets/*.component' \))
+          done < <(find build -type d -path '*_assets/*.component')
           killall -9 AudioComponentRegistrar 2>/dev/null || true
+          bundles=()
+          while IFS= read -r p; do bundles+=("$p"); done < <(find build \( -type d -path '*_assets/*.vst3' -o -type d -path '*_assets/*.component' \))
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "::error::pluginval found no plugin bundles under build/ — nothing was validated"
+            exit 1
+          fi
           status=0
-          while IFS= read -r p; do
+          for p in "${bundles[@]}"; do
             echo "::group::pluginval $p"
             "$PV" --strictness-level "$PLUGINVAL_STRICTNESS" --skip-gui-tests --validate-in-process --validate "$p" || status=1
             echo "::endgroup::"
-          done < <(find build \( -type d -path '*/VST3/*.vst3' -o -type d -path '*/AU/*.component' -o -type d -path '*_assets/*.vst3' -o -type d -path '*_assets/*.component' \))
+          done
           [ "$status" -eq 0 ]
 
       - name: Validate plugins (Windows)
@@ -187,11 +209,15 @@ jobs:
           Invoke-WebRequest https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pv -Force
           $pv = (Get-ChildItem pv -Recurse -Filter pluginval.exe | Select-Object -First 1).FullName
-          # JUCE plugins land under ...\VST3\...; the clap-first resonance-suppressor
-          # wrapper VST3 lands under build\<slug>_assets\VST3\<name>.vst3 (make_clapfirst
-          # nests the Windows VST3 under a VST3\ folder) — both carry the \VST3\ segment.
-          $bundles = Get-ChildItem build -Recurse -Directory -Filter *.vst3 |
-                     Where-Object { $_.FullName -match '[\\/]VST3[\\/]' }
+          # A clap-first wrapper VST3 lands under build\<slug>_assets\VST3\<name>.vst3
+          # (make_clapfirst nests the Windows VST3 under a VST3\ folder). Same
+          # empty-discovery guard as the macOS leg — zero bundles must fail, not pass.
+          $bundles = @(Get-ChildItem build -Recurse -Directory -Filter *.vst3 |
+                       Where-Object { $_.FullName -match '_assets[\\/]VST3[\\/]' })
+          if ($bundles.Count -eq 0) {
+            Write-Host "::error::pluginval found no plugin bundles under build\ — nothing was validated"
+            exit 1
+          }
           $status = 0
           foreach ($b in $bundles) {
             Write-Host "::group::pluginval $($b.FullName)"

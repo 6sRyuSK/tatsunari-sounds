@@ -1,5 +1,4 @@
-# Linux clap-validator gate for the clap-first plugins (RS since the 3.0.0
-# cutover; pitch-fix since birth).
+# Linux clap-validator gate — one leg per ACTIVE plugin (all three ship clap-first).
 #
 # ci.yml ALREADY builds the clap-first plugins on macOS + Windows and runs
 # pluginval (strictness 5) on the wrapper VST3 + AU there. What ci.yml does NOT
@@ -10,10 +9,20 @@
 # redundant with ci.yml's mac/Windows pluginval.
 #
 # A default configure builds a plugin clap-first whenever it is in the plugin
-# set (here -DFACTORY_PLUGINS=<slug> per matrix leg).
+# set (here -DFACTORY_PLUGINS=<slug> per matrix leg). These legs additionally pass
+# -DFACTORY_JUCE_ORACLES=OFF: RS and dynamic-eq still carry JUCE-linked byte-
+# equivalence oracle apps, but this workflow only ever builds the ${SLUG}_all
+# CLAP target and never runs CTest, so those targets were configured, cloned JUCE
+# for, and then ignored. Turning them off skips the JUCE fetch + juceaide build
+# outright. No signal is lost — the oracles run in ci.yml, where CTest runs.
 #
 # Path-scoped so it only runs when something that can affect the CLAP surface
 # changes; ci.yml remains the primary gate (build + CTest matrix + pluginval).
+# The plugin-side filters are GLOBS on purpose. They used to enumerate individual
+# shell-visible headers, which silently went stale — RS's ClapEntry.cpp includes
+# Source/DetailParam.h and Source/StateMigration.h, neither of which was listed,
+# so edits to them skipped this gate entirely. Keep the two `paths` lists identical
+# (push == pull_request).
 
 name: clap
 
@@ -24,20 +33,14 @@ on:
       - 'core/**'
       - 'presets/**'
       - 'params/**'
-      - 'plugins/*/shell/**'
-      - 'plugins/*/RsCore.h'
-      - 'plugins/*/Source/Params.h'
-      - 'plugins/*/PfCore.h'
-      - 'plugins/*/PfParams.h'
-      - 'plugins/*/PfPresets.h'
-      - 'plugins/*/DeqCore.h'
-      - 'plugins/*/DeqParams.h'
-      - 'plugins/*/DeqStateMigration.h'
-      - 'plugins/*/DeqAnalyzerWindow.h'
-      - 'plugins/*/Source/FactoryPresets.h'
-      - 'plugins/*/ui/**'
       - 'ui/visage/**'
+      - 'plugins/*/*.h'            # <X>Core.h / <X>Params.h / <X>Presets.h / …
+      - 'plugins/*/Source/*.h'     # RS's frozen shell-visible headers
+      - 'plugins/*/shell/**'
+      - 'plugins/*/ui/**'
+      - 'plugins/*/CMakeLists.txt'
       - 'cmake/**'
+      - 'CMakeLists.txt'
       - '.github/workflows/clap.yml'
   pull_request:
     paths:
@@ -45,20 +48,14 @@ on:
       - 'core/**'
       - 'presets/**'
       - 'params/**'
-      - 'plugins/*/shell/**'
-      - 'plugins/*/RsCore.h'
-      - 'plugins/*/Source/Params.h'
-      - 'plugins/*/PfCore.h'
-      - 'plugins/*/PfParams.h'
-      - 'plugins/*/PfPresets.h'
-      - 'plugins/*/DeqCore.h'
-      - 'plugins/*/DeqParams.h'
-      - 'plugins/*/DeqStateMigration.h'
-      - 'plugins/*/DeqAnalyzerWindow.h'
-      - 'plugins/*/Source/FactoryPresets.h'
-      - 'plugins/*/ui/**'
       - 'ui/visage/**'
+      - 'plugins/*/*.h'            # <X>Core.h / <X>Params.h / <X>Presets.h / …
+      - 'plugins/*/Source/*.h'     # RS's frozen shell-visible headers
+      - 'plugins/*/shell/**'
+      - 'plugins/*/ui/**'
+      - 'plugins/*/CMakeLists.txt'
       - 'cmake/**'
+      - 'CMakeLists.txt'
       - '.github/workflows/clap.yml'
   workflow_dispatch:
 
@@ -80,19 +77,25 @@ jobs:
       - name: Install build + validator dependencies
         run: |
           sudo apt-get update
-          # ninja + the X11/ALSA/freetype/fontconfig/GL dev headers the VST3 SDK
-          # and pluginval's bundled JUCE need; ladspa-sdk for JUCE's LADSPA format.
+          # ninja + the X11/freetype/fontconfig/GL dev headers visage/bgfx and the
+          # VST3 SDK need. The JUCE-only entries this list used to carry
+          # (libasound2-dev for JUCE's ALSA backend, ladspa-sdk for JUCE's LADSPA
+          # format) are gone with the JUCE fetch — nothing in the CLAP tree
+          # (clap-wrapper + VST3 SDK + visage/bgfx) opens an audio device.
           sudo apt-get install -y --no-install-recommends \
             ninja-build \
-            libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev libfreetype6-dev \
-            libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev ladspa-sdk
+            libfontconfig1-dev libgl1-mesa-dev mesa-common-dev libglu1-mesa-dev
 
-      - name: Configure (default — RS is clap-first)
+      # FACTORY_JUCE_ORACLES=OFF: build the shipping CLAP path only, no JUCE fetch
+      # (see the header comment — the oracles are ci.yml's job, this leg never ran them).
+      - name: Configure (clap-first, JUCE-free)
         run: >
           cmake -B build-clap -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DFACTORY_PLUGINS=${SLUG}
+          -DFACTORY_JUCE_ORACLES=OFF
 
       - name: Build ${SLUG}_all (CLAP + wrapper VST3)
         # The make_clapfirst aggregate builds the CLAP + wrapper VST3 (proving both

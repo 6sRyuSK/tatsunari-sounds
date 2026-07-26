@@ -1,9 +1,9 @@
 # Plugin Factory
 
-CMake で構築した自律型オーディオプラグイン・ファクトリーです。プラグインは
-JUCE 8 製の VST3 / AU として出荷されます。Resonance TatSuppressor のみ
-**CLAP ファースト**構成で、clap-wrapper により CLAP から VST3 / AU を生成し、
-UI は JUCE 非依存の Visage 製です。
+CMake で構築した自律型オーディオプラグイン・ファクトリーです。**現行プラグインは
+すべて CLAP ファースト**構成で、clap-wrapper により CLAP から VST3 / AU を生成し、
+UI は JUCE 非依存の Visage 製です（JUCE 製のバイナリを出荷するプラグインはもう
+ありません）。
 すべての変更が従うべき規約は `CLAUDE.md` を参照してください。
 
 ## プラグインカタログ
@@ -86,10 +86,15 @@ UI は日本語 / 英語のバイリンガルで、OS のロケールに従い�
 ### 依存関係のインストール
 
 共通で必要なのは **Git / CMake 3.22 以上 / C++20 対応コンパイラ** の3つです。
-JUCE や CLAP / VST3 SDK / clap-wrapper / Visage などの SDK 類は初回の CMake
-構成時に自動フェッチされるため、手動でのインストールは不要です（初回は
-ネットワーク接続が必要）。`tools/` の Python スクリプト（カタログ生成など）を
-使う場合は Python 3、TUI インストーラーを開発する場合は Go も追加で入れてください。
+CLAP / VST3 SDK / clap-wrapper / Visage などの SDK 類は初回の CMake 構成時に
+自動フェッチされるため、手動でのインストールは不要です（初回はネットワーク
+接続が必要）。`tools/` の Python スクリプト（カタログ生成など）を使う場合は
+Python 3、TUI インストーラーを開発する場合は Go も追加で入れてください。
+
+JUCE も同じ仕組みでフェッチされますが、**出荷バイナリはもう JUCE を使いません**。
+JUCE が必要なのは resonance-suppressor と dynamic-eq が残している
+byte 等価オラクルのテストだけで、その 2 つを含む構成でのみフェッチされます
+（`-DFACTORY_JUCE_ORACLES=OFF` を付ければ常にスキップできます）。
 
 **Windows**:
 
@@ -113,8 +118,9 @@ brew install cmake ninja      # Homebrew: https://brew.sh/ja/
 sudo apt-get update && sudo apt-get install -y build-essential git cmake ninja-build libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev libfontconfig1-dev mesa-common-dev libgl1-mesa-dev
 ```
 
-X11 / ALSA / freetype / GL の各開発パッケージは JUCE と VST3 SDK の構成に必要です
-（`mesa-common-dev` / `libgl1-mesa-dev` は resonance-suppressor の Visage GUI 用）。
+X11 / freetype / GL の各開発パッケージは Visage GUI と VST3 SDK の構成に必要です。
+`libasound2-dev`（ALSA）は JUCE 側のオラクルテストを構成する場合にだけ必要で、
+`-DFACTORY_JUCE_ORACLES=OFF` の CLAP 専用ビルドでは不要です。
 
 ### クローンとビルド
 
@@ -123,7 +129,11 @@ X11 / ALSA / freetype / GL の各開発パッケージは JUCE と VST3 SDK の�
 
 - `-DFACTORY_PLUGINS=<slug>[,<slug>]` — 指定したプラグインだけを構成・ビルド
   します（例: `-DFACTORY_PLUGINS=dynamic-eq`）。省略すると全プラグインが対象です。
-  resonance-suppressor を含む構成だけが CLAP 系 SDK / Visage をフェッチします。
+  現行プラグインはすべて CLAP ファーストなので、いずれか 1 つでも含む構成が
+  CLAP 系 SDK / Visage をフェッチします。
+- `-DFACTORY_JUCE_ORACLES=OFF` — resonance-suppressor / dynamic-eq の JUCE 製
+  byte 等価オラクルのテストを構成から外し、**JUCE のフェッチごとスキップ**します。
+  出荷バイナリ（CLAP / VST3 / AU）には一切影響しません。
 
 **macOS / Linux**（または Ninja が使える環境）:
 
@@ -145,8 +155,8 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-初回の構成は JUCE / NAM に加え resonance-suppressor 用の CLAP / VST3 SDK /
-clap-wrapper / Visage もフェッチするため数分かかります。2回目以降は
+初回の構成は CLAP / VST3 SDK / clap-wrapper / Visage（および JUCE オラクルを
+有効にしている場合は JUCE）をフェッチするため数分かかります。2回目以降は
 `cmake --build` だけで済み、ソース変更時の再構成も自動で走ります。
 Visual Studio ジェネレータはマルチコンフィグなので、`Release` は構成時ではなく
 ビルド/テスト時に `--config` / `-C` で指定します。構成に失敗すると `build/` の
