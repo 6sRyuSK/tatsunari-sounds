@@ -49,9 +49,9 @@ python tools/scaffold_plugin.py <slug> \
 
 ### Visage UI phase: register the autonomous browser harness
 
-The initial scaffold still starts with the fleet's minimal JUCE editor. Once the
-plugin has a JUCE-free Visage editor, completing the UI phase MUST also register
-it in `tools/ui-dev`:
+The scaffold emits the plugin's JUCE-free Visage editor but NOT its browser
+harness. Completing the UI phase MUST also register that editor in
+`tools/ui-dev`:
 
 - reuse `common/PluginHarness.{h,cpp}` for the standard `window.ui` ABI (never
   re-declare a `ui_*` export; dropdowns are opened by NAME, not by index);
