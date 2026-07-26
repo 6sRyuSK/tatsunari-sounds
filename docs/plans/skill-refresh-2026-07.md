@@ -1,7 +1,29 @@
 # スキル改修案 — 2026-07 時点のリポジトリ実態への追従
 
 `.claude/skills/` 全 10 本を、現在の `main`(`a9f3373`)の実態と突き合わせた棚卸しと
-改修案。**この文書は提案であり、スキル本体の書き換えはまだ行っていない。**
+改修案。
+
+## 進捗
+
+- **フェーズ 1(P0 4 本)= 実施済み**: `add-param` 全面書き換え / `add-preset` 全面
+  書き換え / `factory-ui` オラクル専用へ再スコープ / `visage-ui` の CLAP 節置換 +
+  3 機種化。
+- フェーズ 2〜4(P1 の穴埋め、`clap-shell` 新設、ドリフト検知)は未着手。
+
+### 実施中に判明した本文書の誤り(2 件)
+
+1. **§2.4 の「`FACTORY_RS_CLAP_GUI` はコメントにしか残っていない」は誤り。** 3 機種
+   それぞれに実在する CMake option + compile definition
+   (`FACTORY_RS_CLAP_GUI` / `FACTORY_PF_CLAP_GUI` / `FACTORY_DEQ_CLAP_GUI`、いずれも
+   既定 ON。`plugins/<slug>/shell/CMakeLists.txt`)。`shell/.../ClapEditor.h:9` の
+   コメントは「RS のフラグが代表例として言及されている」だけだった。書き換え後の
+   `visage-ui` は 3 フラグを実在するものとして記述している。
+2. **ユーザープリセットは出荷 UI に配線されていない。** `UserPresetStore(Fs).h` の
+   消費者はレガシー JUCE の `PresetSelectorController` とテストのみで、Visage の
+   preset model には `names()`/`currentIndex()`/`load()` = ファクトリープログラム
+   しか出ていない。§2.2 の「ユーザープリセットは `UserPresetStoreFs` +
+   `PresetSession` 経路に書き換え」は**そういう経路が現存しない**ため実行不能 →
+   `add-preset` には「出荷 UI 未配線・追加は範囲外の新機能」と明記した。
 
 ## 1. なぜ今ズレているか
 
