@@ -6,11 +6,13 @@
 # browser auto-reload. Default: the rs-editor app on http://127.0.0.1:8081.
 #
 # Usage:
-#   ./tools/ui-dev/dev.sh [--gallery] [--rel] [--no-serve]
+#   ./tools/ui-dev/dev.sh [--app rs-editor|gallery|pitch-fix|dynamic-eq] [--rel] [--no-serve|--verify]
 #
-#   --gallery    serve the widget gallery (:8080) instead of the rs-editor (:8081)
+#   --app NAME   select rs-editor (:8081), gallery (:8080), pitch-fix (:8082), or dynamic-eq (:8083)
+#   --gallery    backwards-compatible shorthand for --app gallery
 #   --rel        use the `rel` preset (-O2, small wasm) instead of `dev` (-O0, fast link)
 #   --no-serve   configure + build only, then exit (no dev server)
+#   --verify     configure + build, run Playwright with a temporary server, exit
 #
 # Sandbox overrides (pointed at local checkouts) are honoured when set:
 #   FACTORY_FREETYPE_MIRROR_DIR      -> -DFACTORY_FREETYPE_MIRROR_DIR (FreeType source)
@@ -23,19 +25,35 @@ REPO="$(cd "$HERE/../.." && pwd)"
 
 PRESET="dev"
 SERVE=1
-APP="rs-editor" # rs-editor | gallery
+VERIFY=0
+APP="rs-editor"
 
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; }
 
-for arg in "$@"; do
-  case "$arg" in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --app)
+      [ "$#" -ge 2 ] || { echo "dev.sh: --app requires a value" >&2; exit 2; }
+      APP="$2"; shift ;;
     --gallery)  APP="gallery" ;;
     --rel)      PRESET="rel" ;;
     --no-serve) SERVE=0 ;;
+    --verify)   VERIFY=1 ;;
     -h|--help)  usage; exit 0 ;;
-    *) echo "dev.sh: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    *) echo "dev.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
+  shift
 done
+
+case "$APP" in
+  gallery|rs-editor|pitch-fix|dynamic-eq) ;;
+  *) echo "dev.sh: invalid --app: $APP" >&2; exit 2 ;;
+esac
+
+if [ "$VERIFY" -eq 1 ] && [ "$SERVE" -eq 0 ]; then
+  echo "dev.sh: --verify and --no-serve cannot be combined" >&2
+  exit 2
+fi
 
 # --- ensure emsdk exists, then activate it -----------------------------------
 if [ ! -f "$HERE/.emsdk/emsdk_env.sh" ]; then
@@ -69,21 +87,26 @@ echo "== build ($APP, $PRESET) =="
 cmake --build "$BUILD_DIR" --target "$APP"
 
 # --- app -> served dir / port / theme ----------------------------------------
-if [ "$APP" = "gallery" ]; then
-  WEB_DIR="$BUILD_DIR/web"
-  PORT=8080
-  THEME_ARGS=()
-else
-  WEB_DIR="$BUILD_DIR/web-rs"
-  PORT=8081
-  THEME_ARGS=(--theme-file "$REPO/plugins/resonance-suppressor/ui/theme-rs.json")
-fi
+case "$APP" in
+  gallery)    WEB_DIR="$BUILD_DIR/web";     PORT=8080; THEME_ARGS=() ;;
+  rs-editor)  WEB_DIR="$BUILD_DIR/web-rs";  PORT=8081; THEME_ARGS=(--theme-file "$REPO/plugins/resonance-suppressor/ui/theme-rs.json") ;;
+  pitch-fix)  WEB_DIR="$BUILD_DIR/web-pf";  PORT=8082; THEME_ARGS=() ;;
+  dynamic-eq) WEB_DIR="$BUILD_DIR/web-deq"; PORT=8083; THEME_ARGS=() ;;
+esac
 URL="http://127.0.0.1:$PORT/index.html"
+
+if [ "$VERIFY" -eq 1 ]; then
+  if [ ! -d "$HERE/playwright/node_modules/playwright" ]; then
+    "$HERE/setup.sh" --with-playwright
+  fi
+  node "$HERE/playwright/verify.js" --app "$APP" --build-dir "$BUILD_DIR" --out "$HERE/artifacts"
+  exit 0
+fi
 
 if [ "$SERVE" -eq 0 ]; then
   echo
   echo "build complete (--no-serve). wasm output: $WEB_DIR"
-  echo "serve it with: ./tools/ui-dev/dev.sh$([ "$APP" = gallery ] && echo ' --gallery')$([ "$PRESET" = rel ] && echo ' --rel')"
+  echo "serve it with: ./tools/ui-dev/dev.sh --app $APP$([ "$PRESET" = rel ] && echo ' --rel')"
   exit 0
 fi
 

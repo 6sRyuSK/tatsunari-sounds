@@ -1,0 +1,22 @@
+{
+  "name": "@tatsunari-sounds/visage-ui-playwright",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright tooling for the local Visage WebAssembly UI development loop",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "doctor": "node doctor.js",
+    "capture": "node verify.js --mode inspect",
+    "test": "node verify.js --app all",
+    "test:gallery": "node verify.js --app gallery",
+    "test:rs": "node verify.js --app rs-editor",
+    "test:pitch-fix": "node verify.js --app pitch-fix",
+    "test:dynamic-eq": "node verify.js --app dynamic-eq"
+  },
+  "devDependencies": {
+    "playwright": "1.61.0",
+    "pngjs": "7.0.0"
+  }
+}

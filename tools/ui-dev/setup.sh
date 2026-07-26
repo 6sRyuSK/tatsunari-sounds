@@ -8,7 +8,7 @@
 # Usage:
 #   ./tools/ui-dev/setup.sh [--with-playwright]
 #
-#   --with-playwright   also `npm install` the headless-verify deps in playwright/
+#   --with-playwright   install pinned headless-verify deps + managed Chromium
 #
 # It never installs system packages for you: for any missing host tool it prints
 # the exact per-OS install command and exits non-zero.
@@ -119,8 +119,20 @@ if [ "$WITH_PLAYWRIGHT" -eq 1 ]; then
     hint npm node "nodejs npm" >&2
     exit 1
   fi
-  ( cd "$HERE/playwright" && npm install )
-  echo "playwright deps installed (browsers are provided at /opt/pw-browsers; never 'playwright install')"
+  # --ignore-scripts skips Playwright's postinstall browser download; doctor.js then
+  # decides whether one is actually needed. Images that pre-provision a Chromium in
+  # PLAYWRIGHT_BROWSERS_PATH (the agent sandbox does) must not fetch a second copy
+  # just because our pinned Playwright wants a different revision.
+  (
+    cd "$HERE/playwright"
+    npm ci --ignore-scripts
+    if node doctor.js >/dev/null 2>&1; then
+      echo "reusing the Chromium already available to this machine"
+    else
+      npx playwright install chromium
+    fi
+    node doctor.js
+  )
 fi
 
 # --- summary -----------------------------------------------------------------
@@ -132,3 +144,5 @@ echo
 echo "start the daily loop with:"
 echo "    ./tools/ui-dev/dev.sh            # rs-editor on http://127.0.0.1:8081"
 echo "    ./tools/ui-dev/dev.sh --gallery  # widget gallery on http://127.0.0.1:8080"
+echo "    ./tools/ui-dev/dev.sh --app pitch-fix  # Pitch Fix on http://127.0.0.1:8082"
+echo "    ./tools/ui-dev/dev.sh --app dynamic-eq # Dynamic EQ on http://127.0.0.1:8083"

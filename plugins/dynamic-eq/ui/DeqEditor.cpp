@@ -108,6 +108,59 @@ namespace deq_ui
         }
     }
 
+    void DeqEditor::selectBand (int band)
+    {
+        if (band < 0 || band >= DeqCurveView::kNumBands) return;
+        curve_->setSelectedBand (band);
+        panel_->setBand (band);
+        redrawAll();
+    }
+
+    bool DeqEditor::openNamedDropdown (const std::string& name)
+    {
+        if (name == "preset" && preset_) { preset_->openMenu(); return true; }
+        return panel_ && panel_->openNamedDropdown (name);
+    }
+
+    bool DeqEditor::widgetRectInWindow (const std::string& key, float& x, float& y, float& w, float& h) const
+    {
+        auto rectOf = [&] (const visage::Frame* frame)
+        {
+            if (frame == nullptr) return false;
+            const auto p = frame->positionInWindow();
+            x = p.x; y = p.y; w = frame->width(); h = frame->height();
+            return true;
+        };
+        if (key == "preset") return rectOf (preset_.get());
+        if (key == "bypass") return rectOf (bypass_.get());
+        if (key == "curve") return rectOf (curve_.get());
+        if (key == "panel") return rectOf (panel_.get());
+        if (key == "plot") return curve_ && curve_->plotRectInWindow (x, y, w, h);
+
+        // "b<n>_node" -> the curve handle for band n. Parsed by hand rather than
+        // with std::stoi + catch: emcc builds this TU with exception CATCHING off,
+        // so a throwing stoi would abort the module instead of falling through.
+        const auto marker = key.find ("_node");
+        if (key.rfind ("b", 0) == 0 && marker != std::string::npos && marker > 1)
+        {
+            int band = 0;
+            bool digits = true;
+            for (std::size_t i = 1; i < marker; ++i)
+            {
+                const char c = key[i];
+                if (c < '0' || c > '9') { digits = false; break; }
+                band = band * 10 + (c - '0');
+            }
+            float cx = 0.0f, cy = 0.0f;
+            if (digits && curve_ && curve_->nodeCentreInWindow (band, cx, cy))
+            {
+                x = cx - 10.0f; y = cy - 10.0f; w = 20.0f; h = 20.0f;
+                return true;
+            }
+        }
+        return panel_ && panel_->widgetRectInWindow (key, x, y, w, h);
+    }
+
     void DeqEditor::presentDropdown (std::vector<factory_ui_visage::Dropdown::Item> items, int selected,
                                      visage::Frame* anchor, std::function<void (int)> onSelect)
     {

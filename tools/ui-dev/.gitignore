@@ -2,5 +2,6 @@
 build/
 playwright/node_modules/
 playwright/*.png
-playwright/*.json
+playwright/*_result.json
+artifacts/
 .emsdk/

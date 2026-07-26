@@ -246,10 +246,10 @@ void GalleryFrame::presentDropdown (std::vector<fuv::Dropdown::Item> items, int 
     dropdown_->open (std::move (items), selected, a.x - self.x, a.y - self.y, anchor->width(), anchor->height());
 }
 
-bool GalleryFrame::openNamedDropdown (int which)
+bool GalleryFrame::openNamedDropdown (const std::string& name)
 {
-    if (which == 0 && presetSelector_) { presetSelector_->openMenu(); return true; }
-    if (which == 1 && valueSetting_)   { valueSetting_->openMenu();   return true; }
+    if (name == "preset" && presetSelector_)      { presetSelector_->openMenu(); return true; }
+    if (name == "valueSetting" && valueSetting_)  { valueSetting_->openMenu();   return true; }
     return false;
 }
 

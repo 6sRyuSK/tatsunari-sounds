@@ -1,15 +1,100 @@
 // Reusable Playwright helpers for the Visage gallery (adapted from spike S1).
 //
-// Chromium is driven via executablePath at the preinstalled build, so the
-// Playwright package version need not match the browser revision. WebGL in
-// headless-as-root works with the SwiftShader flag set below — the load-bearing
+// Chromium resolves from CHROME_BIN, Playwright's managed browser, or a common
+// system Chrome/Edge install. WebGL in headless mode uses the SwiftShader flags
+// below — the load-bearing
 // flag is --enable-unsafe-swiftshader (modern Chromium refuses SwiftShader for
 // WebGL without it, and the canvas comes up blank).
 const { chromium } = require("playwright");
 const { PNG } = require("pngjs");
+const fs = require("fs");
+const path = require("path");
 
-const CHROME =
-  process.env.CHROME_BIN || "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+function firstExisting(candidates) {
+  for (const candidate of candidates.filter(Boolean)) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+// Any Chromium build already sitting in PLAYWRIGHT_BROWSERS_PATH, newest revision
+// first. Pre-provisioned images (the agent sandbox pins one at /opt/pw-browsers)
+// rarely carry the exact revision our package-lock's Playwright asks for, and the
+// mismatch is not a reason to download a second copy. Scanning beats hardcoding a
+// revision, which silently rots the moment either side moves.
+function browsersPathChromium() {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !fs.existsSync(root)) return null;
+  let entries;
+  try {
+    entries = fs.readdirSync(root).filter((name) => name.startsWith("chromium-"));
+  } catch (error) {
+    return null;
+  }
+  const revision = (name) => Number(name.slice("chromium-".length)) || 0;
+  entries.sort((a, b) => revision(b) - revision(a));
+  // chrome-linux64 is the modern layout, chrome-linux the older one.
+  const relative = process.platform === "win32"
+    ? [path.join("chrome-win", "chrome.exe")]
+    : process.platform === "darwin"
+    ? [path.join("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")]
+    : [path.join("chrome-linux64", "chrome"), path.join("chrome-linux", "chrome")];
+  for (const entry of entries) {
+    const found = firstExisting(relative.map((suffix) => path.join(root, entry, suffix)));
+    if (found) return found;
+  }
+  return null;
+}
+
+// Prefer Playwright's pinned browser, but keep the harness usable on developer
+// machines that already have Chrome/Edge and intentionally skipped the browser
+// download. CHROME_BIN always wins and is validated so failures are actionable.
+function resolveChromiumExecutable() {
+  if (process.env.CHROME_BIN) {
+    const explicit = path.resolve(process.env.CHROME_BIN);
+    if (!fs.existsSync(explicit)) {
+      throw new Error(`CHROME_BIN does not exist: ${explicit}`);
+    }
+    return { path: explicit, source: "CHROME_BIN", available: true };
+  }
+
+  const managed = chromium.executablePath();
+  if (managed && fs.existsSync(managed)) {
+    return { path: managed, source: "playwright", available: true };
+  }
+
+  const provisioned = browsersPathChromium();
+  if (provisioned) {
+    return { path: provisioned, source: "PLAYWRIGHT_BROWSERS_PATH", available: true };
+  }
+
+  const localAppData = process.env.LOCALAPPDATA;
+  const programFiles = process.env.ProgramFiles;
+  const programFilesX86 = process.env["ProgramFiles(x86)"];
+  const home = process.env.HOME;
+  const system = firstExisting(process.platform === "win32" ? [
+    localAppData && path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+    programFiles && path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+    programFilesX86 && path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+    programFiles && path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+    programFilesX86 && path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+  ] : process.platform === "darwin" ? [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    home && path.join(home, "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+  ] : [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ]);
+  return system
+    ? { path: system, source: "system", available: true }
+    : { path: null, source: "missing", available: false };
+}
+
+const BROWSER = resolveChromiumExecutable();
+const CHROME = BROWSER.path;
 
 const FLAGS = (process.env.CHROME_FLAGS
   ? process.env.CHROME_FLAGS.split(/\s+/)
@@ -120,9 +205,15 @@ function colorDist(a, b) {
 }
 
 async function launch(viewport) {
+  if (!BROWSER.available) {
+    throw new Error(
+      "No Chromium executable was found. Run `npx playwright install chromium` " +
+      "in tools/ui-dev/playwright, or set CHROME_BIN."
+    );
+  }
   const browser = await chromium.launch({
     executablePath: CHROME,
-    headless: true,
+    headless: process.env.PW_HEADLESS !== "0",
     args: FLAGS,
   });
   const context = await browser.newContext({
@@ -138,26 +229,46 @@ async function launch(viewport) {
 async function waitReady(page, url, timeoutMs) {
   timeoutMs = timeoutMs || 60000;
   await page.goto(url, { waitUntil: "load", timeout: timeoutMs });
-  await page.waitForFunction(
-    () => {
-      const c = document.getElementById("canvas");
-      if (!c) return false;
-      const cs = getComputedStyle(c);
-      if (!(c.width > 0 && c.height > 0 && parseFloat(cs.opacity) > 0.99)) return false;
-      // Gate on runtime init (shell sets __runtimeReady) — calling an export
-      // before init trips an -sASSERTIONS abort that halts the module + main().
-      if (!window.__runtimeReady) return false;
-      try {
-        return (
-          !!(window.Module && Module.ccall) &&
-          JSON.parse(Module.ccall("ui_list_params", "string", [], [])).length > 0
-        );
-      } catch (e) {
-        return false;
-      }
-    },
-    { timeout: timeoutMs }
-  );
+  try {
+    await page.waitForFunction(
+      () => {
+        const c = document.getElementById("canvas");
+        if (!c) return false;
+        const cs = getComputedStyle(c);
+        if (!(c.width > 0 && c.height > 0 && parseFloat(cs.opacity) > 0.99)) return false;
+        // Gate on runtime init (shell sets __runtimeReady) — calling an export
+        // before init trips an -sASSERTIONS abort that halts the module + main().
+        if (!window.__runtimeReady) return false;
+        try {
+          return (
+            !!(window.Module && Module.ccall) &&
+            JSON.parse(Module.ccall("ui_list_params", "string", [], [])).length > 0
+          );
+        } catch (e) {
+          return false;
+        }
+      },
+      undefined,
+      { timeout: timeoutMs }
+    );
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const canvas = document.getElementById("canvas");
+      const status = document.getElementById("status");
+      return {
+        documentReady: document.readyState,
+        runtimeReady: !!window.__runtimeReady,
+        moduleCcall: !!(window.Module && Module.ccall),
+        canvas: canvas ? {
+          width: canvas.width,
+          height: canvas.height,
+          opacity: getComputedStyle(canvas).opacity,
+        } : null,
+        status: status ? status.textContent : null,
+      };
+    }).catch((diagnosticError) => ({ diagnosticError: String(diagnosticError) }));
+    throw new Error(`Visage UI did not become ready within ${timeoutMs}ms: ${JSON.stringify(state)}`, { cause: error });
+  }
 }
 
 async function probeWebGL(page) {
@@ -178,7 +289,11 @@ async function probeWebGL(page) {
   });
 }
 
-module.exports = { CHROME, FLAGS, analyzePNG, notBlank, analyzeRegion, regionMeanAbsDiff, samplePixel, colorDist, launch, waitReady, probeWebGL };
+function browserInfo() {
+  return { ...BROWSER };
+}
+
+module.exports = { CHROME, FLAGS, browserInfo, analyzePNG, notBlank, analyzeRegion, regionMeanAbsDiff, samplePixel, colorDist, launch, waitReady, probeWebGL };
 
 // Standalone use: `node drive.js <url> <out.png>` — load + non-blank check.
 if (require.main === module) {

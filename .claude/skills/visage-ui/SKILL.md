@@ -159,6 +159,10 @@ viewBox24) + `paintGlyph(canvas, glyph, x,y,w,h)`(現在のブラシで描く)�
 ```bash
 ./tools/ui-dev/dev.sh              # rs-editor  → http://127.0.0.1:8081 (watch+reload)
 ./tools/ui-dev/dev.sh --gallery    # widget gallery → :8080
+./tools/ui-dev/dev.sh --app pitch-fix  # Pitch Fix → :8082
+./tools/ui-dev/dev.sh --app dynamic-eq # Dynamic EQ → :8083
+./tools/ui-dev/dev.sh --app pitch-fix --verify
+./tools/ui-dev/dev.sh --app dynamic-eq --verify
 cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
   node rs.spec.js http://127.0.0.1:8081/index.html .   # 30 asserts + screenshots
 ```
@@ -174,6 +178,34 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
   走る。手動実行は各ソース冒頭のコンパイル行(theme 系は JSON パスを引数で渡す —
   既定の相対パスは cwd 依存)。widget の**見た目**の検証はハーネスの Playwright 側で、
   gallery に載せる widget は `tools/ui-dev/gallery/GalleryFrame.{h,cpp}` に追加する。
+
+### 実プラグイン用の共通 Playwright harness
+
+- `tools/ui-dev/common/PluginHarness.{h,cpp}` が `window.ui` の標準 ABI
+  (ParamStore、Theme、widget rect、Dropdown、preset)を実装する。新しい bridge で
+  同じ C export を複製しない — rs-editor / pitch-fix / dynamic-eq は全て
+  `ui_dev_harness::Target` を `attach` するだけで、`rs_*` / `pf_*` / `deq_*` には
+  **そのプラグイン固有の状態しか置かない**(RS の undo・A-B、PF の status feed、
+  DEQ の band/analyser feed)。gallery だけは plugin editor ではないので自前 bridge
+  だが、export する ui_* 名と署名は同一。export 一覧は CMake の
+  `FACTORY_UI_ABI_EXPORTS` が単一の真実。
+- **Dropdown は名前で開く**: `openNamedDropdown(const std::string&)` /
+  `ui.openDropdown("preset")`。gallery `"preset"`/`"valueSetting"`、RS
+  `"quality"`/`"channel"`/`"preset"`、PF `"key"`/`"preset"`、DEQ
+  `"type"`/`"slope"`/`"chan"`/`"preset"`。共有 ABI の引数にプラグインごとの
+  マジックインデックスを持ち込まない。
+- editor が独自の theme ドキュメントを持つ場合(RS の `RsTheme` = 共有 Theme +
+  `"rs"` extras)は `makeEditorTarget(editor, nullptr)` にして `Target::accent` /
+  `Target::reloadTheme` を自分で差す。既定の `useSharedTheme` を使うと extras が
+  hot reload で落ちる。
+- `tools/ui-dev/common/HarnessPresetModel.h` で実際の `PresetSession` を editor の
+  preset model に接続する。
+- 新しい Visage editor を完成させるときは `tools/ui-dev/<slug>/` に
+  `main.cpp`、決定論的 `SyntheticFeed.h`、薄い plugin bridge を置き、CMake、
+  `dev.sh`/`dev.ps1`、`verify.js`、Playwright spec を同時に登録する。
+- テストは bridge の `ui.set` だけで済ませず、最低1つの knob/node drag と
+  Dropdown row click を real mouse event で通し、スクリーンショット、JS/HTTP
+  error、preset exclusions を検証する。
 - CI: `clap.yml` が Linux で RS clap-first(GUI 込み)をビルド + clap-validator、
   `ci.yml` が macOS/Windows ビルド + pluginval。ui-dev ハーネス自体は CI 外。
 

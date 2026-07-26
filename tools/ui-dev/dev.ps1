@@ -1,28 +1,42 @@
 # tools/ui-dev/dev.ps1 -- the daily Visage UI dev loop entry point (Windows).
 #
-# UNTESTED: authored on Linux; the maintainer cannot execute PowerShell here.
-# It mirrors dev.sh -- verify on a real Windows box before relying on it.
-#
 # Activates the pinned emsdk (running setup.ps1 first if .emsdk is missing),
 # configures the wasm build if needed, builds, and serves it with live rebuild.
 # Default: the rs-editor app on http://127.0.0.1:8081.
 #
 # Usage:
-#   .\tools\ui-dev\dev.ps1 [-Gallery] [-Rel] [-NoServe]
+#   .\tools\ui-dev\dev.ps1 [-App rs-editor|gallery|pitch-fix|dynamic-eq] [-Rel] [-NoServe | -Verify]
 #
 # Sandbox overrides (env vars) are honoured when set:
 #   FACTORY_FREETYPE_MIRROR_DIR, FETCHCONTENT_SOURCE_DIR_VISAGE
 param(
+    [ValidateSet("gallery", "rs-editor", "pitch-fix", "dynamic-eq")]
+    [string]$App = "rs-editor",
     [switch]$Gallery,
     [switch]$Rel,
-    [switch]$NoServe
+    [switch]$NoServe,
+    [switch]$Verify
 )
 $ErrorActionPreference = "Stop"
+
+if ($Verify -and $NoServe) {
+    throw "-Verify and -NoServe cannot be combined"
+}
+
+function CanRunPython($command) {
+    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        & $command --version *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
 
 $Here = Split-Path -Parent $PSCommandPath
 $Repo = Resolve-Path (Join-Path $Here "..\..")
 $Preset = if ($Rel) { "rel" } else { "dev" }
-$App = if ($Gallery) { "gallery" } else { "rs-editor" }
+if ($Gallery) { $App = "gallery" } # backwards-compatible shorthand
 
 # --- ensure emsdk exists, then activate it -----------------------------------
 if (-not (Test-Path (Join-Path $Here ".emsdk\emsdk_env.ps1"))) {
@@ -52,24 +66,44 @@ $BuildDir = Join-Path $Here "build\$Preset"
 if (-not (Test-Path $BuildDir)) {
     Write-Host "== configure ($Preset) =="
     Push-Location $Here
-    try { cmake --preset $Preset @overrides } finally { Pop-Location }
+    try {
+        cmake --preset $Preset @overrides
+        if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+    } finally { Pop-Location }
 }
 
 # --- build the app being served ----------------------------------------------
 Write-Host "== build ($App, $Preset) =="
 cmake --build $BuildDir --target $App
+if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
 
 # --- app -> served dir / port / theme ----------------------------------------
-if ($App -eq "gallery") {
-    $WebDir = Join-Path $BuildDir "web"
-    $Port = 8080
-    $ThemeArgs = @()
-} else {
-    $WebDir = Join-Path $BuildDir "web-rs"
-    $Port = 8081
-    $ThemeArgs = @("--theme-file", (Join-Path $Repo "plugins\resonance-suppressor\ui\theme-rs.json"))
+switch ($App) {
+    "gallery" {
+        $WebDir = Join-Path $BuildDir "web"; $Port = 8080; $ThemeArgs = @()
+    }
+    "rs-editor" {
+        $WebDir = Join-Path $BuildDir "web-rs"; $Port = 8081
+        $ThemeArgs = @("--theme-file", (Join-Path $Repo "plugins\resonance-suppressor\ui\theme-rs.json"))
+    }
+    "pitch-fix" {
+        $WebDir = Join-Path $BuildDir "web-pf"; $Port = 8082; $ThemeArgs = @()
+    }
+    "dynamic-eq" {
+        $WebDir = Join-Path $BuildDir "web-deq"; $Port = 8083; $ThemeArgs = @()
+    }
 }
 $Url = "http://127.0.0.1:$Port/index.html"
+
+if ($Verify) {
+    if (-not (Test-Path (Join-Path $Here "playwright\node_modules\playwright"))) {
+        & (Join-Path $Here "setup.ps1") -WithPlaywright
+    }
+    node (Join-Path $Here "playwright\verify.js") `
+        --app $App --build-dir $BuildDir --out (Join-Path $Here "artifacts")
+    if ($LASTEXITCODE -ne 0) { throw "Playwright verification failed" }
+    exit 0
+}
 
 if ($NoServe) {
     Write-Host ""
@@ -77,7 +111,15 @@ if ($NoServe) {
     exit 0
 }
 
-$Python = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "py" }
+$Python = if ($env:PYTHON_BIN -and (CanRunPython $env:PYTHON_BIN)) {
+    $env:PYTHON_BIN
+} elseif (CanRunPython "python") {
+    "python"
+} elseif (CanRunPython "py") {
+    "py"
+} else {
+    throw "Python 3 was not found. Install it or set PYTHON_BIN."
+}
 Write-Host ""
 Write-Host "serving $App at $Url   (edit source -> auto rebuild + reload; Ctrl-C to stop)"
 & $Python (Join-Path $Here "dev_server.py") `

@@ -148,10 +148,10 @@ extern "C"
             g_gallery->feedSpectrum (phase);
     }
 
-    // Open a control's dropdown (0 = preset selector, 1 = value setting). 1 on ok.
-    KEEPALIVE int ui_open_dropdown (int which)
+    // Open a control's dropdown by name ("preset" / "valueSetting"). 1 on ok.
+    KEEPALIVE int ui_open_dropdown (const char* name)
     {
-        return (g_gallery != nullptr && g_gallery->openNamedDropdown (which)) ? 1 : 0;
+        return (g_gallery != nullptr && name != nullptr && g_gallery->openNamedDropdown (name)) ? 1 : 0;
     }
 
     KEEPALIVE int ui_dropdown_open()

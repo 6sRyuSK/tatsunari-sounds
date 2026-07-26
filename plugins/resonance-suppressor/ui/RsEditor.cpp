@@ -312,11 +312,11 @@ namespace rs_ui
     int  RsEditor::abSlot() const { return ab_.activeSlot(); }
     int  RsEditor::presetIndex() const { return presets_.currentIndex(); }
 
-    bool RsEditor::openNamedDropdown (int which)
+    bool RsEditor::openNamedDropdown (const std::string& name)
     {
-        if (which == 0 && qualitySet_) { qualitySet_->openMenu(); return true; }
-        if (which == 1 && chSet_)      { chSet_->openMenu();      return true; }
-        if (which == 2 && preset_)     { preset_->openMenu();     return true; }
+        if (name == "quality" && qualitySet_) { qualitySet_->openMenu(); return true; }
+        if (name == "channel" && chSet_)      { chSet_->openMenu();      return true; }
+        if (name == "preset" && preset_)      { preset_->openMenu();     return true; }
         return false;
     }
 

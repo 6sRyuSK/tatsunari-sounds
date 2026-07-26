@@ -48,6 +48,9 @@ namespace deq_ui
         void setSelectedBand (int b);
         int  selectedBand() const noexcept { return selected_; }
         void setFrozen (bool frozen);
+        void refreshAnalyzer();
+        bool nodeCentreInWindow (int band, float& x, float& y) const;
+        bool plotRectInWindow (float& x, float& y, float& w, float& h) const;
 
         void draw (visage::Canvas& canvas) override;
         void resized() override;

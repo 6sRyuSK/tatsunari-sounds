@@ -1,8 +1,5 @@
 # tools/ui-dev/setup.ps1 -- one-shot developer bootstrap for the Visage UI dev harness (Windows).
 #
-# UNTESTED: authored on Linux; the maintainer cannot execute PowerShell here.
-# It mirrors setup.sh -- verify on a real Windows box before relying on it.
-#
 # Installs the pinned Emscripten SDK (6.0.3) into tools/ui-dev\.emsdk and verifies
 # the host build tools. Idempotent + upgrade-safe.
 #
@@ -18,6 +15,16 @@ $EmsdkVersion = "6.0.3"
 $EmsdkDir = Join-Path $Here ".emsdk"
 
 function Have($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+
+function CanRunPython($command, $prefixArgs) {
+    if (-not (Have $command)) { return $false }
+    try {
+        & $command @prefixArgs --version *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
 
 # winget line first, choco as the fallback hint.
 function Hint($winget, $choco) {
@@ -43,8 +50,16 @@ if (Have cmake) {
     }
 }
 
-# python: Windows usually exposes `python` (or the `py` launcher), not `python3`.
-$Python = if (Have python) { "python" } elseif (Have py) { "py" } else { $null }
+# python: reject the non-runnable Windows Store app alias and accept PYTHON_BIN.
+$Python = if ($env:PYTHON_BIN -and (CanRunPython $env:PYTHON_BIN @())) {
+    $env:PYTHON_BIN
+} elseif (CanRunPython "python" @()) {
+    "python"
+} elseif (CanRunPython "py" @("-3")) {
+    "py"
+} else {
+    $null
+}
 if ($Python) { Write-Host "  ok    $Python" }
 else { Write-Host "  MISS  python"; Hint "Python.Python.3.12" "python"; $missing = $true }
 
@@ -93,7 +108,21 @@ if ($WithPlaywright) {
     Write-Host "== playwright deps =="
     if (-not (Have npm)) { Write-Error "npm is required for -WithPlaywright"; exit 1 }
     Push-Location (Join-Path $Here "playwright")
-    try { npm install } finally { Pop-Location }
+    try {
+        # --ignore-scripts skips Playwright's postinstall browser download; doctor.js
+        # then decides whether one is actually needed (see setup.sh for the rationale).
+        npm ci --ignore-scripts
+        if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+        node doctor.js *> $null
+        if ($LASTEXITCODE -ne 0) {
+            npx playwright install chromium
+            if ($LASTEXITCODE -ne 0) { throw "Playwright Chromium install failed" }
+        } else {
+            Write-Host "  reusing the Chromium already available to this machine"
+        }
+        node doctor.js
+        if ($LASTEXITCODE -ne 0) { throw "Playwright doctor failed" }
+    } finally { Pop-Location }
 }
 
 Write-Host ""
@@ -103,3 +132,5 @@ Write-Host ""
 Write-Host "start the daily loop with:"
 Write-Host "    .\tools\ui-dev\dev.ps1            # rs-editor on http://127.0.0.1:8081"
 Write-Host "    .\tools\ui-dev\dev.ps1 -Gallery   # widget gallery on http://127.0.0.1:8080"
+Write-Host "    .\tools\ui-dev\dev.ps1 -App pitch-fix  # Pitch Fix on http://127.0.0.1:8082"
+Write-Host "    .\tools\ui-dev\dev.ps1 -App dynamic-eq # Dynamic EQ on http://127.0.0.1:8083"
