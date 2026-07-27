@@ -1,11 +1,33 @@
 ---
 name: write-dsp-test
-description: Write or modify a plugin's headless DSP test (plugins/<slug>/tests/dsp_test.cpp) in this repo. Use when writing verification/regression tests for DSP, choosing oracles/tolerances, or replacing the scaffold test stub. Contains the DspInvariants.h API and the oracle rules — do NOT read other plugins' test files as reference.
+description: Write or modify a plugin's headless DSP test (plugins/<slug>/tests/dsp_test.cpp) in this repo, or pick which of the repo's test categories a new gate belongs in. Use when writing verification/regression tests for DSP, choosing oracles/tolerances, or replacing the scaffold test stub. Contains the DspInvariants.h API and the oracle rules — do NOT read other plugins' test files as reference.
 ---
 
 # DSP テストの書き方
 
-他プラグインの dsp_test.cpp を参考読みしない。構造・API・オラクル規約は以下で完結。
+他プラグインの `dsp_test.cpp` を参考読みしない。構造・API・オラクル規約は以下で完結。
+
+## 0. まずどのテストを足すのかを選ぶ
+
+このリポジトリのテストは 1 種類ではない。**置き場所を間違えると、そのゲートは
+狙ったものを守らない。**
+
+| 種別 | CTest 名 | 場所 / リンク | 何を守るか |
+|---|---|---|---|
+| **プラグイン DSP**(本スキルの主題) | `<slug>_dsp_<fs>` | `plugins/<slug>/tests/dsp_test.cpp`、`factory_core` のみ | そのプラグインの DSP 仕様と回帰不変量。全レート |
+| core プリミティブ | `core_primitives_<fs>` / `core_linear_ramp_<fs>` / `core_pitch_detector_<fs>` / `core_psola_shifter_<fs>` | `core/tests/` | **共有プリミティブ**の仕様。新しい `core/` ヘッダのゲートはここ(`core-primitives` スキル) |
+| プリセット/テーブル配線 | `<slug>_preset` | `plugins/<slug>/tests/preset_test.cpp` | id 実在・レンジ・除外・Init。pitch-fix は headless、RS/deq は JUCE リンクのオラクル形(`add-preset` スキル) |
+| バイト等価オラクル | `resonance_suppressor_rscore_equiv` / `dynamic_eq_deqcore_equiv` | JUCE processor vs `<X>Core` | 脱 JUCE 移行のドリフト。**バイト一致**、全レート |
+| CLAP シェル層 | `resonance_suppressor_clap_shell` | `plugins/resonance-suppressor/tests/clap_shell_test.cpp`、`factory_shell` のみ | リサイズ数学の不動点等、シェルの純粋関数 |
+| 共有モデル | `params` / `presets` | `params/tests` / `presets/tests` | ParamStore・Range・StateCodec・PresetSession |
+| UI(visage 不要の部分) | `factory_ui_visage_theme` / `factory_ui_visage_spectrum_<fs>` / `factory_ui_visage_value_text` / `resonance_suppressor_theme_roundtrip` / `resonance_suppressor_ui_pure` | `ui/visage/tests/`、`plugins/*/ui/tests/` | テーマ JSON の往復、スペクトラム数理、値入力フロー(`visage-ui` スキル) |
+
+ルート CMakeLists が `core/tests` `params/tests` `presets/tests` を直接登録するので、
+プラグインを 1 つも構成しなくてもこの 3 つは走る。
+
+> **CTest を回すときは `FACTORY_JUCE_ORACLES` を ON のまま**(既定 ON)。OFF にすると
+> 等価オラクルと RS/deq の preset ゲートが**構成されず、黙って緑になる**。
+> OFF は出荷パスだけをビルドする用途(release.yml / clap.yml)。
 
 ## ファイル構造(固定パターン)
 
@@ -53,7 +75,9 @@ int main (int argc, char** argv)
 |---|---|
 | `kStandardSampleRates()` / `sampleRatesFromArgs(argc, argv)` | レート行列の唯一の定義 / argv[1] で単レート |
 | `allFinite(vec)` | NaN/Inf 検出(長時間ホールドで必須) |
+| `noSubnormals(vec)` | **subnormal 検出**。FTZ/DAZ を強制しないホストでも denormal cliff に落ちないこと。コアは FP モード非依存なので純粋な算術としてこれが成り立つ必要がある。`allFinite` と対で使う(finite かつ subnormal なし = 全値が正常な double か厳密なゼロ)。regression-policy class V |
 | `peakAbs(vec)` | ピーク。**現実的な**上限で bound(`1e6` トレランス禁止) |
+| `windowEnergy(vec, start, len)` | 窓区間のエネルギー(Σx²)。減衰・エンベロープ・テールの手書き検算に |
 | `impulseResponseNonIncreasing(process, Fs, tail=4.0, win=0.25, tol=1.05)` | フィードバック安定性: インパルス応答のエネルギーが窓ごとに非増加(ループゲイン<1)。worst-case 設定・全レートで |
 | `binWidthHz(Fs, order)` / `windowLengthSec(Fs, order)` | 分解能の検算 |
 | `resolutionFollowsSampleRate(Fs, maxBinHz=100, minWindowSec=0.010)` | FFT/STFT 次数が `fftOrderForSampleRate` 由来で最高レートでも分解能維持 |
@@ -62,14 +86,18 @@ int main (int argc, char** argv)
 
 - フィードバックあり → `impulseResponseNonIncreasing` を最悪設定で。
 - 高次フィルタカスケード → ピーク段 Q の**絶対上限**を z 領域で assert。
-- フィードバックノード → finite ガードの自己回復 + 長時間ホールドの現実的ピーク上限。
+- フィードバックノード → finite ガードの自己回復 + 長時間ホールドの現実的ピーク上限
+  (`allFinite` + `noSubnormals` + `peakAbs`)。
 - ディレイ/変調 → worst-case バッファサイズ(黙ったクランプ禁止)。
 - 検出器 → **絶対フロア**(無音で phantom reduction が出ない)。
 - FFT/STFT → `resolutionFollowsSampleRate`。
+- prepare/bypass/チャンネル遷移 → 状態リセット(残留が次のブロックに漏れない)。
 
 詳細な分類は `docs/regression-policy.md`(必要時のみ参照)。
 
 ## 禁止事項(Ask a human)
 
 トレランス・オラクル・レート集合・disabled-tests の**緩和**は自律判断禁止。
-緑にするためにゲートを緩めない — 人間に issue/PR で判断を仰ぐ。
+緑にするためにゲートを緩めない — 人間に issue/PR で判断を仰ぐ。等価オラクル
+(`*_equiv`)の**バイト一致要件を緩めるのは特に禁止**: あれは移行のドリフトを
+検出する唯一の仕掛けで、tolerance を入れた瞬間に無意味になる。

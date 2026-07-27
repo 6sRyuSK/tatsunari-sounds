@@ -21,14 +21,14 @@ go build -o tatsunari .    # ローカルバイナリ(名前に install を含�
 
 ```bash
 go run . --no-tui --dry-run --json --os macOS  --plugins all --formats vst3,au
-go run . --no-tui --dry-run        --os Windows --plugins saturator --formats vst3
+go run . --no-tui --dry-run        --os Windows --plugins resonance-suppressor --formats vst3
 ```
 
 ## モジュール地図
 
 | 場所 | 役割 |
 |---|---|
-| `main.go` | CLI ディスパッチ: TUI / `__apply`(特権)/ `--no-tui` / `--dry-run` |
+| `main.go` + `apply.go` + `tui_run.go` | CLI ディスパッチ: TUI 起動 / `__apply`(特権)/ `--no-tui` / `--dry-run`。テストは `main_test.go` / `apply_test.go` |
 | `tty_*.go` | `curl \| bash` / `irm \| iex` 下での制御端末の再アタッチ |
 | `internal/model` | plain 型、semver、install-plan(依存なし) |
 | `internal/release` | GitHub 発見: releases / manifest / asset matrix / catalog / checksums |
@@ -58,7 +58,14 @@ go run . --no-tui --dry-run        --os Windows --plugins saturator --formats vs
 
 ## リリースとの関係
 
-`installer.yml` が `release: published` で起動し、`CGO_ENABLED=0` で
+`installer.yml` は **`workflow_run`(`workflows: ["Release"]`, `types: [completed]`)**
+で起動する。`release: published` では**ない** — release.yml は GITHUB_TOKEN で
+Release を公開するが、GitHub は token 製の Release に `release: published` を
+発火しない(再帰実行防止)ため、`release` を待っても永遠に起動しない。
+`workflow_dispatch(tag)` は手動再実行/バックフィル用に残してある
+(`gh workflow run installer --ref main --field tag=<year>.<n>`)。
+
+起動後は `CGO_ENABLED=0` で
 `tatsunari-{darwin-amd64,darwin-arm64,windows-amd64}` をクロスコンパイル、
 `tools/gen_catalog.py --emit-json` で `catalog.json` を作り、同じ Release に添付
 する。`release.yml` や `manifest.json` には触らない(触らせない)。

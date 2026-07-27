@@ -33,16 +33,19 @@ sources (or re-read workflow files / ui headers) to copy patterns:
 - `write-dsp-test` — test structure, `DspInvariants.h` API, oracle rules.
 - `factory-ui` — the JUCE design-system API and editor conventions. Only the
   surviving oracle apps use it; a new/shipping editor wants `visage-ui`.
-- `visage-ui` — the Visage layer: `factory_ui_visage` (`ui/visage/`), the RS
-  editor conventions, theme JSON, the visage core API, and the `tools/ui-dev`
-  loop.
+- `visage-ui` — the Visage layer: `factory_ui_visage` (`ui/visage/`), all three
+  shipping editors' conventions, the shared `ClapEditorHost` embedding, theme
+  JSON, the visage core API, and the `tools/ui-dev` loop.
 - `core-primitives` — catalog of `core/` primitives to compose from.
 - `release` — versioning + release/installer pipeline mechanics.
 - `pluginval-debug` — diagnosing CI pluginval failures.
 - `installer-dev` — the Go TUI installer module.
+- `clap-shell` — the CLAP shell layer: the `ClapShellPlugin<Policy>` contract,
+  the `<X>Ix`/`fillSnapshot` pattern, state/param bridging, and the SDK pins +
+  `make_clapfirst` wrapper in `shell/cmake/`.
 
-No skill covers the CLAP shell layer yet: for `shell/` read that layer's own
-headers plus `docs/migration/s2-clap-first.md` (SDK pins and gotchas);
+`docs/migration/s2-clap-first.md` keeps the raw S2 spike measurements behind the
+`clap-shell` skill (its load-bearing pins and gotchas are excerpted there);
 `docs/migration/s1-wasm-loop.md` keeps the WASM-loop pins the `visage-ui`
 skill builds on.
 
@@ -89,7 +92,10 @@ skill builds on.
 - `tools/gen_catalog.py` — regenerates the README catalog (+ `--emit-json`);
   `tools/release_plan.py` — the unit-tested decision core of `release.yml`
   (kind is `clap` for every plugin; a shipping `juce_add_plugin` is a hard
-  error); `tools/tests/` — stdlib unittests for both;
+  error); `tools/check_skill_refs.py` — gates skill drift (every repo path,
+  `FACTORY_*` option and rate-swept CTest name a `.claude/skills/` file cites must
+  still exist; archived slugs must be marked); `tools/tests/` — stdlib unittests
+  for all three;
   `tools/scaffold_plugin.py` — clap-first new-plugin generator; `tools/installer/` — TUI
   installer; `tools/ui-dev/` — local WASM Visage UI dev harness (own README,
   not in CI); `tools/vst3-probe/` — dev-only Windows VST3 host probe;
@@ -225,8 +231,9 @@ installer support). `installer.yml` attaches the TUI installer + `catalog.json` 
   doesn't produce. Adding a NEW PLUGIN means adding its slug to the matrix; the
   `paths` blocks are globs now, so a new shell-visible header no longer needs
   hand-registering — but the push and pull_request lists must stay identical.
-- **Factory tools** (`factory-tools-ci.yml`, scoped to tools/tomls/README):
-  `gen_catalog.py --check` (README catalog freshness) + the `tools/tests`
+- **Factory tools** (`factory-tools-ci.yml`, scoped to tools/tomls/README/
+  `.claude/skills/**`): `gen_catalog.py --check` (README catalog freshness) +
+  `check_skill_refs.py` (skill-reference freshness) + the `tools/tests`
   unittest suite.
 - **Installer** (`installer-ci.yml`, `tools/installer/**` only): `go test` / `go vet`.
 
