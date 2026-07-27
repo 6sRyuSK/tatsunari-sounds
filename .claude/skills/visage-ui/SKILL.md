@@ -225,6 +225,16 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
   node rs.spec.js http://127.0.0.1:8081/index.html .   # 30 asserts + screenshots
 ```
 
+- **egress proxy 環境の必須フラグ**: visage は FreeType を
+  `gitlab.freedesktop.org` から FetchContent する。このホストを塞ぐ proxy 下では
+  configure が `Build step for freetype failed` で落ち、**アクティブな
+  プラグインが1本も configure できない**(シェルが visage を引くため)= plugin の
+  CTest が一切走らない。GitHub ミラーを1度 clone して
+  `-DFACTORY_FREETYPE_MIRROR_DIR=<dir>` を毎回渡す(`git clone --depth 1 -b
+  VER-2-14-1 https://github.com/freetype/freetype.git <dir>`)。repo 改変も proxy
+  バイパスも TLS 無効化も不要 — `ui/visage/CMakeLists.txt` が CMake 標準の
+  `FETCHCONTENT_SOURCE_DIR_FREETYPE` に流すだけ。詳細は
+  `docs/migration/s1-wasm-loop.md`。
 - テーマ hot reload: `tools/ui-dev/theme.json`(rs-editor は theme-rs.json を
   `/theme.json` で配信)を編集 → 再ビルド無しで ~0.4s 後にピクセル反映。
 - JS ブリッジ(`window.ui` / `window.rs`)で param 駆動・freeze・rect 取得・dropdown
