@@ -301,6 +301,39 @@ void checkParamStore()
     check (store.indexOf ("nope") == -1, "indexOf unknown == -1");
     check (store.size() == 4, "store size == 4");
 
+    // indexOf is a uid binary search (issue #153), so assert the exhaustive
+    // contract the linear scan gave for free: EVERY id resolves to its own index,
+    // and near-miss / prefix / empty ids resolve to -1 rather than a neighbour.
+    {
+        bool allFound = true;
+        for (int i = 0; i < store.size(); ++i)
+            if (store.indexOf (store.desc (i).id) != i)
+                allFound = false;
+        check (allFound, "indexOf resolves every id to its own index");
+        check (store.indexOf ("") == -1, "indexOf empty id == -1");
+        check (store.indexOf ("dept") == -1, "indexOf id prefix == -1");
+        check (store.indexOf ("depth ") == -1, "indexOf id with trailing space == -1");
+        check (store.indexOf ("Depth") == -1, "indexOf is case-sensitive");
+    }
+
+    // A wide table (dynamic-eq is 361 params) exercises the search over more than
+    // one level of bisection, including ids that share a prefix.
+    {
+        std::vector<ParamDesc> wide;
+        for (int b = 0; b < 24; ++b)
+            for (const char* suffix : { "freq", "gain", "q", "on" })
+                wide.push_back (floatParam ("b" + std::to_string (b) + "_" + suffix,
+                                            "Band", 0.0f, 1.0f, 0.0f, 0.0f, "", 2));
+        ParamStore wideStore (wide);
+        bool wideOk = wideStore.size() == 96;
+        for (int i = 0; i < wideStore.size(); ++i)
+            if (wideStore.indexOf (wideStore.desc (i).id) != i)
+                wideOk = false;
+        check (wideOk, "indexOf resolves all 96 ids of a wide table");
+        check (wideStore.indexOf ("b24_freq") == -1, "indexOf unknown id in wide table == -1");
+        check (wideStore.indexOf ("b1_fre") == -1, "indexOf prefix in wide table == -1");
+    }
+
     // Value read-back: defaults, then snapped host write.
     check (bitEqual (store.value (0), 30.0f), "depth default value == 30");
     const RangeSpec rDepth = makeRange (store.desc (0));
