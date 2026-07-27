@@ -15,9 +15,9 @@ APVTS レイアウトがすべて派生する。**`createParameterLayout` を手
 
 | プラグイン | テーブル | Policy | エディタ |
 |---|---|---|---|
-| resonance-suppressor | `Source/Params.h`(`resonance_suppressor_params::buildRsParams`) | `shell/ClapEntry.cpp` | `ui/RsEditor.*` |
-| pitch-fix | `PfParams.h`(`pitch_fix_params::buildPfParams`) | `shell/ClapEntry.cpp` | `ui/PfEditor.*` |
-| dynamic-eq | `DeqParams.h`(`dynamic_eq_params::buildDeqParams`) | `shell/ClapEntry.cpp` | `ui/DeqEditor.*` |
+| resonance-suppressor | `plugins/resonance-suppressor/Source/Params.h`(`resonance_suppressor_params::buildRsParams`) | `plugins/resonance-suppressor/shell/ClapEntry.cpp` | `plugins/resonance-suppressor/ui/RsEditor.h` |
+| pitch-fix | `plugins/pitch-fix/PfParams.h`(`pitch_fix_params::buildPfParams`) | `plugins/pitch-fix/shell/ClapEntry.cpp` | `plugins/pitch-fix/ui/PfEditor.h` |
+| dynamic-eq | `plugins/dynamic-eq/DeqParams.h`(`dynamic_eq_params::buildDeqParams`) | `plugins/dynamic-eq/shell/ClapEntry.cpp` | `plugins/dynamic-eq/ui/DeqEditor.h` |
 
 RS のテーブルだけ `Source/` の下にあるが、**出荷シェルがそれを include している**
 (`plugins/resonance-suppressor/shell/ClapEntry.cpp:34`)。「`Source/` はオラクル専用」
@@ -54,7 +54,7 @@ p.push_back (choiceParam ("mode", "Mode", { "Soft", "Hard" }, 0, 1));
   **Ask a human**。id の使い回しは禁止(古い値が新しい意味で読み込まれる)。
 - デフォルト付きの純粋な追加は前方互換 → minor。
 
-## 2. CLAP Policy 配線(`shell/ClapEntry.cpp`)
+## 2. CLAP Policy 配線(`plugins/<slug>/shell/ClapEntry.cpp`)
 
 Policy の契約は `shell/include/factory_shell/ClapShellPlugin.h` 冒頭のコメントが単一の
 真実。パラメータ追加で触るのは 2 箇所だけ。

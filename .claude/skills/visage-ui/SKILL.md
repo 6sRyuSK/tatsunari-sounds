@@ -16,7 +16,7 @@ description: Build or edit the JUCE-free Visage UI layer in this repo — the fa
 
 機種ごとの読みどころ: **RS が最も濃い実例**(リサイズ/undo/A-B/アナライザ/ノードパネル)、
 **pitch-fix は fixed-size の最小形**(共有ウィジェットのみ)、**dynamic-eq は帯域系の実例**
-(`ui/DeqBandPanel.*` / `ui/DeqCurveView.*` / `ui/DeqIcons.h`)。
+(`plugins/dynamic-eq/ui/` の `DeqBandPanel` / `DeqCurveView` / `DeqIcons.h`)。
 
 **visage コア API (Frame/Canvas/イベント/レイアウト/ApplicationWindow) を書く・読むときは
 まず `references/visage-core-api.md` を読む** — VitalAudio/visage の examples 全読から

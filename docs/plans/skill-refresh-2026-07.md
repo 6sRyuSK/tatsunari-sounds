@@ -3,12 +3,25 @@
 `.claude/skills/` 全 10 本を、現在の `main`(`a9f3373`)の実態と突き合わせた棚卸しと
 改修案。
 
-## 進捗
+## 進捗 — 全フェーズ実施済み
 
-- **フェーズ 1(P0 4 本)= 実施済み**: `add-param` 全面書き換え / `add-preset` 全面
-  書き換え / `factory-ui` オラクル専用へ再スコープ / `visage-ui` の CLAP 節置換 +
-  3 機種化。
-- フェーズ 2〜4(P1 の穴埋め、`clap-shell` 新設、ドリフト検知)は未着手。
+- **フェーズ 1(P0 4 本)**: `add-param` 全面書き換え / `add-preset` 全面書き換え /
+  `factory-ui` オラクル専用へ再スコープ / `visage-ui` の CLAP 節置換 + 3 機種化。
+- **フェーズ 2(P1 5 本)**: `core-primitives`(欠落 14 ヘッダを追加し全 47 本を網羅、
+  active/archive を明示、`core/tests` の CTest 名表を追加)/ `write-dsp-test`
+  (`noSubnormals`・`windowEnergy` を API 表に追加、テスト種別の地図を §0 に新設、
+  `FACTORY_JUCE_ORACLES=OFF` で等価ゲートが黙って消える件を明記)/ `pluginval-debug`
+  (原因表を Core/Policy/共有シェル基準に、JUCE 固有行を削除、ゲート棲み分け表を冒頭に)/
+  `release`(4 ワークフロー + `FACTORY_JUCE_ORACLES=OFF` + kind clap + zip は VST3/AU のみ)/
+  `installer-dev`(`workflow_run` へ訂正、archive 済み slug の例示を差し替え)。
+- **フェーズ 3**: **`clap-shell` スキルを新設**(Policy 契約、`<X>Ix`/`fillSnapshot`、
+  StateCodec/ParamBridge、SDK ピンと `make_clapfirst` の load-bearing な設定、
+  clap.yml)。CLAUDE.md の「スキルなし」記述を更新。`new-plugin` を微修正
+  (`<Camel>Models.h`、`ClapEditorHost` への委譲、言語統一、`docs/manual/` 完了条件)。
+- **フェーズ 4**: `tools/check_skill_refs.py` + `tools/tests/test_check_skill_refs.py`
+  を追加し `factory-tools-ci.yml` に接続。
+
+### 実施中に判明した本文書の誤り(2 件)
 
 ### 実施中に判明した本文書の誤り(2 件)
 

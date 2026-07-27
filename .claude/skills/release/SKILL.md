@@ -51,17 +51,39 @@ description: Prepare or run a release of the plugin factory (version bumps, cata
 そのために残してある)。インストーラ側の開発は `tools/installer/` の自己完結 Go
 module(`go test ./...` / `go vet ./...`、ゲートは installer-ci.yml)。
 
+## ビルドの形(release.yml が何を作るか)
+
+- release ビルドは **`-DFACTORY_JUCE_ORACLES=OFF`**(出荷パスのみ。JUCE は fetch
+  されない)。したがって**リリース実行時に等価/プリセットオラクルは走らない** —
+  それらは main の ci.yml で緑になっている前提。
+- **全エントリの kind は `clap`**。`tools/release_plan.py` は
+  `factory_clap_plugin(...)` だけを認識し、**シェルに `juce_add_plugin` があると
+  hard error** で落ちる(release.yml は make_clapfirst のアセット配置しか
+  パッケージできないため)。
+- アセットは `build/<slug>_assets/`。zip に入るのは **VST3 + AU のみで、native
+  `.clap` は入らない**(インストーラ側の対応待ち)。macOS は AU と VST3 を別 zip、
+  Windows は VST3。
+- `tools/release_plan.py` を触ったら `python -m unittest discover tools/tests` を
+  回す(ゲートは factory-tools-ci.yml)。
+
 ## リリース準備チェックリスト
 
 1. 出荷対象の `plugin.toml` version が変更内容に対して正しく bump 済みか
    (bump は PR 作成時に 1 回 — マージ済み変更に bump が漏れていないか確認)。
 2. `python tools/gen_catalog.py --check` が緑。
-3. CI(ci.yml: macOS/Windows ビルド + CTest 全レート + pluginval strictness 5)
-   が main で緑。
-4. リリースノート素材: 前回 manifest.json との version 遷移を列挙
+3. main で **4 つの CI ワークフロー**が緑:
+   - `ci.yml` — macOS/Windows ビルド + CTest 全レート + pluginval strictness 5
+     (wrapper VST3 / AU)。**CTest を回す唯一のワークフロー**
+   - `clap.yml` — active 3 機種それぞれの Linux レグで clap-first ビルド +
+     **native `.clap` の clap-validator**(ci.yml が出さない唯一のシグナル)
+   - `factory-tools-ci.yml` — `gen_catalog.py --check` + `tools/tests`
+   - `installer-ci.yml` — `go test` / `go vet`(`tools/installer/**` 変更時のみ)
+4. 出荷対象に **`docs/manual/<name>.md`** があり、今回のパラメータ/プリセット変更に
+   追従しているか(`docs/manual/README.md` の宣言どおり出荷バイナリに追従させる)。
+5. リリースノート素材: 前回 manifest.json との version 遷移を列挙
    (`mcp__github__get_latest_release` → manifest.json 参照)。
-5. ここまで揃えて**人間に実行可否を確認**。指示があれば Actions の
+6. ここまで揃えて**人間に実行可否を確認**。指示があれば Actions の
    `Release` workflow を workflow_dispatch(GitHub MCP: `actions_run_trigger`)。
-6. 実行後: release.yml → installer.yml の 2 段が両方成功し、アセット一式
+7. 実行後: release.yml → installer.yml の 2 段が両方成功し、アセット一式
    (per-OS バンドル、per-plugin zip、manifest.json、SHA256SUMS.txt、
    installer バイナリ、catalog.json)が揃ったことを確認して報告。

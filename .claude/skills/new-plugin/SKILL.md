@@ -6,8 +6,8 @@ description: Start a new audio plugin in this repo (plugins/<slug>/). Use whenev
 # 新規プラグインの作り方
 
 **他プラグインのソースを参考読みしない**こと。規約はスキャホールドと本スキル群に
-全て入っている。DSP 設計・UI・テストの詳細はそれぞれ `core-primitives` /
-`visage-ui` / `write-dsp-test` スキルを参照(必要になった時だけ読む)。
+全て入っている。DSP 設計・UI・シェル・テストの詳細はそれぞれ `core-primitives` /
+`visage-ui` / `clap-shell` / `write-dsp-test` スキルを参照(必要になった時だけ読む)。
 
 新規プラグインは **CLAP ファースト**で生まれる。JUCE の `AudioProcessor` /
 `AudioProcessorEditor` は一切生成されない — 脱JUCE 移行は不要。
@@ -25,9 +25,10 @@ python tools/scaffold_plugin.py <slug> \
   固定デザインサイズ(既定 920x560)。
 - 生成物: `plugin.toml`(version 0.1.0 / in-progress)、`CMakeLists.txt`(headless
   テストのみ)、`<Camel>Core.h` / `<Camel>Params.h` / `<Camel>Presets.h`、
-  `ui/`(Visage エディタ + visage-free な UI seam)、`shell/`(CLAP Policy + entry +
-  エディタホスト)、**わざと失敗する** `tests/dsp_test.cpp` スタブ、
-  headless な `tests/preset_test.cpp`。
+  `ui/`(`<Camel>Editor.{h,cpp}` + **`<Camel>Models.h`** = feed とプリセットの
+  visage-free な seam)、`shell/`(`ClapEntry.cpp` の Policy +
+  `<Camel>ClapEditor.{h,cpp}` + `CMakeLists.txt`)、**わざと失敗する**
+  `tests/dsp_test.cpp` スタブ、headless な `tests/preset_test.cpp`。
 - README カタログは自動再生成される。roadmap.toml に同名エントリがあれば
   **その `[[plugin]]` ブロックを削除**(スクリプトが警告を出す)。
 - ルート CMakeLists は `plugins/*/CMakeLists.txt` を自動 include し、
@@ -51,11 +52,15 @@ python tools/scaffold_plugin.py <slug> \
   ワイヤ識別子(CLAP uid = `fnv1a32(id)`、state もこれで引く)なので
   **リネームは保存済みセッションを壊す**。追加は末尾へ、id の使い回しは禁止。
   詳細は `add-param` スキル。
-- `shell/ClapEntry.cpp` の Policy: `<Camel>Ix` に `indexOf` の結果をキャッシュし
+- `plugins/<slug>/shell/ClapEntry.cpp` の Policy: `<Camel>Ix` に `indexOf` の結果をキャッシュし
   (process 内で文字列探索をしない)、`fillSnapshot` で ParamStore →
   スナップショットへ。descriptor の CLAP feature に plugin.toml のカテゴリに
   対応するものを足す(VST3 サブカテゴリはここから導出される)。
   レイテンシがパラメータで変わるなら `primeFrames()` を 0 以外にする。
+  Policy 契約の全体は `clap-shell` スキル。
+- `shell/<Camel>ClapEditor.cpp` は **`factory_ui_visage::ClapEditorHost` の層を継ぐだけ**
+  (scaffold は fixed-size 版を出す)。プラットフォーム分岐やリサイズ数学を書かない
+  — `visage-ui` スキル。
 - GUI/audio 共有スカラーは atomic(`uiXxx`)。エディタは `visage-ui` スキルの規約
   どおり、共有 `factory_ui_visage` ウィジェットを合成する(独自 look-and-feel 禁止)。
 - state / プリセットの配線は書かない: `factory_presets::StateCodec` +
@@ -64,25 +69,23 @@ python tools/scaffold_plugin.py <slug> \
 
 ## 4. テスト → ビルド
 
-### Visage UI phase: register the autonomous browser harness
+### Visage UI フェーズ: ブラウザハーネスの登録
 
-The scaffold emits the plugin's JUCE-free Visage editor but NOT its browser
-harness. Completing the UI phase MUST also register that editor in
-`tools/ui-dev`:
+scaffold は Visage エディタを出すが、**ブラウザハーネスは出さない**。UI フェーズの
+完了条件として `tools/ui-dev` にそのエディタを登録すること:
 
-- reuse `common/PluginHarness.{h,cpp}` for the standard `window.ui` ABI (never
-  re-declare a `ui_*` export; dropdowns are opened by NAME, not by index);
-- reuse `common/HarnessPresetModel.h` for the real `PresetSession`;
-- add only `main.cpp`, a deterministic plugin-specific `SyntheticFeed`, and a
-  thin plugin bridge under `tools/ui-dev/<slug>/`;
-- register the CMake target, `dev.sh` / `dev.ps1`, `verify.js` / `inspect.js`, and
-  a Playwright spec with at least one real mouse gesture and dropdown selection;
-- run `dev.sh --app <slug> --verify` (or `dev.ps1 -App <slug> -Verify`).
+- 標準 `window.ui` ABI は `common/PluginHarness.{h,cpp}` を再利用(`ui_*` export を
+  再宣言しない。Dropdown は index ではなく**名前**で開く)。
+- 実 `PresetSession` の接続は `common/HarnessPresetModel.h` を再利用。
+- `tools/ui-dev/<slug>/` に置くのは `main.cpp`、決定論的な機種固有 `SyntheticFeed`、
+  薄い plugin bridge の 3 つだけ。
+- CMake ターゲット、`dev.sh` / `dev.ps1`、`verify.js` / `inspect.js`、Playwright spec
+  (**実マウスジェスチャと Dropdown 選択を最低 1 つずつ**含む)を同時に登録。
+- `dev.sh --app <slug> --verify`(Windows は `dev.ps1 -App <slug> -Verify`)で確認。
 
-Do not auto-generate fake feed semantics: analyser/pitch/meter contracts differ.
-The standard bridge is boilerplate-free; the synthetic feed and assertions must
-model the plugin's real UI seam explicitly. Follow the `visage-ui` skill for the
-full contract.
+フィードの意味を自動生成で埋めない — アナライザ/ピッチ/メータの契約は機種ごとに
+違う。bridge は定型だが、synthetic feed とアサーションはその機種の実 UI seam を
+明示的にモデル化すること。契約の全体は `visage-ui` スキル。
 
 `write-dsp-test` スキルに従い spec ベースの検証を書く(スタブは書くまで赤)。
 
@@ -103,6 +106,8 @@ ctest --test-dir build -R <slug_snake> --output-on-failure
 - CI ゲート: macOS/Windows ビルド + CTest 全レート + pluginval strictness 5
   (headless) + clap.yml の clap-validator。pluginval の allocation チェックを
   抑制しない。
+- **出荷する機種になったら `docs/manual/<name>.md` を作る**(`docs/manual/README.md`
+  の宣言どおり、パラメータ定義から転記して出荷バイナリに追従させる)。
 - スコープ厳守: 頼まれていないバンド/フォーマット/機能を足さない。
 - 音の良し悪し・トレランス変更・リリースは **Ask a human**。
 

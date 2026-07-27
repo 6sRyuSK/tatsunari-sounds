@@ -22,9 +22,9 @@ description: Add or change factory presets on an existing plugin in this repo (P
 
 | プラグイン | テーブル | 備考 |
 |---|---|---|
-| pitch-fix | `PfPresets.h`(`pitch_fix_presets`) | clap-first 生まれ。現行形の見本 |
-| resonance-suppressor | `Source/FactoryPresets.h`(`resonance_suppressor_presets`) | ↓ |
-| dynamic-eq | `Source/FactoryPresets.h`(`dynamic_eq_presets`) | ↓ |
+| pitch-fix | `plugins/pitch-fix/PfPresets.h`(`pitch_fix_presets`) | clap-first 生まれ。現行形の見本 |
+| resonance-suppressor | `plugins/resonance-suppressor/Source/FactoryPresets.h` | ↓ |
+| dynamic-eq | `plugins/dynamic-eq/Source/FactoryPresets.h` | ↓ |
 
 **RS と dynamic-eq のバンクは `Source/` の下にあるが出荷シェルが include している**
 (`plugins/dynamic-eq/shell/ClapEntry.cpp:30`、
@@ -57,7 +57,8 @@ description: Add or change factory presets on an existing plugin in this repo (P
   一切ない。
 
 > **ユーザープリセット(ディスク保存)は現在、出荷エディタに配線されていない。**
-> `UserPresetStore(Fs).h` のモデルは存在するが、消費者はレガシー JUCE の
+> `presets/include/factory_presets/UserPresetStore.h` /
+> `presets/include/factory_presets/UserPresetStoreFs.h` のモデルは存在するが、消費者はレガシー JUCE の
 > `PresetSelectorController` とテストだけ。Visage エディタの preset model
 > (`names()` / `currentIndex()` / `load(index)`)にはファクトリープログラムしか
 > 出ていない。ユーザープリセットを出荷 UI に出すのは**この作業の範囲外の新機能**。
@@ -110,7 +111,7 @@ namespace <slug>_presets
 
 ## 2. Policy(既に配線済み — 新規バンク時のみ)
 
-`shell/ClapEntry.cpp` の Policy に 2 メンバがあるだけ。既存機種では既に入っている。
+`plugins/<slug>/shell/ClapEntry.cpp` の Policy に 2 メンバがあるだけ。既存機種では既に入っている。
 
 ```cpp
 static const factory_presets::PresetBank& presetBank() { return <slug>_presets::bank; }
