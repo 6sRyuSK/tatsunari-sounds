@@ -950,7 +950,7 @@ static void coreTests (double Fs)
                 if (periods + 0.05 < pf_core::PfCore::kTrackingMinPeriods)
                     fail ("tracking window " + std::to_string (periods)
                           + " periods < 6 at f0=" + std::to_string (f0)
-                          + " @" + std::to_string (Fs));
+                          + " (win=" + std::to_string (W) + ") @" + std::to_string (Fs));
             }
             if (! sawTrack)
                 fail ("never entered tracking mode at f0=" + std::to_string (f0)
@@ -1153,6 +1153,45 @@ static void coreTests (double Fs)
         if (voiced < 5)
             fail ("high Min Pitch analysis read unwritten audio (voiced="
                   + std::to_string (voiced) + ") @" + std::to_string (Fs));
+    }
+
+    // --- 28. P3: ±150 ct vibrato must not lock onto 2f0/3f0 -------------------
+    // The residual regime that P1's adaptive window alone leaves open; trajectory
+    // selection among MPM + near-track candidates keeps the carrier.
+    {
+        for (int mode = 0; mode < 4; ++mode)
+        {
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            pf_core::PfParamSnapshot s;
+            s.amount = 0.0f;
+            s.buffer = mode;
+            s.minPitchHz = 75.0f;
+            const double f0 = 220.0;
+            auto x = makeVibratoVoice ((int) (2.5 * Fs), f0, 150.0, 5.5, 0.5f);
+            std::vector<float> l (x), r (x);
+            int voiced = 0, harm = 0;
+            for (int pos = 0; pos < (int) x.size(); pos += 512)
+            {
+                const int m = std::min (512, (int) x.size() - pos);
+                core.process (l.data() + pos, r.data() + pos, m, s);
+                if (pos < (int) (0.5 * Fs))
+                    continue;
+                const double det = (double) core.uiDetectedHz.load();
+                if (det <= 0.0)
+                    continue;
+                ++voiced;
+                if (std::abs (centsBetween (det, 2.0 * f0)) < 50.0
+                    || std::abs (centsBetween (det, 3.0 * f0)) < 50.0)
+                    ++harm;
+            }
+            if (voiced < 10)
+                fail ("P3 ±150ct: too few voiced frames mode " + std::to_string (mode)
+                      + " @" + std::to_string (Fs));
+            else if (100.0 * (double) harm / (double) voiced > 5.0)
+                fail ("P3 ±150ct: harmonic lock " + std::to_string (100.0 * harm / voiced)
+                      + "% mode " + std::to_string (mode) + " @" + std::to_string (Fs));
+        }
     }
 }
 

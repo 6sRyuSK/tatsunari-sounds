@@ -1,10 +1,10 @@
 # pitch-fix 検出精度 — Codex 指摘の精査と作業計画
 
-- ステータス: **実装済み（本ブランチ）**。§3 P1 / P2 / §4.1 / §4bis を実装。
-  P0（実声評価セット）・P2'・P3–P5・§4.4 後回し項目は未着手。
+- ステータス: **P1 / P2 / §4.1 / P3（既存レイテンシ内）実装済み**。
+  P0（実声評価セット）・P2'・P3 の追加レイテンシ量・P4–P5・§4.4 後回し項目は未着手。
 - ブランチ: `cursor/pitch-fix-detection-accuracy-894d`
-- 対象: `plugins/pitch-fix/PfCore.h`, `PfParams.h`, `PfPresets.h`, shell/UI/tests
-  （`PitchDetector.h` / `PsolaShifter.h` 自体は変更なし — 窓長と解析位置は PfCore 側）
+- 対象: `plugins/pitch-fix/PfCore.h`, `PfParams.h`, `PfPresets.h`, shell/UI/tests,
+  `core/include/factory_core/PitchDetector.h`（`estimateCandidates`）
 - 実測環境: 現行 `main` (`361c920`) のヘッダを直接コンパイルした probe 群
   （`PfCore.h` + `factory_core` はヘッダオンリーなので、Visage/CLAP を configure
   せずに単体ビルドできる）。`pitch_fix_dsp_test` は 48 kHz で全項目 PASS を確認済み。

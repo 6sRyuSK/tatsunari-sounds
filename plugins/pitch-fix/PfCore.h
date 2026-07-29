@@ -105,6 +105,17 @@ namespace pf_core
         static constexpr double kPitchJumpRatio        = 1.414; // ~half octave → fall back to acq
         static constexpr double kReacqMatchCents       = 50.0;  // within this = same candidate
 
+        // P3 trajectory (causal, within existing latency — no extra lookahead):
+        // keep a short history of NSDF candidates and pick the path that maximises
+        // clarity while paying continuity + near-exact-octave jump costs.
+        // Harmonic-support scoring is intentionally absent (§2.1).
+        static constexpr int    kTrajCand              = 8;
+        static constexpr int    kTrajHist              = 5;
+        static constexpr double kTrajContPerOctave     = 1.5;   // |log2| cost weight
+        static constexpr double kTrajOctaveBump        = 0.75;  // extra near ±1/±2 octaves
+        static constexpr double kTrajOctaveWindowCt    = 80.0;  // "near" = within this of k*1200
+        static constexpr double kTrajEmitClarity       = 1.0;   // emission = 1 - clarity
+
         // The PSOLA budget: PsolaShifter demands 2*P + P/4 + 4 <= lookahead for a
         // VOICED grain and degrades to its identity path otherwise — silently, so
         // the pitch would still read out in the UI while nothing gets corrected.
@@ -284,6 +295,10 @@ namespace pf_core
             lastClarity    = 0.0;
             pendingReacqF0 = 0.0;
             winLen         = 0;
+            trajHistCount  = 0;
+            trajHistPos    = 0;
+            for (int h = 0; h < kTrajHist; ++h)
+                trajN[h] = 0;
             publishDetDiag();
             uiDetectedHz.store (0.0f, std::memory_order_relaxed);
             uiTargetHz.store (0.0f, std::memory_order_relaxed);
@@ -413,6 +428,12 @@ namespace pf_core
             // Keep trackF0Hz as a hint for diagnostics; the next voiced estimate
             // re-seeds it. samplesSinceAcq resets so the next hop runs a full acq.
             samplesSinceAcq = acqIntervalSamples;
+            // Drop trajectory history so a harmonic lock cannot keep voting
+            // through the acquisition restart.
+            trajHistCount = 0;
+            trajHistPos = 0;
+            for (int h = 0; h < kTrajHist; ++h)
+                trajN[h] = 0;
         }
 
         int trackingWindowLen (double f0) const noexcept
@@ -491,6 +512,182 @@ namespace pf_core
             }
         }
 
+        // Continuity cost between two f0s: |octaves| plus a bump when the jump
+        // lands near an exact octave (the harmonic-lock signature). Does NOT
+        // reward harmonic relatedness — that has no discriminatory power (§2.1).
+        static double trajTransitionCost (double fromHz, double toHz) noexcept
+        {
+            if (! (fromHz > 0.0) || ! (toHz > 0.0))
+                return 4.0; // heavy: connecting through an unvoiced gap
+            const double cents = std::abs (1200.0 * std::log2 (toHz / fromHz));
+            double cost = kTrajContPerOctave * (cents / 1200.0);
+            for (int k = 1; k <= 2; ++k)
+            {
+                const double oct = 1200.0 * (double) k;
+                if (std::abs (cents - oct) <= kTrajOctaveWindowCt)
+                    cost += kTrajOctaveBump;
+            }
+            return cost;
+        }
+
+        // Push this hop's candidates into the history ring and pick the f0 that
+        // ends the minimum-cost path over the retained hops (causal Viterbi).
+        // Returns false when no usable candidate exists (treat as unvoiced).
+        //
+        // Candidate gate (load-bearing): a pure tone has perfect NSDF peaks at
+        // every sub-multiple (f0/2, f0/3, …) with clarity ≈ 1. Flooding the
+        // trajectory with those locks onto a random subharmonic. We therefore
+        // keep ONLY (a) the MPM pick (first peak ≥ kPeakRatio * best) and
+        // (b) peaks within a continuity band of the current track — never the
+        // whole subharmonic comb. Harmonic-support scoring stays forbidden.
+        bool selectTrajectory (const factory_core::PitchCandidate* cands, int nCand,
+                               double clarityGate,
+                               double& outF0, double& outClarity) noexcept
+        {
+            outF0 = 0.0;
+            outClarity = 0.0;
+            if (cands == nullptr || nCand <= 0)
+            {
+                trajN[trajHistPos] = 0;
+                trajHistPos = (trajHistPos + 1) % kTrajHist;
+                if (trajHistCount < kTrajHist) ++trajHistCount;
+                return false;
+            }
+
+            double bestVal = 0.0;
+            for (int i = 0; i < nCand; ++i)
+                bestVal = std::max (bestVal, cands[i].clarity);
+
+            // MPM pick: first (shortest-lag) candidate reaching kPeakRatio * best.
+            int mpm = -1;
+            for (int i = 0; i < nCand; ++i)
+                if (cands[i].clarity >= factory_core::PitchDetector::kPeakRatio * bestVal
+                    && cands[i].f0Hz >= minHz)
+                { mpm = i; break; }
+
+            int kept = 0;
+            auto push = [&] (int i) noexcept
+            {
+                if (i < 0 || kept >= kTrajCand) return;
+                for (int k = 0; k < kept; ++k)
+                    if (std::abs (1200.0 * std::log2 (trajF0[trajHistPos][k] / cands[i].f0Hz)) < 5.0)
+                        return; // already have this peak
+                trajF0[trajHistPos][kept] = cands[i].f0Hz;
+                trajCl[trajHistPos][kept] = cands[i].clarity;
+                ++kept;
+            };
+
+            if (mpm >= 0)
+                push (mpm);
+
+            // Near-track alternatives (the residual harmonic-error case): allow a
+            // lower-clarity peak that continues the track when MPM jumped away.
+            if (trackF0Hz > 0.0)
+            {
+                for (int i = 0; i < nCand; ++i)
+                {
+                    if (cands[i].f0Hz < minHz || cands[i].clarity < clarityGate * 0.85)
+                        continue;
+                    const double ct = std::abs (1200.0 * std::log2 (cands[i].f0Hz / trackF0Hz));
+                    if (ct <= 250.0) // ~quarter-octave continuity band
+                        push (i);
+                }
+            }
+
+            trajN[trajHistPos] = kept;
+            const int curSlot = trajHistPos;
+            trajHistPos = (trajHistPos + 1) % kTrajHist;
+            if (trajHistCount < kTrajHist) ++trajHistCount;
+            if (kept == 0)
+                return false;
+
+            // Single candidate → trivial path (cold-start / MPM-only frames).
+            if (kept == 1)
+            {
+                outF0 = trajF0[curSlot][0];
+                outClarity = trajCl[curSlot][0];
+                return outF0 >= minHz && outClarity >= clarityGate * 0.85;
+            }
+
+            // Forward DP over the occupied history (oldest → current).
+            const int H = trajHistCount;
+            double dp[kTrajHist][kTrajCand];
+
+            auto slotAt = [&] (int chron) noexcept -> int
+            {
+                return (curSlot - (H - 1 - chron) + kTrajHist * 4) % kTrajHist;
+            };
+
+            int start = 0;
+            while (start < H && trajN[slotAt (start)] == 0)
+                ++start;
+            if (start >= H)
+                return false;
+
+            {
+                const int s0 = slotAt (start);
+                for (int j = 0; j < trajN[s0]; ++j)
+                    dp[start][j] = kTrajEmitClarity * (1.0 - trajCl[s0][j]);
+            }
+
+            for (int h = start + 1; h < H; ++h)
+            {
+                const int s = slotAt (h);
+                const int n = trajN[s];
+                if (n == 0)
+                {
+                    // Hole in history: restart the chain after it.
+                    start = h + 1;
+                    while (start < H && trajN[slotAt (start)] == 0)
+                        ++start;
+                    if (start >= H)
+                        return false;
+                    const int s1 = slotAt (start);
+                    for (int j = 0; j < trajN[s1]; ++j)
+                        dp[start][j] = kTrajEmitClarity * (1.0 - trajCl[s1][j]);
+                    h = start;
+                    continue;
+                }
+
+                int prev = h - 1;
+                while (prev >= start && trajN[slotAt (prev)] == 0)
+                    --prev;
+                if (prev < start)
+                {
+                    for (int j = 0; j < n; ++j)
+                        dp[h][j] = kTrajEmitClarity * (1.0 - trajCl[s][j]);
+                    continue;
+                }
+
+                const int sp = slotAt (prev);
+                const int np = trajN[sp];
+                for (int j = 0; j < n; ++j)
+                {
+                    double best = 1.0e300;
+                    for (int i = 0; i < np; ++i)
+                    {
+                        const double cost = dp[prev][i]
+                                          + trajTransitionCost (trajF0[sp][i], trajF0[s][j]);
+                        if (cost < best) best = cost;
+                    }
+                    dp[h][j] = best + kTrajEmitClarity * (1.0 - trajCl[s][j]);
+                }
+            }
+
+            const int sc = slotAt (H - 1);
+            const int nc = trajN[sc];
+            if (nc <= 0)
+                return false;
+            int bestJ = 0;
+            for (int j = 1; j < nc; ++j)
+                if (dp[H - 1][j] < dp[H - 1][bestJ])
+                    bestJ = j;
+
+            outF0 = trajF0[sc][bestJ];
+            outClarity = trajCl[sc][bestJ];
+            return outF0 >= minHz && outClarity >= clarityGate * 0.85;
+        }
+
         // One detection/decision step (every hopLen samples). Real-time safe:
         // the detector runs on preallocated buffers, everything here is O(win).
         void runHop() noexcept
@@ -504,14 +701,20 @@ namespace pf_core
             const int W = winLen;
             fillAnalysisWindow (scratch.data(), W);
 
-            const auto est = detector.estimate (scratch.data(), W, minHz, maxHz, thresh);
-            lastClarity = est.clarity;
+            // P3: multi-candidate + causal trajectory (not the single-frame MPM pick).
+            factory_core::PitchCandidate cands[kTrajCand];
+            const int nCand = detector.estimateCandidates (
+                scratch.data(), W, minHz, maxHz, cands, kTrajCand);
+
+            double estF0 = 0.0, estClarity = 0.0;
+            const bool trajOk = selectTrajectory (cands, nCand, thresh, estF0, estClarity);
+            lastClarity = estClarity;
 
             // Keep the tracked pitch inside the band the PSOLA budget is sized
             // for (see kPsolaBudgetPeriods): PitchDetector's documented acceptance
             // reaches 0.9*minHz, which at Realtime would need 2.5 periods against
             // a 2.35-period lookahead — tracked and displayed, never corrected.
-            const bool inRange = est.voiced && est.f0Hz >= minHz;
+            const bool inRange = trajOk && estF0 >= minHz;
 
             // --- acquisition / tracking state machine -------------------------
             pendingReacqF0 = 0.0;
@@ -539,7 +742,7 @@ namespace pf_core
                 // harmonic lock-in AND lets genuine leaps restart cleanly).
                 if (detMode == DetMode::Tracking && trackF0Hz > 0.0)
                 {
-                    const double ratio = est.f0Hz / trackF0Hz;
+                    const double ratio = estF0 / trackF0Hz;
                     if (ratio > kPitchJumpRatio || ratio < 1.0 / kPitchJumpRatio)
                         enterAcquisition();
                 }
@@ -551,35 +754,78 @@ namespace pf_core
                 if (detMode == DetMode::Acquisition)
                 {
                     ++stableTrackHops;
-                    trackF0Hz = est.f0Hz; // seed / refresh the prospective track
+                    trackF0Hz = estF0; // seed / refresh the prospective track
                     if (stableTrackHops >= kTrackEnterStableHops)
                     {
                         detMode = DetMode::Tracking;
                         reacqStreak = 0;
                         reacqCandidateHz = 0.0;
                         samplesSinceAcq = 0; // start the periodic-acq clock fresh
+                        // Adopt the tracking window on the same hop we enter, so
+                        // diagnostics / the next hop's sizing aren't stuck on acq.
+                        if (trackF0Hz > 0.0)
+                            winLen = trackingWindowLen (trackF0Hz);
                     }
                 }
                 else if (detMode == DetMode::Tracking)
                 {
-                    trackF0Hz = est.f0Hz;
+                    trackF0Hz = estF0;
                 }
             }
 
             // Periodic full-band acquisition while tracking (never switch on a
             // single disagreeing frame — need kReacqConfirmNeeded consecutive
-            // agreeing candidates).
+            // agreeing candidates). Use trajectory over the acquisition-window
+            // candidates so a lone harmonic MPM pick cannot force a switch.
             if (detMode == DetMode::Tracking && samplesSinceAcq >= acqIntervalSamples)
             {
                 samplesSinceAcq = 0;
                 uiAcqRunCount.fetch_add (1, std::memory_order_relaxed);
 
                 fillAnalysisWindow (scratchAcq.data(), acqWinLen);
-                const auto acq = detector.estimate (scratchAcq.data(), acqWinLen,
-                                                    minHz, maxHz, thresh);
-                if (acq.voiced && acq.f0Hz >= minHz && trackF0Hz > 0.0)
+                factory_core::PitchCandidate acqCands[kTrajCand];
+                const int nAcq = detector.estimateCandidates (
+                    scratchAcq.data(), acqWinLen, minHz, maxHz, acqCands, kTrajCand);
+
+                // Prefer the MPM pick of the acquisition window; also consider a
+                // near-track alternative. Do not score the full subharmonic comb.
+                double bestVal = 0.0;
+                for (int i = 0; i < nAcq; ++i)
+                    bestVal = std::max (bestVal, acqCands[i].clarity);
+                double acqF0 = 0.0;
+                for (int i = 0; i < nAcq; ++i)
                 {
-                    const double cents = 1200.0 * std::log2 (acq.f0Hz / trackF0Hz);
+                    if (acqCands[i].clarity >= factory_core::PitchDetector::kPeakRatio * bestVal
+                        && acqCands[i].f0Hz >= minHz
+                        && acqCands[i].clarity >= thresh * 0.85)
+                    { acqF0 = acqCands[i].f0Hz; break; }
+                }
+                // If MPM jumped an octave away from the track but a near-track
+                // peak is still present, prefer that (continuity over MPM).
+                if (trackF0Hz > 0.0 && acqF0 > 0.0)
+                {
+                    const double mpmCt = std::abs (1200.0 * std::log2 (acqF0 / trackF0Hz));
+                    if (mpmCt > kReacqMatchCents)
+                    {
+                        for (int i = 0; i < nAcq; ++i)
+                        {
+                            if (acqCands[i].f0Hz < minHz
+                                || acqCands[i].clarity < thresh * 0.85)
+                                continue;
+                            const double ct = std::abs (
+                                1200.0 * std::log2 (acqCands[i].f0Hz / trackF0Hz));
+                            if (ct <= kReacqMatchCents)
+                            {
+                                acqF0 = acqCands[i].f0Hz;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (acqF0 >= minHz && trackF0Hz > 0.0)
+                {
+                    const double cents = 1200.0 * std::log2 (acqF0 / trackF0Hz);
                     if (std::abs (cents) <= kReacqMatchCents)
                     {
                         // Agrees with the track — clear any pending reacquire.
@@ -590,19 +836,19 @@ namespace pf_core
                     {
                         if (reacqCandidateHz > 0.0)
                         {
-                            const double dc = 1200.0 * std::log2 (acq.f0Hz / reacqCandidateHz);
+                            const double dc = 1200.0 * std::log2 (acqF0 / reacqCandidateHz);
                             if (std::abs (dc) <= kReacqMatchCents)
                                 ++reacqStreak;
                             else
                             {
                                 reacqStreak = 1;
-                                reacqCandidateHz = acq.f0Hz;
+                                reacqCandidateHz = acqF0;
                             }
                         }
                         else
                         {
                             reacqStreak = 1;
-                            reacqCandidateHz = acq.f0Hz;
+                            reacqCandidateHz = acqF0;
                         }
 
                         if (reacqStreak >= kReacqConfirmNeeded)
@@ -625,7 +871,7 @@ namespace pf_core
 
             // Median over the last medLen hops (octave-glitch suppression; the
             // depth is the Buffer mode's quality lever).
-            double medSample = inRange ? est.f0Hz : 0.0;
+            double medSample = inRange ? estF0 : 0.0;
             // After a confirmed reacquire, prefer the confirmed f0 so a stale
             // tracking-window harmonic estimate cannot vote the median back.
             if (pendingReacqF0 > 0.0)
@@ -850,5 +1096,12 @@ namespace pf_core
         double  reacqCandidateHz = 0.0;
         double  lastClarity = 0.0;
         double  pendingReacqF0 = 0.0; // confirmed reacquire f0 for this hop's median
+
+        // --- P3 causal trajectory history ---
+        double trajF0[kTrajHist][kTrajCand] = {};
+        double trajCl[kTrajHist][kTrajCand] = {};
+        int    trajN[kTrajHist] = {};
+        int    trajHistPos = 0;
+        int    trajHistCount = 0;
     };
 } // namespace pf_core
