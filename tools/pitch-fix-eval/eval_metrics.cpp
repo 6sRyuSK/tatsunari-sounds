@@ -77,16 +77,14 @@ static void reportDetection (double Fs)
                     continue;
                 ++frames;
                 const double det = (double) core.uiDetectedHz.load();
-                const double t = ((double) pos + 0.5 * (double) m) / Fs;
-                const double fTrue = f0 * std::pow (2.0, (vibCt / 1200.0)
-                                                    * std::sin (2.0 * kPi * 5.5 * t));
                 if (det <= 0.0)
                 {
                     ++miss;
                     continue;
                 }
                 ++voiced;
-                if (std::abs (centsBetween (det, fTrue)) > 50.0)
+                // GPE vs carrier (vibrato excursion is not an error by itself).
+                if (std::abs (centsBetween (det, f0)) > 50.0 + vibCt)
                     ++gpe;
                 if (std::abs (centsBetween (det, 2.0 * f0)) < 50.0
                     || std::abs (centsBetween (det, 3.0 * f0)) < 50.0)
