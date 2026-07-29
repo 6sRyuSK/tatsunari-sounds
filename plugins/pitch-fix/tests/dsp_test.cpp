@@ -15,6 +15,8 @@
 //     and stable — the regression-policy long-hold gate.
 //
 #include "PfCore.h"
+#include "PfCorrection.h"
+#include "PfNote.h"
 
 #include "factory_core/Biquad.h"
 #include "factory_core/FFT.h"
@@ -1192,6 +1194,93 @@ static void coreTests (double Fs)
                 fail ("P3 ±150ct: harmonic lock " + std::to_string (100.0 * harm / voiced)
                       + "% mode " + std::to_string (mode) + " @" + std::to_string (Fs));
         }
+    }
+
+    // --- 29. P2 timing: pitch-step detection bias within ±1 hop ----------------
+    // Both sides of ±45 ct correct to A4, so output f0 cannot mark the edge.
+    // Watch uiShiftCents sign flip (+45 in → shift −45; −45 in → shift +45) and
+    // map the hop write cursor back to input time via the analysis centre
+    // (written − L + medDelay). Pass: |bias| ≤ 1 hop.
+    {
+        for (int mode = 0; mode < 4; ++mode)
+        {
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            auto s = tightSnapshot();
+            s.buffer = mode;
+            s.retuneMs = 0.0f;
+            const double fA = 440.0 * std::pow (2.0, 45.0 / 1200.0);
+            const double fB = 440.0 * std::pow (2.0, -45.0 / 1200.0);
+            const int nPre = (int) (1.2 * Fs);
+            const int nPost = (int) (1.2 * Fs);
+            const int N = nPre + nPost;
+            std::vector<float> x ((size_t) N);
+            double ph = 0.0;
+            for (int i = 0; i < N; ++i)
+            {
+                const double f = i < nPre ? fA : fB;
+                ph += 2.0 * kPi * f / Fs;
+                x[(size_t) i] = (float) (0.5 * std::sin (ph));
+            }
+            std::vector<float> l (x), r (x);
+            const int hop = std::max (32, (int) std::lround (
+                pf_core::PfCore::kHopSeconds[mode] * Fs));
+            const int medLen = pf_core::PfCore::kMedianDepth[mode];
+            const int medDelay = ((medLen - 1) / 2) * hop;
+
+            int flipPos = -1;
+            float prevShift = 0.0f;
+            bool havePrev = false;
+            for (int pos = 0; pos < N; pos += hop)
+            {
+                const int m = std::min (hop, N - pos);
+                core.process (l.data() + pos, r.data() + pos, m, s);
+                const float sh = core.uiShiftCents.load();
+                // Zero-crossing of the correction shift marks the detected step.
+                if (havePrev && prevShift < 0.0f && sh > 0.0f && flipPos < 0)
+                    flipPos = pos + m; // write cursor after the hop that flipped
+                prevShift = sh;
+                havePrev = true;
+            }
+            if (flipPos < 0)
+            {
+                fail ("P2 timing: shift never flipped mode " + std::to_string (mode)
+                      + " @" + std::to_string (Fs));
+                continue;
+            }
+            const int L = core.latencySamples();
+            // At write cursor W the grain reads input time W - L. Ideal flip at
+            // W = nPre + L. Realtime (medLen=1, short window) must meet the P2
+            // ±1 hop criteria; deeper medians are gated by a median-depth bound
+            // because a hard step inside a multi-period analysis window cannot
+            // resolve to ±1 hop (blend width ~ W/2).
+            const int bias = flipPos - (nPre + L);
+            const int limit = (mode == 0) ? hop : hop * medLen;
+            if (std::abs (bias) > limit)
+                fail ("P2 timing: mode " + std::to_string (mode) + " bias "
+                      + std::to_string (bias) + " smp (>" + std::to_string (limit)
+                      + ") @" + std::to_string (Fs));
+        }
+    }
+
+    // --- 30. P4 pure stages: Correction / Note helpers match the DSP contract --
+    {
+        // Accuracy == Stability → old Tolerance residual.
+        if (std::abs (pf_core::correctionDeadzone (30.0, 12.0, 12.0) - 18.0) > 1.0e-9)
+            fail ("PfCorrection: Accuracy==Stability deadzone @" + std::to_string (Fs));
+        // Accuracy 0 → full pull once outside Stability.
+        if (std::abs (pf_core::correctionDeadzone (30.0, 12.0, 0.0) - 30.0) > 1.0e-9)
+            fail ("PfCorrection: Accuracy==0 full pull @" + std::to_string (Fs));
+        // Inside Stability → zero.
+        if (std::abs (pf_core::correctionDeadzone (5.0, 12.0, 0.0)) > 1.0e-9)
+            fail ("PfCorrection: inside Stability @" + std::to_string (Fs));
+
+        if (pf_core::nearestAllowedNote (0.0, 9, 1) != 69) // A major, exact A4
+            fail ("PfNote: A-major nearest A4 @" + std::to_string (Fs));
+        // 462 Hz ≈ +84 ct from A4 → still nearer A4 than B4 in A major (A# forbidden).
+        const double c462 = 1200.0 * std::log2 (462.0 / 440.0);
+        if (pf_core::nearestAllowedNote (c462, 9, 1) != 69)
+            fail ("PfNote: A-major masks A# @" + std::to_string (Fs));
     }
 }
 

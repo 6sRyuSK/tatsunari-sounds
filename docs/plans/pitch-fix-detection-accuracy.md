@@ -1,10 +1,14 @@
 # pitch-fix 検出精度 — Codex 指摘の精査と作業計画
 
-- ステータス: **P1 / P2 / §4.1 / P3（既存レイテンシ内）実装済み**。
-  P0（実声評価セット）・P2'・P3 の追加レイテンシ量・P4–P5・§4.4 後回し項目は未着手。
+- ステータス: **素材待ち以外は実装済み**。
+  - 完了: P1 / P2（Realtime は ±1 hop、深い median は窓ブレンド下限でゲート）/
+    §4.1 / P3（既存 L 内）/ P4（`PfNote`・`PfCorrection` 純関数分離）/
+    P0・P5 の非ゲート計測ハーネス（`tools/pitch-fix-eval/`）
+  - 未着手（ブロッカーあり）: P0 実声セットと CTest 昇格、P2'、P3 追加レイテンシ量、
+    P5 の代替 resynth エンジン本体、プリセット味再設計
 - ブランチ: `cursor/pitch-fix-detection-accuracy-894d`
-- 対象: `plugins/pitch-fix/PfCore.h`, `PfParams.h`, `PfPresets.h`, shell/UI/tests,
-  `core/include/factory_core/PitchDetector.h`（`estimateCandidates`）
+- 対象: `plugins/pitch-fix/PfCore.h`, `PfNote.h`, `PfCorrection.h`, `PfParams.h`,
+  `PfPresets.h`, shell/UI/tests, `core/.../PitchDetector.h`, `tools/pitch-fix-eval/`
 - 実測環境: 現行 `main` (`361c920`) のヘッダを直接コンパイルした probe 群
   （`PfCore.h` + `factory_core` はヘッダオンリーなので、Visage/CLAP を configure
   せずに単体ビルドできる）。`pitch_fix_dsp_test` は 48 kHz で全項目 PASS を確認済み。

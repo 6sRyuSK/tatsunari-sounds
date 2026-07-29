@@ -51,6 +51,8 @@
 #include "factory_core/PsolaShifter.h"
 #include "factory_core/LinearRamp.h"
 #include "factory_core/SmoothingCoeff.h"
+#include "PfNote.h"
+#include "PfCorrection.h"
 
 #include <algorithm>
 #include <atomic>
@@ -391,7 +393,8 @@ namespace pf_core
             // held note in the old scale is never kept as a correction target once
             // it becomes an out-of-scale pitch (targetNote < 0 -> fresh pick, no
             // hysteresis, at the next voiced hop).
-            if ((key != prevKey || scale != prevScale) && targetNote >= 0 && ! noteAllowed (targetNote))
+            if ((key != prevKey || scale != prevScale) && targetNote >= 0
+                && ! noteAllowed (targetNote, key, scale))
                 targetNote = -1;
             prevKey = key; prevScale = scale;
 
@@ -915,7 +918,7 @@ namespace pf_core
                 const double detCents = 1200.0 * std::log2 (f0 / a4);
 
                 // -- scale quantiser with note hysteresis --
-                const int cand = nearestAllowedNote (detCents);
+                const int cand = nearestAllowedNote (detCents, key, scale);
                 if (targetNote < 0)
                 {
                     targetNote     = cand;
@@ -942,21 +945,10 @@ namespace pf_core
                 glidedCents += (1.0 - cg) * (noteCents (targetNote) - glidedCents);
 
                 // -- Stability deadzone + Accuracy residual + amount + retune --
-                // Continuous form (pitch-fix-detection-accuracy.md §2.6-3): avoids
-                // a jump of (Stability - Accuracy) at the deadzone edge.
-                //   x = max(0, |err| - Stability)
-                //   R = max(0, Stability - Accuracy)
-                //   d = x + min(x, R)
-                //   dead = sign(err) * d
-                // Accuracy == Stability → identical to the old Tolerance formula;
-                // Accuracy == 0 → full pull to the target once outside Stability.
+                // Continuous form lives in PfCorrection.h (P4 correction stage).
                 const double err = glidedCents - detCents;
-                const double x = std::max (0.0, std::abs (err) - stabilityCt);
-                const double R = std::max (0.0, stabilityCt - accuracyCt);
-                const double d = x + std::min (x, R);
-                const double dead = (err >= 0.0 ? d : -d);
-                const double corrTarget =
-                    std::clamp (dead * amount, -kMaxShiftCents, kMaxShiftCents);
+                const double corrTarget = correctionTargetCents (
+                    err, stabilityCt, accuracyCt, amount, kMaxShiftCents);
                 const double cr = factory_core::onePoleCoeffForMs (retuneMs, hopRate);
                 corrCents += (1.0 - cr) * (corrTarget - corrCents);
 
@@ -981,9 +973,6 @@ namespace pf_core
             uiShiftCents.store ((float) (correcting ? corrCents : 0.0), std::memory_order_relaxed);
         }
 
-        // Cents of a MIDI note relative to A4 (note 69).
-        static double noteCents (int note) noexcept { return (note - 69) * 100.0; }
-
         // Hops a freshly picked target may keep following the nearest-note
         // candidate before hysteresis takes over.
         //
@@ -1004,40 +993,6 @@ namespace pf_core
         {
             const int W = winLen > 0 ? winLen : acqWinLen;
             return (hopLen > 0 ? (W + hopLen - 1) / hopLen : 0) + medLen;
-        }
-
-        // Is `note` (MIDI number) in the current Key/Scale mask? Chromatic (scale 0)
-        // allows every note. Shared by nearestAllowedNote and the Key/Scale-change
-        // target invalidation in applySnapshot.
-        bool noteAllowed (int note) const noexcept
-        {
-            static constexpr int kMajor[12] = { 1,0,1,0,1,1,0,1,0,1,0,1 };
-            static constexpr int kMinor[12] = { 1,0,1,1,0,1,0,1,1,0,1,0 };
-            const int pc  = ((note % 12) + 12) % 12;
-            const int deg = ((pc - key) % 12 + 12) % 12;
-            if (scale == 1) return kMajor[deg] != 0;
-            if (scale == 2) return kMinor[deg] != 0;
-            return true;
-        }
-
-        // Nearest MIDI note whose pitch class is allowed by the key/scale mask.
-        int nearestAllowedNote (double detCents) const noexcept
-        {
-            const double noteF = detCents / 100.0 + 69.0;
-            const int nn = (int) std::lround (noteF);
-            int    best  = nn;
-            double bestD = 1.0e9;
-            for (int cand = nn - 12; cand <= nn + 12; ++cand)
-            {
-                if (! noteAllowed (cand)) continue;
-                const double d = std::abs (noteF - (double) cand);
-                if (d < bestD)
-                {
-                    bestD = d;
-                    best  = cand;
-                }
-            }
-            return best;
         }
 
         static constexpr int    kMaxMedian = 7;
