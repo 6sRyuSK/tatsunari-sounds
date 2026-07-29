@@ -1282,6 +1282,53 @@ static void coreTests (double Fs)
         if (pf_core::nearestAllowedNote (c462, 9, 1) != 69)
             fail ("PfNote: A-major masks A# @" + std::to_string (Fs));
     }
+
+    // --- 31. Acquisition must not enter tracking on disagreeing hop estimates --
+    // Codex P2 (2nd review): a run of voiced-but-incompatible estimates
+    // (220 → 660 → 330) must reset stableTrackHops, not count as "3 stable hops".
+    // After a short burst of octave flicker, the core must still be in
+    // acquisition (or, if it somehow entered tracking, not locked on a harmonic
+    // of the flicker) — here we assert it stays out of tracking through the
+    // flicker and then correctly tracks the sustained 220 Hz that follows.
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3;
+        s.minPitchHz = 75.0f;
+
+        // ~3 hops of each flicker tone (Quality hop ≈ 3.5 ms → ~10.5 ms each).
+        const int nSeg = std::max (64, (int) std::lround (0.012 * Fs));
+        const double flicker[3] = { 220.0, 660.0, 330.0 };
+        std::vector<float> x;
+        for (double f : flicker)
+        {
+            auto seg = makeSine (nSeg, Fs, f, 0.5);
+            x.insert (x.end(), seg.begin(), seg.end());
+        }
+        const int nSustain = (int) (0.8 * Fs);
+        auto sus = makeSine (nSustain, Fs, 220.0, 0.5);
+        x.insert (x.end(), sus.begin(), sus.end());
+
+        std::vector<float> l (x), r (x);
+        int enteredDuringFlicker = 0;
+        const int flickerEnd = 3 * nSeg;
+        for (int pos = 0; pos < (int) x.size(); pos += 64)
+        {
+            const int m = std::min (64, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            if (pos < flickerEnd && core.uiDetMode.load() == 1)
+                ++enteredDuringFlicker;
+        }
+        if (enteredDuringFlicker > 0)
+            fail ("entered tracking during disagreeing acquisition flicker @"
+                  + std::to_string (Fs));
+        const double after = (double) core.uiDetectedHz.load();
+        if (after <= 0.0 || std::abs (centsBetween (after, 220.0)) > 50.0)
+            fail ("post-flicker track not near 220 (got " + std::to_string (after)
+                  + ") @" + std::to_string (Fs));
+    }
 }
 
 int main (int argc, char** argv)

@@ -756,6 +756,16 @@ namespace pf_core
 
                 if (detMode == DetMode::Acquisition)
                 {
+                    // Spec: only count hops whose f0 AGREES with the prospective
+                    // track. A run of high-clarity but mutually disagreeing
+                    // estimates (onset / legato octave flicker) must NOT enter
+                    // tracking with a wrong narrow window.
+                    if (trackF0Hz > 0.0 && stableTrackHops > 0)
+                    {
+                        const double dc = std::abs (1200.0 * std::log2 (estF0 / trackF0Hz));
+                        if (dc > kReacqMatchCents)
+                            stableTrackHops = 0;
+                    }
                     ++stableTrackHops;
                     trackF0Hz = estF0; // seed / refresh the prospective track
                     if (stableTrackHops >= kTrackEnterStableHops)
@@ -867,6 +877,14 @@ namespace pf_core
                             reacqCandidateHz = 0.0;
                         }
                     }
+                }
+                else
+                {
+                    // Unusable acquisition frame (unvoiced / below gate): break
+                    // the confirm streak so a later agreeing candidate cannot
+                    // pair with a stale one across the gap.
+                    reacqStreak = 0;
+                    reacqCandidateHz = 0.0;
                 }
             }
 
