@@ -921,34 +921,41 @@ static void coreTests (double Fs)
     }
 
     // --- 21. Tracking window keeps >= 6 periods of tracked f0 -----------------
+    // Includes a LOW voice (110 Hz) where 6 periods exceeds the acquisition
+    // window — the old acqWinLen clamp silently cut this to ~4.7 periods.
     {
-        pf_core::PfCore core;
-        core.prepare (Fs, 512);
-        pf_core::PfParamSnapshot s;
-        s.amount = 0.0f;
-        s.buffer = 3;
-        s.minPitchHz = 75.0f;
-        auto x = makeSine ((int) (1.5 * Fs), Fs, 220.0, 0.5);
-        std::vector<float> l (x), r (x);
-        bool sawTrack = false;
-        for (int pos = 0; pos < (int) x.size(); pos += 64)
+        for (double f0 : { 110.0, 220.0 })
         {
-            const int m = std::min (64, (int) x.size() - pos);
-            core.process (l.data() + pos, r.data() + pos, m, s);
-            if (core.uiDetMode.load() != 1)
-                continue;
-            const double track = (double) core.uiTrackHz.load();
-            const int W = core.uiWinLen.load();
-            if (track <= 0.0 || W <= 0)
-                continue;
-            sawTrack = true;
-            const double periods = (double) W * track / Fs;
-            if (periods + 0.05 < pf_core::PfCore::kTrackingMinPeriods)
-                fail ("tracking window " + std::to_string (periods)
-                      + " periods < 6 @" + std::to_string (Fs));
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            pf_core::PfParamSnapshot s;
+            s.amount = 0.0f;
+            s.buffer = 3;
+            s.minPitchHz = 75.0f;
+            auto x = makeSine ((int) (1.5 * Fs), Fs, f0, 0.5);
+            std::vector<float> l (x), r (x);
+            bool sawTrack = false;
+            for (int pos = 0; pos < (int) x.size(); pos += 64)
+            {
+                const int m = std::min (64, (int) x.size() - pos);
+                core.process (l.data() + pos, r.data() + pos, m, s);
+                if (core.uiDetMode.load() != 1)
+                    continue;
+                const double track = (double) core.uiTrackHz.load();
+                const int W = core.uiWinLen.load();
+                if (track <= 0.0 || W <= 0)
+                    continue;
+                sawTrack = true;
+                const double periods = (double) W * track / Fs;
+                if (periods + 0.05 < pf_core::PfCore::kTrackingMinPeriods)
+                    fail ("tracking window " + std::to_string (periods)
+                          + " periods < 6 at f0=" + std::to_string (f0)
+                          + " @" + std::to_string (Fs));
+            }
+            if (! sawTrack)
+                fail ("never entered tracking mode at f0=" + std::to_string (f0)
+                      + " @" + std::to_string (Fs));
         }
-        if (! sawTrack)
-            fail ("never entered tracking mode @" + std::to_string (Fs));
     }
 
     // --- 22. Acquisition runs at the configured interval while tracking -------
@@ -1112,6 +1119,40 @@ static void coreTests (double Fs)
             fail ("detection diverged across block sizes ("
                   + std::to_string (100.0 * (double) disagree / (double) compared)
                   + "%) @" + std::to_string (Fs));
+    }
+
+    // --- 27. High Min Pitch: analysis window must not read past the write -----
+    // Codex P1: when medDelay > lookahead the ideal P2 centre sits in the
+    // future. Clamp keeps detection on written audio — a steady tone at the
+    // supported Min Pitch ceiling must still be tracked (not stuck on zeros /
+    // wrap-around stale samples for ~0.7 s).
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 2;              // Normal: medLen=5, medDelay can exceed L
+        s.minPitchHz = 500.0f;
+        s.maxPitchHz = 2000.0f;
+        const double f0 = 600.0;
+        auto x = makeSine ((int) (1.2 * Fs), Fs, f0, 0.5);
+        std::vector<float> l (x), r (x);
+        int voiced = 0;
+        // After a short settle, detection must be alive well before the
+        // "0.68 s of zeros" failure mode Codex described.
+        for (int pos = 0; pos < (int) x.size(); pos += 256)
+        {
+            const int m = std::min (256, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            if (pos < (int) (0.25 * Fs))
+                continue;
+            const double det = (double) core.uiDetectedHz.load();
+            if (det > 0.0 && std::abs (centsBetween (det, f0)) < 50.0)
+                ++voiced;
+        }
+        if (voiced < 5)
+            fail ("high Min Pitch analysis read unwritten audio (voiced="
+                  + std::to_string (voiced) + ") @" + std::to_string (Fs));
     }
 }
 

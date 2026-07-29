@@ -124,12 +124,16 @@ namespace pf_core
 
             const int maxPeriod = (int) std::ceil (fs / kMinPitchFloorHz) + 4;
             const int maxLook   = (int) std::ceil (kLookaheadPeriods[3] * fs / kMinPitchFloorHz) + 8;
-            maxWin = (int) std::ceil ((kWindowPeriods[3] + 0.3) * fs / kMinPitchFloorHz) + 2;
+            // Tracking windows need >= 6 periods of the lowest trackable f0, which
+            // can EXCEED the acquisition window (acquisition is only ~3.2 periods of
+            // Min Pitch). Size the detector / scratch / ring for both.
+            const double maxWinPeriods = std::max (kWindowPeriods[3] + 0.3, kTrackingMinPeriods);
+            maxWin = (int) std::ceil (maxWinPeriods * fs / kMinPitchFloorHz) + 2;
             // Median group-delay compensation can push the analysis window start
             // back by up to ((7-1)/2) * hop samples past the grain-read cursor.
             const int maxMedDelay = 3 * (int) std::ceil (kHopSeconds[0] * fs) + 8;
 
-            detector.prepare (fs, kMinPitchFloorHz, kWindowPeriods[3] + 0.3);
+            detector.prepare (fs, kMinPitchFloorHz, maxWinPeriods);
             shifter.prepare (fs, maxBlock, maxLook, maxPeriod);
 
             // P2: window may be centred near written - L, so the ring must hold
@@ -417,20 +421,29 @@ namespace pf_core
                 return acqWinLen;
             // ceil so rounding never undershoots the 6-period contract.
             const int want = (int) std::ceil (kTrackingMinPeriods * fs / f0 - 1.0e-12);
-            // Never shorter than 6 periods; never longer than the acquisition window
-            // (acquisition already covers Min Pitch) or the prepare() budget.
-            return std::clamp (want, 16, std::min (acqWinLen, maxWin));
+            // Do NOT clamp to acqWinLen: at low tracked f0 (e.g. 110 Hz with
+            // Min Pitch 75 / Quality) 6 periods exceeds the acquisition window
+            // (~3.2 periods of Min Pitch). Clamping there was the lock-in margin
+            // we just added — only the prepare() budget (maxWin) is the ceiling.
+            return std::clamp (want, 16, maxWin);
         }
 
         // Assemble W samples centred on the grain-read time, advanced by the
         // median group delay so the post-median f0 lines up with that grain.
+        // When medDelay > lookahead (high Min Pitch / shallow L), the ideal
+        // centre would sit PAST the write cursor — clamp so the window never
+        // reads unwritten / wrap-around-stale samples.
         void fillAnalysisWindow (float* dst, int W) noexcept
         {
             const int medDelay = ((medLen - 1) / 2) * hopLen;
-            const std::int64_t center = written
-                                      - (std::int64_t) committedLookahead
-                                      + (std::int64_t) medDelay;
-            const std::int64_t start  = center - (std::int64_t) (W / 2);
+            std::int64_t center = written
+                                - (std::int64_t) committedLookahead
+                                + (std::int64_t) medDelay;
+            // Window end must be <= written (exclusive of the next write slot).
+            const std::int64_t maxCenter = written - (std::int64_t) (W / 2);
+            if (center > maxCenter)
+                center = maxCenter;
+            const std::int64_t start = center - (std::int64_t) (W / 2);
             for (int i = 0; i < W; ++i)
             {
                 const std::int64_t t = start + i;
