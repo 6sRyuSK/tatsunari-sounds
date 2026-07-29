@@ -38,8 +38,8 @@ int main()
     const auto table = pitch_fix_params::buildPfParams();
 
     // --- table sanity ---------------------------------------------------------
-    if (table.size() != 14)
-        fail ("expected 14 parameters, got " + std::to_string (table.size()));
+    if (table.size() != 15)
+        fail ("expected 15 parameters, got " + std::to_string (table.size()));
 
     std::set<std::string> ids;
     std::set<unsigned>    uids;
@@ -146,6 +146,21 @@ int main()
     session.applyProgram (0);            // Init: managed params back to defaults
     if (store.value (iAmount) != 100.0f || store.value (iBuffer) != 2.0f)
         fail ("Init did not restore defaults");
+
+    // Accuracy defaults to 0 on Init; sound presets pin it to the old Tolerance.
+    const int iAccuracy = store.indexOf ("accuracy");
+    const int iTolerance = store.indexOf ("tolerance");
+    if (iAccuracy < 0)
+        fail ("accuracy param missing from table");
+    session.applyProgram (0);
+    if (store.value (iAccuracy) != 0.0f)
+        fail ("Init Accuracy default is not 0");
+    session.applyProgram (5); // Natural Vocal (bank[4])
+    if (store.value (iTolerance) != 25.0f || store.value (iAccuracy) != 25.0f)
+        fail ("Natural Vocal did not set Stability=Accuracy=25");
+    session.applyProgram (7); // Hard Tune
+    if (store.value (iAccuracy) != 0.0f)
+        fail ("Hard Tune Accuracy is not 0");
 
     if (g_failures > 0)
     {

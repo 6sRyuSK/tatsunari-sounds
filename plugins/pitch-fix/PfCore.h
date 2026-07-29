@@ -7,14 +7,29 @@
 //
 // SIGNAL PATH (per block)
 //   in L/R ──┬─ mid sum → HP(minPitch) → detector ring ──(hop)── PitchDetector
+//            │                                   │ acquisition / tracking window
 //            │                                   │ median filter (mode depth)
 //            │                                   │ scale quantiser + hysteresis
-//            │                                   │ tolerance deadzone → amount
+//            │                                   │ Stability deadzone + Accuracy
 //            │                                   │ glide + retune one-poles
 //            │                                   ▼
 //            ├─ PsolaShifter (pitch-synchronous OLA, stereo phase-locked) ─ wet
 //            └─ dry delay (== lookahead) ──────────────────────────────── dry
 //   out = (wet*mix + dry*(1-mix)) * outputGain          (LinearRamp smoothed)
+//
+// DETECTION WINDOWS (docs/plans/pitch-fix-detection-accuracy.md §3 P1)
+//   Acquisition uses kWindowPeriods[mode] periods of Min Pitch (the long window
+//   that can hear the floor). Tracking shrinks to >= 6 periods of the tracked
+//   f0 so lagMax = n/2 still reaches one octave below the track (anti lock-in).
+//   Tracking periodically re-runs acquisition (~50 ms); a single disagreeing
+//   candidate never switches the track — 2 consecutive confirms are required.
+//   Unvoiced runs / clarity drops / large pitch jumps fall back to acquisition.
+//
+// ANALYSIS TIMEBASE (docs/plans/pitch-fix-detection-accuracy.md §3 P2)
+//   The analysis window is centred on the grain-read time (written - L) plus
+//   the median filter's group delay, so the f0 estimate applied to a grain is
+//   the estimate of the same source time the grain is reading. No intentional
+//   anticipation is baked into the analysis position.
 //
 // LOOKAHEAD / LATENCY — the Buffer parameter (Realtime/Fast/Normal/Quality)
 // scales the lookahead in PERIODS OF THE MIN-PITCH PARAMETER, so the latency
@@ -52,7 +67,8 @@ namespace pf_core
         float amount        = 100.0f;  // %   (0..150)
         float retuneMs      = 80.0f;   // ms  (0..600)
         float glideMs       = 60.0f;   // ms  (0..750)
-        float toleranceCt   = 12.0f;   // cents deadzone (0..75)
+        float stabilityCt   = 12.0f;   // cents deadzone / Stability (0..75); wire id "tolerance"
+        float accuracyCt    = 0.0f;    // cents residual Accuracy (0..75); new instances default 0
         float hysteresisCt  = 18.0f;   // cents note-switch margin (0..75)
         float minPitchHz    = 75.0f;   // Hz  (25..500)
         float maxPitchHz    = 1300.0f; // Hz  (200..4000)
@@ -79,6 +95,16 @@ namespace pf_core
         static constexpr double kTargetHoldSec     = 0.4;  // note memory across gaps
         static constexpr double kMaxShiftCents     = 1200.0;
 
+        // Tracking window: >= 6 periods of tracked f0 so lagMax = n/2 reaches one
+        // octave below the track (4 periods sat exactly on the octave boundary and
+        // locked in — see pitch-fix-detection-accuracy.md §2.6-1).
+        static constexpr double kTrackingMinPeriods   = 6.0;
+        static constexpr double kAcqIntervalSec        = 0.050; // periodic full-band reacquire
+        static constexpr int    kReacqConfirmNeeded    = 2;     // consecutive agreeing candidates
+        static constexpr int    kTrackEnterStableHops  = 3;     // median+clarity settle before track
+        static constexpr double kPitchJumpRatio        = 1.414; // ~half octave → fall back to acq
+        static constexpr double kReacqMatchCents       = 50.0;  // within this = same candidate
+
         // The PSOLA budget: PsolaShifter demands 2*P + P/4 + 4 <= lookahead for a
         // VOICED grain and degrades to its identity path otherwise — silently, so
         // the pitch would still read out in the UI while nothing gets corrected.
@@ -99,14 +125,20 @@ namespace pf_core
             const int maxPeriod = (int) std::ceil (fs / kMinPitchFloorHz) + 4;
             const int maxLook   = (int) std::ceil (kLookaheadPeriods[3] * fs / kMinPitchFloorHz) + 8;
             maxWin = (int) std::ceil ((kWindowPeriods[3] + 0.3) * fs / kMinPitchFloorHz) + 2;
+            // Median group-delay compensation can push the analysis window start
+            // back by up to ((7-1)/2) * hop samples past the grain-read cursor.
+            const int maxMedDelay = 3 * (int) std::ceil (kHopSeconds[0] * fs) + 8;
 
             detector.prepare (fs, kMinPitchFloorHz, kWindowPeriods[3] + 0.3);
             shifter.prepare (fs, maxBlock, maxLook, maxPeriod);
 
-            detSize = nextPow2 (maxWin + maxBlock + 8);
+            // P2: window may be centred near written - L, so the ring must hold
+            // lookahead + window + median delay behind the write cursor.
+            detSize = nextPow2 (maxLook + maxWin + maxMedDelay + maxBlock + 8);
             detMask = detSize - 1;
             detRing.assign ((size_t) detSize, 0.0f);
             scratch.assign ((size_t) maxWin, 0.0f);
+            scratchAcq.assign ((size_t) maxWin, 0.0f);
 
             drySize = nextPow2 (maxLook + maxBlock + 8);
             dryMask = drySize - 1;
@@ -152,6 +184,7 @@ namespace pf_core
             std::fill (dryL.begin(),    dryL.end(),    0.0f);
             std::fill (dryR.begin(),    dryR.end(),    0.0f);
             std::fill (scratch.begin(), scratch.end(), 0.0f);
+            std::fill (scratchAcq.begin(), scratchAcq.end(), 0.0f);
             shifter.reset();
             detHp[0].reset();            // state only — the design follows minHz
             detHp[1].reset();
@@ -210,6 +243,15 @@ namespace pf_core
         std::atomic<float> uiShiftCents   { 0.0f };
         std::atomic<int>   uiLatencySamples { 0 };
 
+        // Contract-test / diagnostics readouts (same lock-free contract as ui*).
+        // detMode: 0 = acquisition, 1 = tracking.
+        std::atomic<int>   uiDetMode       { 0 };
+        std::atomic<int>   uiWinLen        { 0 };
+        std::atomic<int>   uiAcqRunCount   { 0 };
+        std::atomic<int>   uiReacqStreak   { 0 };
+        std::atomic<float> uiTrackHz       { 0.0f };
+        std::atomic<float> uiLastClarity   { 0.0f };
+
     private:
         static int nextPow2 (int v) noexcept
         {
@@ -227,10 +269,30 @@ namespace pf_core
             glidedCents    = 0.0;
             targetNote     = -1;
             unvoicedHops   = 0;
+            acqUnvoicedHops = 0;
             targetHeldHops = 0;
+            detMode        = DetMode::Acquisition;
+            trackF0Hz      = 0.0;
+            stableTrackHops = 0;
+            samplesSinceAcq = 0;
+            reacqStreak    = 0;
+            reacqCandidateHz = 0.0;
+            lastClarity    = 0.0;
+            pendingReacqF0 = 0.0;
+            winLen         = 0;
+            publishDetDiag();
             uiDetectedHz.store (0.0f, std::memory_order_relaxed);
             uiTargetHz.store (0.0f, std::memory_order_relaxed);
             uiShiftCents.store (0.0f, std::memory_order_relaxed);
+        }
+
+        void publishDetDiag() noexcept
+        {
+            uiDetMode.store (detMode == DetMode::Tracking ? 1 : 0, std::memory_order_relaxed);
+            uiWinLen.store (winLen, std::memory_order_relaxed);
+            uiReacqStreak.store (reacqStreak, std::memory_order_relaxed);
+            uiTrackHz.store ((float) trackF0Hz, std::memory_order_relaxed);
+            uiLastClarity.store ((float) lastClarity, std::memory_order_relaxed);
         }
 
         void applySnapshot (const PfParamSnapshot& s) noexcept
@@ -238,7 +300,8 @@ namespace pf_core
             amount   = std::clamp ((double) s.amount, 0.0, 150.0) * 0.01;
             retuneMs = std::clamp ((double) s.retuneMs, 0.0, 600.0);
             glideMs  = std::clamp ((double) s.glideMs, 0.0, 750.0);
-            tolCt    = std::clamp ((double) s.toleranceCt, 0.0, 75.0);
+            stabilityCt = std::clamp ((double) s.stabilityCt, 0.0, 75.0);
+            accuracyCt  = std::clamp ((double) s.accuracyCt, 0.0, 75.0);
             hystCt   = std::clamp ((double) s.hysteresisCt, 0.0, 75.0);
             minHz    = std::clamp ((double) s.minPitchHz, kMinPitchFloorHz, 500.0);
             // Respect the user's Max Pitch; only guarantee it sits a little above
@@ -255,9 +318,10 @@ namespace pf_core
             mixRamp.setTargetValue (std::clamp ((double) s.mixPct, 0.0, 100.0) * 0.01);
             gainRamp.setTargetValue (std::pow (10.0, std::clamp ((double) s.outDb, -24.0, 24.0) / 20.0));
 
-            winLen = std::min ((int) std::lround (kWindowPeriods[mode] * fs / minHz), maxWin);
+            acqWinLen = std::min ((int) std::lround (kWindowPeriods[mode] * fs / minHz), maxWin);
             hopLen = std::max (32, (int) std::lround (kHopSeconds[mode] * fs));
             medLen = kMedianDepth[mode];
+            acqIntervalSamples = std::max (hopLen, (int) std::lround (kAcqIntervalSec * fs));
             if (hopCounter >= hopLen) hopCounter = 0;   // keep hopCounter < hopLen if hopLen shrank
 
             // The median window is a ring of medLen entries; a Buffer change that
@@ -270,6 +334,10 @@ namespace pf_core
                 medCount   = 0;
                 medPos     = 0;
                 prevMedLen = medLen;
+                // Depth change invalidates the "stable enough to track" count.
+                stableTrackHops = 0;
+                if (detMode == DetMode::Tracking)
+                    enterAcquisition();
             }
 
             // Analysis-path high-pass, DETECTOR FEED ONLY (the audio that reaches
@@ -332,6 +400,44 @@ namespace pf_core
             uiLatencySamples.store (pendingLookahead, std::memory_order_relaxed);
         }
 
+        void enterAcquisition() noexcept
+        {
+            detMode = DetMode::Acquisition;
+            stableTrackHops = 0;
+            reacqStreak = 0;
+            reacqCandidateHz = 0.0;
+            // Keep trackF0Hz as a hint for diagnostics; the next voiced estimate
+            // re-seeds it. samplesSinceAcq resets so the next hop runs a full acq.
+            samplesSinceAcq = acqIntervalSamples;
+        }
+
+        int trackingWindowLen (double f0) const noexcept
+        {
+            if (! (f0 > 0.0) || fs <= 0.0)
+                return acqWinLen;
+            // ceil so rounding never undershoots the 6-period contract.
+            const int want = (int) std::ceil (kTrackingMinPeriods * fs / f0 - 1.0e-12);
+            // Never shorter than 6 periods; never longer than the acquisition window
+            // (acquisition already covers Min Pitch) or the prepare() budget.
+            return std::clamp (want, 16, std::min (acqWinLen, maxWin));
+        }
+
+        // Assemble W samples centred on the grain-read time, advanced by the
+        // median group delay so the post-median f0 lines up with that grain.
+        void fillAnalysisWindow (float* dst, int W) noexcept
+        {
+            const int medDelay = ((medLen - 1) / 2) * hopLen;
+            const std::int64_t center = written
+                                      - (std::int64_t) committedLookahead
+                                      + (std::int64_t) medDelay;
+            const std::int64_t start  = center - (std::int64_t) (W / 2);
+            for (int i = 0; i < W; ++i)
+            {
+                const std::int64_t t = start + i;
+                dst[(size_t) i] = t >= 0 ? detRing[(size_t) (t & detMask)] : 0.0f;
+            }
+        }
+
         // Process one span [start, start+m) whose track state was fixed by the hop
         // that opened it (the caller fires the closing hop). No hop firing here, so
         // a host-block boundary that lands inside a hop interval leaves the track
@@ -344,9 +450,9 @@ namespace pf_core
             {
                 const float l = L[i];
                 const float r = R != nullptr ? R[i] : l;
-                const double m = detHp[1].processSample (
+                const double mid = detHp[1].processSample (
                                      detHp[0].processSample (0.5 * ((double) l + (double) r)));
-                detRing[(size_t) (written & detMask)] = (float) m;
+                detRing[(size_t) (written & detMask)] = (float) mid;
                 dryL[(size_t) (written & dryMask)] = l;
                 dryR[(size_t) (written & dryMask)] = r;
                 ++written;
@@ -376,16 +482,17 @@ namespace pf_core
         // the detector runs on preallocated buffers, everything here is O(win).
         void runHop() noexcept
         {
-            // Assemble the last winLen samples (ring → contiguous scratch).
+            samplesSinceAcq += hopLen;
+
+            // Primary analysis window: acquisition (Min-Pitch periods) or tracking
+            // (>= 6 periods of tracked f0).
+            const bool tracking = (detMode == DetMode::Tracking && trackF0Hz > 0.0);
+            winLen = tracking ? trackingWindowLen (trackF0Hz) : acqWinLen;
             const int W = winLen;
-            const std::int64_t start = written - (std::int64_t) W;
-            for (int i = 0; i < W; ++i)
-            {
-                const std::int64_t t = start + i;
-                scratch[(size_t) i] = t >= 0 ? detRing[(size_t) (t & detMask)] : 0.0f;
-            }
+            fillAnalysisWindow (scratch.data(), W);
 
             const auto est = detector.estimate (scratch.data(), W, minHz, maxHz, thresh);
+            lastClarity = est.clarity;
 
             // Keep the tracked pitch inside the band the PSOLA budget is sized
             // for (see kPsolaBudgetPeriods): PitchDetector's documented acceptance
@@ -393,9 +500,124 @@ namespace pf_core
             // a 2.35-period lookahead — tracked and displayed, never corrected.
             const bool inRange = est.voiced && est.f0Hz >= minHz;
 
+            // --- acquisition / tracking state machine -------------------------
+            pendingReacqF0 = 0.0;
+            if (! inRange)
+            {
+                // Unvoiced: fall back to acquisition after a short hold so
+                // consonants do not thrash the mode every hop. (Separate from
+                // unvoicedHops, which gates note-memory across longer gaps.)
+                if (detMode == DetMode::Tracking)
+                {
+                    if (++acqUnvoicedHops * (double) hopLen > 0.030 * fs)
+                        enterAcquisition();
+                }
+                else
+                {
+                    stableTrackHops = 0;
+                    ++acqUnvoicedHops;
+                }
+            }
+            else
+            {
+                acqUnvoicedHops = 0;
+
+                // Large pitch jump while tracking → re-acquire (protects against
+                // harmonic lock-in AND lets genuine leaps restart cleanly).
+                if (detMode == DetMode::Tracking && trackF0Hz > 0.0)
+                {
+                    const double ratio = est.f0Hz / trackF0Hz;
+                    if (ratio > kPitchJumpRatio || ratio < 1.0 / kPitchJumpRatio)
+                        enterAcquisition();
+                }
+
+                // Clarity collapse relative to the threshold → re-acquire.
+                if (detMode == DetMode::Tracking && lastClarity < thresh * 0.85)
+                    enterAcquisition();
+
+                if (detMode == DetMode::Acquisition)
+                {
+                    ++stableTrackHops;
+                    trackF0Hz = est.f0Hz; // seed / refresh the prospective track
+                    if (stableTrackHops >= kTrackEnterStableHops)
+                    {
+                        detMode = DetMode::Tracking;
+                        reacqStreak = 0;
+                        reacqCandidateHz = 0.0;
+                        samplesSinceAcq = 0; // start the periodic-acq clock fresh
+                    }
+                }
+                else if (detMode == DetMode::Tracking)
+                {
+                    trackF0Hz = est.f0Hz;
+                }
+            }
+
+            // Periodic full-band acquisition while tracking (never switch on a
+            // single disagreeing frame — need kReacqConfirmNeeded consecutive
+            // agreeing candidates).
+            if (detMode == DetMode::Tracking && samplesSinceAcq >= acqIntervalSamples)
+            {
+                samplesSinceAcq = 0;
+                uiAcqRunCount.fetch_add (1, std::memory_order_relaxed);
+
+                fillAnalysisWindow (scratchAcq.data(), acqWinLen);
+                const auto acq = detector.estimate (scratchAcq.data(), acqWinLen,
+                                                    minHz, maxHz, thresh);
+                if (acq.voiced && acq.f0Hz >= minHz && trackF0Hz > 0.0)
+                {
+                    const double cents = 1200.0 * std::log2 (acq.f0Hz / trackF0Hz);
+                    if (std::abs (cents) <= kReacqMatchCents)
+                    {
+                        // Agrees with the track — clear any pending reacquire.
+                        reacqStreak = 0;
+                        reacqCandidateHz = 0.0;
+                    }
+                    else
+                    {
+                        if (reacqCandidateHz > 0.0)
+                        {
+                            const double dc = 1200.0 * std::log2 (acq.f0Hz / reacqCandidateHz);
+                            if (std::abs (dc) <= kReacqMatchCents)
+                                ++reacqStreak;
+                            else
+                            {
+                                reacqStreak = 1;
+                                reacqCandidateHz = acq.f0Hz;
+                            }
+                        }
+                        else
+                        {
+                            reacqStreak = 1;
+                            reacqCandidateHz = acq.f0Hz;
+                        }
+
+                        if (reacqStreak >= kReacqConfirmNeeded)
+                        {
+                            // Confirmed: adopt the acquisition candidate as the
+                            // new track (true octave leaps included).
+                            trackF0Hz = reacqCandidateHz;
+                            pendingReacqF0 = reacqCandidateHz;
+                            for (int i = 0; i < medLen; ++i)
+                                medBuf[(size_t) i] = reacqCandidateHz;
+                            medCount = medLen;
+                            reacqStreak = 0;
+                            reacqCandidateHz = 0.0;
+                        }
+                    }
+                }
+            }
+
+            publishDetDiag();
+
             // Median over the last medLen hops (octave-glitch suppression; the
             // depth is the Buffer mode's quality lever).
-            medBuf[(size_t) medPos] = inRange ? est.f0Hz : 0.0;
+            double medSample = inRange ? est.f0Hz : 0.0;
+            // After a confirmed reacquire, prefer the confirmed f0 so a stale
+            // tracking-window harmonic estimate cannot vote the median back.
+            if (pendingReacqF0 > 0.0)
+                medSample = pendingReacqF0;
+            medBuf[(size_t) medPos] = medSample;
             medPos = (medPos + 1) % medLen;
             if (medCount < medLen) ++medCount;
 
@@ -460,11 +682,20 @@ namespace pf_core
                 const double cg = factory_core::onePoleCoeffForMs (glideMs, hopRate);
                 glidedCents += (1.0 - cg) * (noteCents (targetNote) - glidedCents);
 
-                // -- tolerance deadzone + amount + retune smoothing --
-                const double err  = glidedCents - detCents;
-                double dead = 0.0;
-                if (err >  tolCt) dead = err - tolCt;
-                if (err < -tolCt) dead = err + tolCt;
+                // -- Stability deadzone + Accuracy residual + amount + retune --
+                // Continuous form (pitch-fix-detection-accuracy.md §2.6-3): avoids
+                // a jump of (Stability - Accuracy) at the deadzone edge.
+                //   x = max(0, |err| - Stability)
+                //   R = max(0, Stability - Accuracy)
+                //   d = x + min(x, R)
+                //   dead = sign(err) * d
+                // Accuracy == Stability → identical to the old Tolerance formula;
+                // Accuracy == 0 → full pull to the target once outside Stability.
+                const double err = glidedCents - detCents;
+                const double x = std::max (0.0, std::abs (err) - stabilityCt);
+                const double R = std::max (0.0, stabilityCt - accuracyCt);
+                const double d = x + std::min (x, R);
+                const double dead = (err >= 0.0 ? d : -d);
                 const double corrTarget =
                     std::clamp (dead * amount, -kMaxShiftCents, kMaxShiftCents);
                 const double cr = factory_core::onePoleCoeffForMs (retuneMs, hopRate);
@@ -512,7 +743,8 @@ namespace pf_core
         // resumes, so vibrato crossing a semitone boundary is still held.
         int settleHops() const noexcept
         {
-            return (hopLen > 0 ? (winLen + hopLen - 1) / hopLen : 0) + medLen;
+            const int W = winLen > 0 ? winLen : acqWinLen;
+            return (hopLen > 0 ? (W + hopLen - 1) / hopLen : 0) + medLen;
         }
 
         // Is `note` (MIDI number) in the current Key/Scale mask? Chromatic (scale 0)
@@ -552,6 +784,8 @@ namespace pf_core
         static constexpr int    kMaxMedian = 7;
         static constexpr double kButterQ   = 0.70710678118654752440; // 1/sqrt(2)
 
+        enum class DetMode : int { Acquisition = 0, Tracking = 1 };
+
         // --- composition ---
         factory_core::PitchDetector detector;
         factory_core::PsolaShifter  shifter;
@@ -564,17 +798,18 @@ namespace pf_core
         int    maxWin = 0;
 
         // --- rings ---
-        std::vector<float> detRing, scratch, dryL, dryR;
+        std::vector<float> detRing, scratch, scratchAcq, dryL, dryR;
         int detSize = 0, drySize = 0;
         std::int64_t detMask = 0, dryMask = 0;
         std::int64_t written = 0;
 
         // --- live params (block-latched) ---
         double amount = 1.0, retuneMs = 80.0, glideMs = 60.0;
-        double tolCt = 12.0, hystCt = 18.0;
+        double stabilityCt = 12.0, accuracyCt = 0.0, hystCt = 18.0;
         double minHz = 75.0, maxHz = 1300.0, thresh = 0.80, a4 = 440.0;
         int    mode = 2, key = 0, scale = 0;
-        int    winLen = 0, hopLen = 512, medLen = 1;
+        int    winLen = 0, acqWinLen = 0, hopLen = 512, medLen = 1;
+        int    acqIntervalSamples = 1;
         double hpDesignedHz = 0.0;   // minHz the detHp cascade is currently designed for
 
         // --- latency latching (see applySnapshot / latencySamples / prepare) ---
@@ -590,6 +825,17 @@ namespace pf_core
         double corrCents = 0.0, glidedCents = 0.0;
         int    targetNote = -1;
         std::int64_t unvoicedHops = 0;
+        int    acqUnvoicedHops = 0;  // short hold before falling back to acquisition
         int    targetHeldHops = 0;   // voiced hops since targetNote was picked fresh
+
+        // --- acquisition / tracking mode (§3 P1) ---
+        DetMode detMode = DetMode::Acquisition;
+        double  trackF0Hz = 0.0;
+        int     stableTrackHops = 0;
+        int     samplesSinceAcq = 0;
+        int     reacqStreak = 0;
+        double  reacqCandidateHz = 0.0;
+        double  lastClarity = 0.0;
+        double  pendingReacqF0 = 0.0; // confirmed reacquire f0 for this hop's median
     };
 } // namespace pf_core

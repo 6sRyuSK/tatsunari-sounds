@@ -19,13 +19,15 @@ namespace pitch_fix_params
     {
         using namespace factory_params;
         std::vector<ParamDesc> p;
-        p.reserve (14);
+        p.reserve (15);
 
         // -- correction behaviour -------------------------------------------
         p.push_back (floatParam ("amount",     "Correction Amount", 0.0f, 150.0f, 0.0f, 100.0f, " %", 1));
         p.push_back (floatParam ("retune",     "Retune Speed",      0.0f, 600.0f, 0.0f,  80.0f, " ms", 1, 120.0f));
         p.push_back (floatParam ("glide",      "Note Glide",        0.0f, 750.0f, 0.0f,  60.0f, " ms", 1, 150.0f));
-        p.push_back (floatParam ("tolerance",  "Tolerance",         0.0f,  75.0f, 0.0f,  12.0f, " ct", 1));
+        // Wire id stays "tolerance" (state/preset compatibility); display name is
+        // Stability — the deadzone that leaves small deviations alone.
+        p.push_back (floatParam ("tolerance",  "Stability",         0.0f,  75.0f, 0.0f,  12.0f, " ct", 1));
         p.push_back (floatParam ("hysteresis", "Note Hysteresis",   0.0f,  75.0f, 0.0f,  18.0f, " ct", 1));
 
         // -- detector --------------------------------------------------------
@@ -54,6 +56,12 @@ namespace pitch_fix_params
         // -- output ------------------------------------------------------------
         p.push_back (floatParam ("mix", "Mix",     0.0f, 100.0f, 0.0f, 100.0f, " %", 1));
         p.push_back (floatParam ("out", "Output", -24.0f, 24.0f, 0.0f,   0.0f, " dB", 1));
+
+        // -- Accuracy (appended: new params go at the table tail) ---------------
+        // Residual cents left after correction once outside Stability. New
+        // instances default to 0 (land on target); migrateState copies the saved
+        // tolerance into accuracy for pre-Accuracy sessions so character is kept.
+        p.push_back (floatParam ("accuracy", "Accuracy", 0.0f, 75.0f, 0.0f, 0.0f, " ct", 1));
 
         return p;
     }

@@ -166,7 +166,8 @@ static pf_core::PfParamSnapshot tightSnapshot()
     pf_core::PfParamSnapshot s;
     s.retuneMs    = 5.0f;
     s.glideMs     = 0.0f;
-    s.toleranceCt = 0.0f;
+    s.stabilityCt = 0.0f;
+    s.accuracyCt  = 0.0f;
     return s;
 }
 
@@ -214,20 +215,54 @@ static void coreTests (double Fs)
                   + " Hz (want 523.25) @" + std::to_string (Fs));
     }
 
-    // --- 3. tolerance deadzone: +20 ct inside a 35 ct window stays put --------
+    // --- 3. Stability deadzone: +20 ct inside a 35 ct window stays put --------
     {
         pf_core::PfCore core;
         core.prepare (Fs, 512);
         auto s = tightSnapshot();
-        s.toleranceCt = 35.0f;
+        s.stabilityCt = 35.0f;
+        s.accuracyCt  = 0.0f;
         const double fIn = 440.0 * std::pow (2.0, 20.0 / 1200.0);
         auto y = run (core, makeSine ((int) (2.5 * Fs), Fs, fIn, 0.5), s);
         const auto m = measureTone (tailOf (y, Fs, 1.0), Fs);
         if (std::abs (centsBetween (m.freqHz, fIn)) > 3.0)
-            fail ("tolerance: input moved by "
+            fail ("stability: input moved by "
                   + std::to_string (centsBetween (m.freqHz, fIn)) + " ct @" + std::to_string (Fs));
         if (std::abs (centsBetween (m.freqHz, 440.0)) < 15.0)
-            fail ("tolerance: input was pulled to the note @" + std::to_string (Fs));
+            fail ("stability: input was pulled to the note @" + std::to_string (Fs));
+    }
+
+    // --- 3b. Accuracy residual: Stability=12, Accuracy=12 leaves ~12 ct --------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        auto s = tightSnapshot();
+        s.stabilityCt = 12.0f;
+        s.accuracyCt  = 12.0f;
+        s.retuneMs    = 0.0f;
+        const double fIn = 440.0 * std::pow (2.0, 30.0 / 1200.0);
+        auto y = run (core, makeSine ((int) (2.5 * Fs), Fs, fIn, 0.5), s);
+        const auto m = measureTone (tailOf (y, Fs, 1.0), Fs);
+        const double resid = centsBetween (m.freqHz, 440.0);
+        if (std::abs (resid - 12.0) > 3.0)
+            fail ("accuracy=stability residual " + std::to_string (resid)
+                  + " ct != ~12 @" + std::to_string (Fs));
+    }
+
+    // --- 3c. Accuracy 0 lands on target once outside Stability ----------------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        auto s = tightSnapshot();
+        s.stabilityCt = 12.0f;
+        s.accuracyCt  = 0.0f;
+        s.retuneMs    = 0.0f;
+        const double fIn = 440.0 * std::pow (2.0, 30.0 / 1200.0);
+        auto y = run (core, makeSine ((int) (2.5 * Fs), Fs, fIn, 0.5), s);
+        const auto m = measureTone (tailOf (y, Fs, 1.0), Fs);
+        if (std::abs (centsBetween (m.freqHz, 440.0)) > 5.0)
+            fail ("accuracy=0 did not land on target (got "
+                  + std::to_string (m.freqHz) + ") @" + std::to_string (Fs));
     }
 
     // --- 4. latency contract: amount 0 == pure delay (within tol), per mode ----
@@ -313,7 +348,8 @@ static void coreTests (double Fs)
         s.amount      = 150.0f;
         s.retuneMs    = 0.0f;
         s.glideMs     = 0.0f;
-        s.toleranceCt = 0.0f;
+        s.stabilityCt = 0.0f;
+        s.accuracyCt  = 0.0f;
         const double fIn = 440.0 * std::pow (2.0, 49.0 / 1200.0);
         auto y = run (core, makeSine ((int) (4.0 * Fs), Fs, fIn, 0.5), s);
         std::vector<double> yd (y.begin(), y.end());
@@ -380,7 +416,8 @@ static void coreTests (double Fs)
             s.amount       = (float) (rnd() * 150.0);
             s.retuneMs     = (float) (rnd() * 600.0);
             s.glideMs      = (float) (rnd() * 750.0);
-            s.toleranceCt  = (float) (rnd() * 75.0);
+            s.stabilityCt  = (float) (rnd() * 75.0);
+            s.accuracyCt   = (float) (rnd() * 75.0);
             s.hysteresisCt = (float) (rnd() * 75.0);
             s.minPitchHz   = (float) (25.0 + rnd() * 475.0);
             s.maxPitchHz   = (float) (200.0 + rnd() * 3800.0);
@@ -774,6 +811,307 @@ static void coreTests (double Fs)
         if (std::abs (centsBetween (m.freqHz, 440.0)) > 10.0)
             fail ("a wrong onset note was latched for the whole note: got "
                   + std::to_string (m.freqHz) + " Hz (want 440) @" + std::to_string (Fs));
+    }
+
+    // =========================================================================
+    // Contract tests — docs/plans/pitch-fix-detection-accuracy.md §4bis
+    // Oracle: synthesised f0 (independent of the detector under test).
+    // =========================================================================
+
+    // Harmonic partials + vibrato (the regime that used to lock onto H3).
+    auto makeVibratoVoice = [&] (int n, double f0, double vibCt, double vibHz, float amp)
+    {
+        std::vector<float> v ((size_t) n);
+        double ph = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = (double) i / Fs;
+            const double f = f0 * std::pow (2.0, (vibCt / 1200.0) * std::sin (2.0 * kPi * vibHz * t));
+            ph += 2.0 * kPi * f / Fs;
+            double s = 0.0;
+            for (int h = 1; h <= 8; ++h)
+                s += std::pow ((double) h, -0.7) * std::sin ((double) h * ph);
+            v[(size_t) i] = (float) (amp * 0.22 * s);
+        }
+        return v;
+    };
+
+    // --- 19. 220 Hz must not permanently lock onto the 3rd harmonic at start ----
+    {
+        for (int mode = 0; mode < 4; ++mode)
+        {
+            pf_core::PfCore core;
+            core.prepare (Fs, 512);
+            pf_core::PfParamSnapshot s;
+            s.amount      = 0.0f;          // detection only
+            s.buffer      = mode;
+            s.minPitchHz  = 75.0f;
+            s.stabilityCt = 0.0f;
+            s.accuracyCt  = 0.0f;
+            const double f0 = 220.0;
+            const double vibCt = 100.0;
+            const double vibHz = 5.5;
+            auto x = makeVibratoVoice ((int) (2.0 * Fs), f0, vibCt, vibHz, 0.5f);
+            std::vector<float> l (x), r (x);
+            int voiced = 0, bad = 0;
+            for (int pos = 0; pos < (int) x.size(); pos += 512)
+            {
+                const int m = std::min (512, (int) x.size() - pos);
+                core.process (l.data() + pos, r.data() + pos, m, s);
+                if (pos < (int) (0.4 * Fs))
+                    continue; // skip onset settle
+                const double det = (double) core.uiDetectedHz.load();
+                if (det <= 0.0)
+                    continue;
+                ++voiced;
+                // Harmonic-error oracle: a lock onto 2f0/3f0 (not vibrato around f0).
+                const bool near2 = std::abs (centsBetween (det, 2.0 * f0)) < 50.0;
+                const bool near3 = std::abs (centsBetween (det, 3.0 * f0)) < 50.0;
+                if (near2 || near3)
+                    ++bad;
+            }
+            if (voiced < 10)
+                fail ("mode " + std::to_string (mode)
+                      + ": 220 Hz vibrato produced too few voiced frames @"
+                      + std::to_string (Fs));
+            else if (100.0 * (double) bad / (double) voiced > 8.0)
+                fail ("mode " + std::to_string (mode)
+                      + ": 220 Hz locked onto a harmonic ("
+                      + std::to_string (100.0 * (double) bad / (double) voiced)
+                      + "% near 2f0/3f0) @" + std::to_string (Fs));
+        }
+    }
+
+    // --- 20. After tracking 659 Hz, recover to 220 Hz (anti lock-in) ------------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3; // Quality — longest acquisition window
+        s.minPitchHz = 75.0f;
+        const int nHi = (int) (0.8 * Fs);
+        const int nLo = (int) (1.5 * Fs);
+        auto hi = makeSine (nHi, Fs, 659.0, 0.5);
+        auto lo = makeSine (nLo, Fs, 220.0, 0.5);
+        std::vector<float> x;
+        x.insert (x.end(), hi.begin(), hi.end());
+        x.insert (x.end(), lo.begin(), lo.end());
+        std::vector<float> l (x), r (x);
+        for (int pos = 0; pos < nHi; pos += 512)
+        {
+            const int m = std::min (512, nHi - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+        }
+        // Must have been tracking something near 659 before the switch.
+        const double before = (double) core.uiDetectedHz.load();
+        if (before > 0.0 && std::abs (centsBetween (before, 659.0)) > 80.0)
+            fail ("pre-switch track not near 659 (got " + std::to_string (before)
+                  + ") @" + std::to_string (Fs));
+
+        for (int pos = nHi; pos < (int) x.size(); pos += 512)
+        {
+            const int m = std::min (512, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+        }
+        const double after = (double) core.uiDetectedHz.load();
+        if (after <= 0.0 || std::abs (centsBetween (after, 220.0)) > 50.0)
+            fail ("failed to recover from 659→220 (got " + std::to_string (after)
+                  + ") @" + std::to_string (Fs));
+    }
+
+    // --- 21. Tracking window keeps >= 6 periods of tracked f0 -----------------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3;
+        s.minPitchHz = 75.0f;
+        auto x = makeSine ((int) (1.5 * Fs), Fs, 220.0, 0.5);
+        std::vector<float> l (x), r (x);
+        bool sawTrack = false;
+        for (int pos = 0; pos < (int) x.size(); pos += 64)
+        {
+            const int m = std::min (64, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            if (core.uiDetMode.load() != 1)
+                continue;
+            const double track = (double) core.uiTrackHz.load();
+            const int W = core.uiWinLen.load();
+            if (track <= 0.0 || W <= 0)
+                continue;
+            sawTrack = true;
+            const double periods = (double) W * track / Fs;
+            if (periods + 0.05 < pf_core::PfCore::kTrackingMinPeriods)
+                fail ("tracking window " + std::to_string (periods)
+                      + " periods < 6 @" + std::to_string (Fs));
+        }
+        if (! sawTrack)
+            fail ("never entered tracking mode @" + std::to_string (Fs));
+    }
+
+    // --- 22. Acquisition runs at the configured interval while tracking -------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 2;
+        s.minPitchHz = 75.0f;
+        auto x = makeSine ((int) (1.2 * Fs), Fs, 220.0, 0.5);
+        std::vector<float> l (x), r (x);
+        // Prime into tracking.
+        for (int pos = 0; pos < (int) (0.3 * Fs); pos += 512)
+        {
+            const int m = std::min (512, (int) (0.3 * Fs) - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+        }
+        const int acq0 = core.uiAcqRunCount.load();
+        const int t0 = (int) (0.3 * Fs);
+        for (int pos = t0; pos < (int) x.size(); pos += 512)
+        {
+            const int m = std::min (512, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+        }
+        const int acq1 = core.uiAcqRunCount.load();
+        const double dur = ((double) x.size() - (double) t0) / Fs;
+        const int expectMin = std::max (1, (int) std::floor (dur / pf_core::PfCore::kAcqIntervalSec) - 2);
+        const int got = acq1 - acq0;
+        if (got < expectMin)
+            fail ("acquisition ran " + std::to_string (got) + " times in "
+                  + std::to_string (dur) + " s (want >= " + std::to_string (expectMin)
+                  + ") @" + std::to_string (Fs));
+    }
+
+    // --- 23. A single disagreeing acquisition must not flip the track ---------
+    // Steady 220 Hz: tracking window and acquisition agree, so streak stays 0.
+    // (The flip-on-one-frame path is covered structurally by kReacqConfirmNeeded
+    // and exercised by the octave-leap confirm path in test 24/25.)
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3;
+        auto x = makeSine ((int) (1.0 * Fs), Fs, 220.0, 0.5);
+        std::vector<float> l (x), r (x);
+        int maxStreak = 0;
+        for (int pos = 0; pos < (int) x.size(); pos += 256)
+        {
+            const int m = std::min (256, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            maxStreak = std::max (maxStreak, core.uiReacqStreak.load());
+        }
+        if (maxStreak >= pf_core::PfCore::kReacqConfirmNeeded)
+            fail ("reacquire streak reached confirm threshold on a steady tone @"
+                  + std::to_string (Fs));
+    }
+
+    // --- 24. Confirmed reacquire adopts a true octave leap --------------------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 2;
+        s.minPitchHz = 75.0f;
+        const int nLo = (int) (0.7 * Fs);
+        const int nHi = (int) (1.2 * Fs);
+        auto lo = makeSine (nLo, Fs, 220.0, 0.5);
+        auto hi = makeSine (nHi, Fs, 440.0, 0.5);
+        std::vector<float> x;
+        x.insert (x.end(), lo.begin(), lo.end());
+        x.insert (x.end(), hi.begin(), hi.end());
+        std::vector<float> l (x), r (x);
+        for (int pos = 0; pos < (int) x.size(); pos += 512)
+        {
+            const int m = std::min (512, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+        }
+        const double after = (double) core.uiDetectedHz.load();
+        if (after <= 0.0 || std::abs (centsBetween (after, 440.0)) > 50.0)
+            fail ("true octave leap 220→440 was not adopted (got "
+                  + std::to_string (after) + ") @" + std::to_string (Fs));
+    }
+
+    // --- 25. True octave leap must not be pulled back to the old track --------
+    {
+        pf_core::PfCore core;
+        core.prepare (Fs, 512);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3;
+        const int nLo = (int) (0.6 * Fs);
+        const int nHi = (int) (1.5 * Fs);
+        auto lo = makeSine (nLo, Fs, 220.0, 0.5);
+        auto hi = makeSine (nHi, Fs, 440.0, 0.5);
+        std::vector<float> x;
+        x.insert (x.end(), lo.begin(), lo.end());
+        x.insert (x.end(), hi.begin(), hi.end());
+        std::vector<float> l (x), r (x);
+        int pulledBack = 0, voicedHi = 0;
+        for (int pos = 0; pos < (int) x.size(); pos += 256)
+        {
+            const int m = std::min (256, (int) x.size() - pos);
+            core.process (l.data() + pos, r.data() + pos, m, s);
+            if (pos < nLo + (int) (0.35 * Fs))
+                continue; // allow settle after the leap
+            const double det = (double) core.uiDetectedHz.load();
+            if (det <= 0.0)
+                continue;
+            ++voicedHi;
+            if (std::abs (centsBetween (det, 220.0)) < 50.0)
+                ++pulledBack;
+        }
+        if (voicedHi < 5)
+            fail ("octave-leap hold: too few voiced frames @" + std::to_string (Fs));
+        else if (pulledBack > 0)
+            fail ("octave leap was pulled back to 220 (" + std::to_string (pulledBack)
+                  + " frames) @" + std::to_string (Fs));
+    }
+
+    // --- 26. Block-size independence of the detection mode machine ------------
+    {
+        const int N = (int) (1.0 * Fs);
+        // Steady tone (no vibrato): isolates framing from f0 motion.
+        auto x = makeSine (N, Fs, 220.0, 0.5);
+        pf_core::PfParamSnapshot s;
+        s.amount = 0.0f;
+        s.buffer = 3;
+        s.minPitchHz = 75.0f;
+
+        auto runDet = [&] (int block) {
+            pf_core::PfCore core;
+            core.prepare (Fs, 2048);
+            std::vector<float> l (x), r (x);
+            std::vector<float> dets;
+            for (int pos = 0; pos < N; pos += block)
+            {
+                const int m = std::min (block, N - pos);
+                core.process (l.data() + pos, r.data() + pos, m, s);
+                if (pos >= (int) (0.4 * Fs))
+                    dets.push_back (core.uiDetectedHz.load());
+            }
+            return dets;
+        };
+        const auto a = runDet (64);
+        const auto b = runDet (512);
+        const int n = (int) std::min (a.size(), b.size());
+        int disagree = 0, compared = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            if (a[(size_t) i] <= 0.0f && b[(size_t) i] <= 0.0f)
+                continue;
+            ++compared;
+            if (a[(size_t) i] <= 0.0f || b[(size_t) i] <= 0.0f
+                || std::abs (centsBetween ((double) a[(size_t) i], (double) b[(size_t) i])) > 30.0)
+                ++disagree;
+        }
+        if (compared > 0 && 100.0 * (double) disagree / (double) compared > 15.0)
+            fail ("detection diverged across block sizes ("
+                  + std::to_string (100.0 * (double) disagree / (double) compared)
+                  + "%) @" + std::to_string (Fs));
     }
 }
 

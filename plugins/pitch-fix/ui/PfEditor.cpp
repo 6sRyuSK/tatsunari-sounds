@@ -84,7 +84,8 @@ namespace pf_ui
         amount_     = knob ("amount",     "AMOUNT",     0);
         retune_     = knob ("retune",     "RETUNE",     0);
         glide_      = knob ("glide",      "GLIDE",      0);
-        tolerance_  = knob ("tolerance",  "TOLERANCE",  0);
+        tolerance_  = knob ("tolerance",  "STABILITY",  0);
+        accuracy_   = knob ("accuracy",   "ACCURACY",   0);
         hysteresis_ = knob ("hysteresis", "HYSTERESIS", 0);
         minPitch_   = knob ("min_pitch",  "MIN PITCH",  0);
         maxPitch_   = knob ("max_pitch",  "MAX PITCH",  0);
@@ -94,7 +95,8 @@ namespace pf_ui
 
         const auto big   = [] (Knob& k) { k.setDialProfile (16, 17, 12, 13, 0); };
         const auto small = [] (Knob& k) { k.setDialProfile (14, 14, 10, 11, 0); };
-        big (*amount_); big (*retune_); big (*glide_); big (*tolerance_); big (*hysteresis_);
+        big (*amount_); big (*retune_); big (*glide_);
+        big (*tolerance_); big (*accuracy_); big (*hysteresis_);
         small (*minPitch_); small (*maxPitch_); small (*threshold_); small (*mix_); small (*out_);
 
         key_ = std::make_unique<ValueSetting> (store_, store_.indexOf ("key"), theme_,
@@ -193,6 +195,7 @@ namespace pf_ui
         if (key == "retune") return rectOf (retune_.get());
         if (key == "glide") return rectOf (glide_.get());
         if (key == "tolerance") return rectOf (tolerance_.get());
+        if (key == "accuracy") return rectOf (accuracy_.get());
         if (key == "hysteresis") return rectOf (hysteresis_.get());
         if (key == "min_pitch") return rectOf (minPitch_.get());
         if (key == "max_pitch") return rectOf (maxPitch_.get());
@@ -254,12 +257,12 @@ namespace pf_ui
         scale_->setBounds (S (264), S (100), S (216), S (28));
         a4_->setBounds    (S (500), S (100), S (200), S (28));
 
-        // Big correction knobs.
-        const float bigY = S (150), bigH = S (158), bigW = S (152);
-        const char* _ = nullptr; (void) _;
-        Knob* bigs[5] = { amount_.get(), retune_.get(), glide_.get(), tolerance_.get(), hysteresis_.get() };
-        for (int i = 0; i < 5; ++i)
-            bigs[i]->setBounds (S (48) + (float) i * S (166), bigY, bigW, bigH);
+        // Big correction knobs (6 across — Stability + Accuracy replace Tolerance).
+        const float bigY = S (150), bigH = S (158), bigW = S (128);
+        Knob* bigs[6] = { amount_.get(), retune_.get(), glide_.get(),
+                          tolerance_.get(), accuracy_.get(), hysteresis_.get() };
+        for (int i = 0; i < 6; ++i)
+            bigs[i]->setBounds (S (40) + (float) i * S (142), bigY, bigW, bigH);
 
         // Detector / output knobs.
         const float smallY = S (318), smallH = S (132), smallW = S (136);
