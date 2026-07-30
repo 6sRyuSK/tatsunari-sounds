@@ -18,6 +18,9 @@ func ParseLatest(data []byte) (ParseResult[LatestDocument], error) {
 	if !json.Valid(data) {
 		return out, fmt.Errorf("latest.json is not valid UTF-8 JSON")
 	}
+	if err := rejectDuplicateKeys(data); err != nil {
+		return out, fmt.Errorf("latest.json: %w", err)
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return out, fmt.Errorf("latest.json envelope: %w", err)
@@ -86,6 +89,9 @@ func ParseCatalog(data []byte) (ParseResult[CatalogDocument], error) {
 	}
 	if !json.Valid(data) {
 		return out, fmt.Errorf("catalog.json is not valid UTF-8 JSON")
+	}
+	if err := rejectDuplicateKeys(data); err != nil {
+		return out, fmt.Errorf("catalog.json: %w", err)
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {

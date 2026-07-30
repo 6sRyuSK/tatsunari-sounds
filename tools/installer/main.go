@@ -157,7 +157,9 @@ func runHeadless(opts options) int {
 
 	// installed versions from the receipt drive update detection.
 	var installedVersions map[string]string
-	if rec, err := install.LoadReceipt(); err == nil {
+	if rec, err := install.LoadAllReceipts(opts.targetOS); err == nil {
+		installedVersions = rec.InstalledVersions()
+	} else if rec, err := install.LoadReceipt(); err == nil {
 		installedVersions = rec.InstalledVersions()
 	}
 
@@ -183,8 +185,12 @@ func runHeadless(opts options) int {
 		return printCatalog(opts, cat)
 	}
 
+	rows := make([]app.SelectedRow, 0, len(slugs))
+	for _, slug := range slugs {
+		rows = append(rows, app.SelectedRow{Slug: slug, Variant: model.VariantStable})
+	}
 	items, err := app.BuildPlanItems(cat, app.Selection{
-		OS: opts.targetOS, Slugs: slugs, Formats: formats, Scope: opts.scope,
+		OS: opts.targetOS, Rows: rows, Formats: formats, Scope: opts.scope, Channel: "stable",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "plan failed:", err)
@@ -214,11 +220,7 @@ func headlessInstall(ctx context.Context, opts options, client *release.Client, 
 		return 1
 	}
 
-	versionOf := map[string]string{}
-	for _, p := range cat.Plugins {
-		versionOf[p.Slug] = p.Version
-	}
-	if err := app.WriteReceipt(installed, versionOf); err != nil {
+	if err := app.WriteReceipt(installed); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
 	}
 

@@ -22,8 +22,7 @@ func TestReconcile(t *testing.T) {
 		// nam-player intentionally absent -> falls back to title-cased slug
 	}
 	installed := map[string]string{
-		"resonance-suppressor": "0.2.0", // update available
-		// nam-player not installed
+		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
 	}
 
 	cat := Reconcile("2026.2", manifest, assets, catalog, installed, nil)
@@ -48,10 +47,43 @@ func TestReconcile(t *testing.T) {
 	if rs.Name != "Resonance Suppressor" || rs.Category != "EQ" {
 		t.Errorf("catalog metadata not applied: %+v", rs)
 	}
+	if rs.Scope != model.ScopeUser || rs.Installed != "0.2.0" {
+		t.Errorf("installed identity lost: scope=%q installed=%q", rs.Scope, rs.Installed)
+	}
 	if rs.State != model.StateUpdateAvailable {
 		t.Errorf("resonance-suppressor state = %v, want UpdateAvailable", rs.State)
 	}
 	if !rs.HasFormat(model.OSMacOS, model.FormatAU) {
 		t.Error("resonance-suppressor should offer macOS AU")
+	}
+}
+
+func TestReconcileDualScopeRows(t *testing.T) {
+	manifest := map[string]string{"resonance-suppressor": "1.0.0"}
+	installed := map[string]string{
+		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser):   "0.9.0",
+		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeSystem): "1.0.0",
+	}
+	cat := Reconcile("t", manifest, nil, nil, installed, nil)
+	if len(cat.Plugins) != 2 {
+		t.Fatalf("want 2 rows for dual scope, got %d", len(cat.Plugins))
+	}
+	var sawUser, sawSystem bool
+	for _, p := range cat.Plugins {
+		switch p.Scope {
+		case model.ScopeUser:
+			sawUser = true
+			if p.State != model.StateUpdateAvailable {
+				t.Errorf("user row state = %v", p.State)
+			}
+		case model.ScopeSystem:
+			sawSystem = true
+			if p.State != model.StateUpToDate {
+				t.Errorf("system row state = %v", p.State)
+			}
+		}
+	}
+	if !sawUser || !sawSystem {
+		t.Fatalf("missing scope rows: %+v", cat.Plugins)
 	}
 }

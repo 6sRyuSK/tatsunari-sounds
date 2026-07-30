@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
@@ -57,10 +56,23 @@ type ReceiptItem struct {
 
 // EntryKey builds the stable compound key for a receipt row.
 func EntryKey(slug string, variant model.Variant, scope model.Scope) string {
-	if variant == "" {
-		variant = model.VariantStable
+	return model.EntryKey(slug, variant, scope)
+}
+
+// ParseEntryKey splits a compound receipt key.
+func ParseEntryKey(key string) (slug string, variant model.Variant, scope model.Scope, err error) {
+	return model.ParseEntryKey(key)
+}
+
+// InstalledVersions returns EntryKey → version for discovery reconciliation.
+// Keys are always slug|variant|scope (never slug alone).
+func (r *Receipt) InstalledVersions() map[string]string {
+	out := make(map[string]string, len(r.Entries))
+	for k, e := range r.Entries {
+		out[k] = e.Version
+		_ = e
 	}
-	return slug + "|" + string(variant) + "|" + string(scope)
+	return out
 }
 
 // ConfigDir returns the per-user config directory for the installer,
@@ -163,19 +175,6 @@ func migrateReceipt(r *Receipt) {
 	}
 	r.Plugins = nil
 	r.Schema = receiptSchema
-}
-
-// InstalledVersions extracts slug -> version for legacy discovery reconciliation.
-// Prefer InstalledEntries for new code.
-func (r *Receipt) InstalledVersions() map[string]string {
-	out := make(map[string]string)
-	for _, e := range r.Entries {
-		// Prefer stable+any scope; last write wins for same slug.
-		if e.Variant == string(model.VariantStable) || e.Variant == "" {
-			out[e.Slug] = e.Version
-		}
-	}
-	return out
 }
 
 // InstalledEntries returns a copy of all compound-key entries.
@@ -306,13 +305,4 @@ func unionStrings(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// ParseEntryKey splits a compound receipt key.
-func ParseEntryKey(key string) (slug string, variant model.Variant, scope model.Scope, err error) {
-	parts := strings.Split(key, "|")
-	if len(parts) != 3 {
-		return "", "", "", fmt.Errorf("invalid entry key %q", key)
-	}
-	return parts[0], model.Variant(parts[1]), model.Scope(parts[2]), nil
 }

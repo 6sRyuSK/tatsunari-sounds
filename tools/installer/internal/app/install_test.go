@@ -67,9 +67,11 @@ func TestInstallerRunUserScope(t *testing.T) {
 	dest := t.TempDir()
 	items := []model.PlanItem{{
 		Slug:        "saturator",
+		Variant:     model.VariantStable,
 		Name:        "Saturator",
 		Format:      model.FormatVST3,
 		Scope:       model.ScopeUser,
+		Version:     "0.1.3",
 		Action:      "install",
 		Asset:       model.Asset{Name: assetName, DownloadURL: srv.URL + "/" + assetName},
 		Destination: dest,
@@ -97,7 +99,7 @@ func TestInstallerRunUserScope(t *testing.T) {
 	}
 
 	// Receipt written with the plugin's version.
-	if err := WriteReceipt(installed, map[string]string{"saturator": "0.1.3"}); err != nil {
+	if err := WriteReceipt(installed); err != nil {
 		t.Fatalf("WriteReceipt: %v", err)
 	}
 	// The version came from BuildPlanItems in production; here assert receipt round-trips.

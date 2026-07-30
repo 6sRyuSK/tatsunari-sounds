@@ -200,6 +200,44 @@ func TestValidateSubpathAdversarial(t *testing.T) {
 	}
 }
 
+func TestRejectDuplicateJSONKeys(t *testing.T) {
+	withHosts(t)
+	dup := []byte(`{"schema":1,"schema":1,"generated":"2026-07-30T00:00:00Z","plugins":[]}`)
+	if _, err := updates.ParseLatest(dup); err == nil {
+		t.Fatal("duplicate top-level keys must be rejected")
+	}
+	nested := []byte(`{
+  "schema": 1,
+  "generated": "2026-07-30T00:00:00Z",
+  "channels": [{"id":"stable","name":{"en":"Stable"}}],
+  "plugins": [{
+    "slug": "x",
+    "slug": "y",
+    "variant": "stable",
+    "name": {"en": "X"},
+    "category": "EQ",
+    "vendor": "T",
+    "pluginIds": {"clapId": "jp.tatsunari-sounds.x"},
+    "latest": "1.0.0",
+    "versions": [{
+      "version": "1.0.0",
+      "channel": "stable",
+      "releasedAt": "2026-07-01T00:00:00Z",
+      "stateCompatVersion": "1.0.0",
+      "assets": [{
+        "format": "vst3", "os": "macos", "arch": "universal",
+        "url": "https://cdn.example.test/a.zip", "size": 1,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "subpath": "VST3", "bundleName": "X.vst3"
+      }]
+    }]
+  }]
+}`)
+	if _, err := updates.ParseCatalog(nested); err == nil {
+		t.Fatal("duplicate nested keys must be rejected")
+	}
+}
+
 func TestHostAllowlistFailClosed(t *testing.T) {
 	updates.SetAllowedHosts(nil)
 	t.Cleanup(func() { updates.SetAllowedHosts(nil) })

@@ -49,7 +49,7 @@ func TestReceiptRoundTrip(t *testing.T) {
 	if len(item.Paths) != 2 {
 		t.Errorf("paths should union to 2, got %v", item.Paths)
 	}
-	if v := got.InstalledVersions()["saturator"]; v != "0.1.3" {
+	if v := got.InstalledVersions()[EntryKey("saturator", model.VariantStable, model.ScopeSystem)]; v != "0.1.3" {
 		t.Errorf("InstalledVersions = %q", v)
 	}
 }

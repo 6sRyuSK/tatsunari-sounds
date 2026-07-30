@@ -62,11 +62,11 @@ type Model struct {
 
 	// version / channel (plan §1.6) — default path stays latest stable;
 	// optional keys expand a row or cycle channel without adding screens.
-	channel         string // stable | beta | dev
-	expandedSlug    string
-	pickedVersion   map[string]string // slug -> version (empty = latest for channel)
-	devOptInOK      bool
-	preselectSlugs  []string
+	channel        string // stable | beta | dev
+	expandedSlug   string
+	pickedVersion  map[string]string // slug -> version (empty = latest for channel)
+	devOptInOK     bool
+	preselectSlugs []string
 
 	// format selection (only formats that exist on this OS are offered)
 	formatOpts   []model.Format
@@ -153,7 +153,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cat = msg.cat
 			m.versionOf = map[string]string{}
 			for _, p := range m.cat.Plugins {
-				m.versionOf[p.Slug] = p.Version
+				m.versionOf[RowKey(p)] = p.Version
 			}
 			m.initSelections()
 			m.screen = screenPlugins
@@ -212,19 +212,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) initSelections() {
 	m.selected = map[string]bool{}
-	for _, p := range m.cat.Plugins {
-		if !m.pluginInstallable(p) {
-			continue
-		}
-		// Pre-select plugins that have an update available.
+	for _, p := range m.installablePlugins() {
 		if p.State == model.StateUpdateAvailable {
-			m.selected[p.Slug] = true
+			m.selected[RowKey(p)] = true
 		}
 	}
 	for _, slug := range m.preselectSlugs {
-		for _, p := range m.cat.Plugins {
-			if p.Slug == slug && m.pluginInstallable(p) {
-				m.selected[slug] = true
+		for _, p := range m.installablePlugins() {
+			if p.Slug == slug {
+				m.selected[RowKey(p)] = true
 			}
 		}
 	}
@@ -232,7 +228,6 @@ func (m *Model) initSelections() {
 	m.expandedSlug = ""
 	m.pickedVersion = map[string]string{}
 	m.channel = "stable"
-	// Default formats: everything the OS supports.
 	m.formatOpts = m.osFormats()
 	m.formatOn = map[model.Format]bool{}
 	for _, f := range m.formatOpts {
@@ -253,13 +248,13 @@ func (m Model) updatePlugins(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case keyMatches(msg, m.keys.Toggle):
 		if m.cursor < len(list) {
-			slug := list[m.cursor].Slug
-			m.selected[slug] = !m.selected[slug]
+			key := RowKey(list[m.cursor])
+			m.selected[key] = !m.selected[key]
 		}
 	case keyMatches(msg, m.keys.All):
 		for _, p := range list {
 			if p.State == model.StateUpdateAvailable {
-				m.selected[p.Slug] = true
+				m.selected[RowKey(p)] = true
 			}
 		}
 	case keyMatches(msg, m.keys.Versions):
@@ -377,7 +372,7 @@ func (m Model) beginInstall() (tea.Model, tea.Cmd) {
 	ch := make(chan tea.Msg, 32)
 	m.installCh = ch
 	installer := &app.Installer{Client: m.client, Checksums: m.cat.Checksums, OS: m.targetOS, SelfInstall: true}
-	return m, startInstall(ch, installer, m.items, m.scope, m.versionOf)
+	return m, startInstall(ch, installer, m.items, m.scope)
 }
 
 func (m *Model) applyProgress(ev app.ProgressEvent) {
@@ -397,13 +392,29 @@ func (m Model) restart() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// buildPlan resolves the current selection into plan items.
+// buildPlan resolves the current selection into plan items, carrying channel,
+// variant, per-row scope, and picked versions into each PlanItem.
 func (m *Model) buildPlan() error {
-	sel := app.Selection{OS: m.targetOS, Scope: m.scope}
+	sel := app.Selection{OS: m.targetOS, Scope: m.scope, Channel: m.channel}
+	wantVariant := model.VariantForChannel(m.channel)
 	for _, p := range m.installablePlugins() {
-		if m.selected[p.Slug] {
-			sel.Slugs = append(sel.Slugs, p.Slug)
+		if !m.selected[RowKey(p)] {
+			continue
 		}
+		variant := p.Variant
+		if variant == "" {
+			variant = wantVariant
+		}
+		ver := m.pickedVersion[p.Slug]
+		if ver == "" {
+			ver = p.Version
+		}
+		sel.Rows = append(sel.Rows, app.SelectedRow{
+			Slug:    p.Slug,
+			Variant: variant,
+			Scope:   p.Scope, // empty → Selection.Scope
+			Version: ver,
+		})
 	}
 	for _, f := range m.formatOpts {
 		if m.formatOn[f] {
@@ -415,5 +426,9 @@ func (m *Model) buildPlan() error {
 		return err
 	}
 	m.items = items
+	m.versionOf = map[string]string{}
+	for _, it := range items {
+		m.versionOf[model.EntryKey(it.Slug, it.Variant, it.Scope)] = it.Version
+	}
 	return nil
 }

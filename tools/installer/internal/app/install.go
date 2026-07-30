@@ -184,13 +184,9 @@ func (in *Installer) verify(zipPath, assetName string) error {
 	return release.Verify(zipPath, want)
 }
 
-// WriteReceipt records the installed items into the receipt for their scope.
-// User-scope rows are written by the unprivileged parent (user-owned file).
-// System-scope rows are recorded into an in-memory receipt that the caller
-// must persist via the elevated path (SaveForScope); for the transitional
-// GitHub-release path we still write system rows into the user receipt so
-// reconcile keeps working until __apply owns system receipts (plan §5.5).
-func WriteReceipt(installed []InstalledItem, versionOf map[string]string) error {
+// WriteReceipt records the installed items into the receipt for their
+// (slug, variant, scope), using PlanItem.Version as the installed version.
+func WriteReceipt(installed []InstalledItem) error {
 	if len(installed) == 0 {
 		return nil
 	}
@@ -201,6 +197,7 @@ func WriteReceipt(installed []InstalledItem, versionOf map[string]string) error 
 	type agg struct {
 		scope   model.Scope
 		variant model.Variant
+		version string
 		formats []model.Format
 		paths   []string
 	}
@@ -213,19 +210,21 @@ func WriteReceipt(installed []InstalledItem, versionOf map[string]string) error 
 		key := install.EntryKey(ii.Item.Slug, variant, ii.Item.Scope)
 		a := byKey[key]
 		if a == nil {
-			a = &agg{scope: ii.Item.Scope, variant: variant}
+			a = &agg{scope: ii.Item.Scope, variant: variant, version: ii.Item.Version}
 			byKey[key] = a
 		}
 		a.formats = append(a.formats, ii.Item.Format)
 		a.paths = append(a.paths, ii.Dst)
+		if ii.Item.Version != "" {
+			a.version = ii.Item.Version
+		}
 	}
 	for key, a := range byKey {
 		slug, variant, scope, err := install.ParseEntryKey(key)
 		if err != nil {
 			return err
 		}
-		r.Record(slug, variant, versionOf[slug], scope, a.formats, a.paths)
-		_ = a.variant
+		r.Record(slug, variant, a.version, scope, a.formats, a.paths)
 	}
 	return r.Save()
 }

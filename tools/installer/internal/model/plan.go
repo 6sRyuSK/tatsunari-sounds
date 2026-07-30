@@ -39,6 +39,8 @@ type PlanItem struct {
 	Name        string
 	Format      Format
 	Scope       Scope
+	Version     string // selected version to install (receipt + download)
+	Channel     string // stable | beta | dev
 	Action      string // "install" or "update"
 	Asset       Asset
 	Destination string // final bundle dir

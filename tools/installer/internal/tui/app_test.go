@@ -16,7 +16,9 @@ func fakeCatalog() release.Catalog {
 		{Name: "resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rsau"},
 		{Name: "nam-player-v0_1_0-macOS-VST3.zip", DownloadURL: "https://x/nam"},
 	}})
-	installed := map[string]string{"resonance-suppressor": "0.2.0"} // update available
+	installed := map[string]string{
+		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
+	}
 	return release.Reconcile("2026.2", manifest, assets, nil, installed, nil)
 }
 
@@ -47,10 +49,12 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 		t.Fatalf("after discovery, screen = %v, want plugins", m.screen)
 	}
 	// resonance-suppressor has an update -> pre-selected; nam-player not.
-	if !m.selected["resonance-suppressor"] {
+	rsKey := model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser)
+	namKey := model.EntryKey("nam-player", model.VariantStable, "")
+	if !m.selected[rsKey] {
 		t.Error("update-available plugin should be pre-selected")
 	}
-	if m.selected["nam-player"] {
+	if m.selected[namKey] {
 		t.Error("fresh plugin should not be pre-selected")
 	}
 
@@ -97,9 +101,10 @@ func TestSelectAllUpdatable(t *testing.T) {
 	m = step(t, m, discoveredMsg{cat: fakeCatalog()})
 
 	// Deselect everything by toggling the pre-selected one off, then 'a'.
-	m.selected["resonance-suppressor"] = false
+	rsKey := model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser)
+	m.selected[rsKey] = false
 	m = step(t, m, keyPress("a"))
-	if !m.selected["resonance-suppressor"] {
+	if !m.selected[rsKey] {
 		t.Error("'a' should select all updatable plugins")
 	}
 }

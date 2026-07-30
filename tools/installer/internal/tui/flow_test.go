@@ -103,11 +103,11 @@ func TestPluginCursorAndToggle(t *testing.T) {
 		t.Errorf("cursor = %d, want clamped to %d", m.cursor, len(list)-1)
 	}
 	// Toggle flips the plugin under the cursor.
-	slug := list[m.cursor].Slug
-	before := m.selected[slug]
+	key := RowKey(list[m.cursor])
+	before := m.selected[key]
 	m = step(t, m, keyPress("space"))
-	if m.selected[slug] == before {
-		t.Errorf("toggle did not flip %q", slug)
+	if m.selected[key] == before {
+		t.Errorf("toggle did not flip %q", key)
 	}
 }
 

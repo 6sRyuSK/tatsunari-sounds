@@ -65,6 +65,15 @@ func (m Model) installablePlugins() []model.Plugin {
 	return out
 }
 
+// RowKey is the TUI selection identity for one Plugin row.
+func RowKey(p model.Plugin) string {
+	v := p.Variant
+	if v == "" {
+		v = model.VariantStable
+	}
+	return model.EntryKey(p.Slug, v, p.Scope)
+}
+
 func (m Model) anySelected() bool {
 	for _, v := range m.selected {
 		if v {

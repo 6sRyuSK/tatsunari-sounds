@@ -43,15 +43,16 @@ func discoverCmd(c *release.Client, osID model.OS) tea.Cmd {
 
 // startInstall launches the install worker, streaming progress into ch and a
 // final installDoneMsg. The elevation prompt (if system scope) happens inside
-// the worker, off the UI goroutine.
-func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanItem, scope model.Scope, versionOf map[string]string) tea.Cmd {
+// the worker, off the UI goroutine. PlanItem.Version/Variant/Scope drive the
+// receipt; versionOf maps are no longer required.
+func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanItem, scope model.Scope) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			res, installed, err := installer.Run(context.Background(), items, scope, func(ev app.ProgressEvent) {
 				ch <- progressMsg(ev)
 			})
 			if err == nil && len(installed) > 0 {
-				_ = app.WriteReceipt(installed, versionOf)
+				_ = app.WriteReceipt(installed)
 			}
 			ch <- installDoneMsg{result: res, err: err}
 			close(ch)

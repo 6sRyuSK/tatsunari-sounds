@@ -76,7 +76,7 @@ func (m Model) viewPlugins() string {
 			cursor = m.st.Cursor.Render("▸ ")
 		}
 		check := m.st.Dim.Render("☐")
-		if m.selected[p.Slug] {
+		if m.selected[RowKey(p)] {
 			check = m.st.Check.Render("☑")
 		}
 		nameStyle := m.st.Item

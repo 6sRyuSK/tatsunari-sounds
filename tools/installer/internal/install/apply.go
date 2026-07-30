@@ -65,15 +65,7 @@ func ValidatePlan(plan model.InstallPlan, allowedRoots []string, stagingRoot str
 
 // installBundle replaces the destination bundle dir with the staged one.
 func installBundle(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(dst); err == nil {
-		if err := os.RemoveAll(dst); err != nil {
-			return fmt.Errorf("remove old bundle: %w", err)
-		}
-	}
-	return copyTree(src, dst)
+	return installPath(src, dst)
 }
 
 // copyTree recursively copies a directory tree, preserving file modes and
