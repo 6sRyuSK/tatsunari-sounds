@@ -6,7 +6,7 @@
 
 > **運用ルール**: 実装 PR は対応するプランのチェックリストと受け入れ条件を引用し、
 > 完了した項目だけを更新する。複数セクションを同時に変更するときも、検証結果は
-> セクション別に記録する。出荷、署名、公証、ドメイン取得は人間の明示承認なしに行わない。
+> セクション別に記録する。出荷、署名、公証、DNS 本番変更は人間の明示承認なしに行わない。
 
 ## セクション別プラン
 
@@ -15,7 +15,7 @@
 | 0 | [背景・目的](update-notification-and-distribution/00-background-and-goals.md) | スコープ、非目標、成功指標 |
 | 1 | [決定事項・製品要件](update-notification-and-distribution/01-decisions-and-product-requirements.md) | バッジ、TUI、variant、商標表現の仕様 |
 | 2 | [設計不変条件](update-notification-and-distribution/02-design-invariants.md) | 自動検証ゲート、セキュリティ境界 |
-| 3 | [`/updates/v1/` スキーマ](update-notification-and-distribution/03-updates-v1-schema.md) | JSON Schema、fixture、署名・互換性試験 |
+| 3 | [`/tatsunarisounds/updates/v1/` スキーマ](update-notification-and-distribution/03-updates-v1-schema.md) | JSON Schema、fixture、署名・互換性試験 |
 | 4 | [配置先](update-notification-and-distribution/04-installation-destinations.md) | scope × subpath、昇格、起動導線 |
 | 5 | [配信・インストーラ作業](update-notification-and-distribution/05-distribution-and-installer-work.md) | R2、Worker、bootstrap、自己配置、受領書 |
 | 6 | [ドメイン決定](update-notification-and-distribution/06-open-domain-decision.md) | 人間による名称決定と DNS 設計 |

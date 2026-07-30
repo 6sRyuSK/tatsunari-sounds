@@ -1,17 +1,17 @@
-# 3. `/updates/v1/` スキーマ設計
+# 3. `/tatsunarisounds/updates/v1/` スキーマ設計
 
 ### 3.1 ファイル構成
 
 用途で 2 本に分ける。バッジは数百バイトで済み、CDN 負荷も最小になる。
 
 ```
-/updates/v1/
+/tatsunarisounds/updates/v1/
   latest.json                       バッジ専用。極小。TTL 60s + ETag
   latest.json.minisig
   catalog.json                      インストーラ用。全チャンネル・全バージョン
   catalog.json.minisig
   channels/{stable,beta,dev}.json   catalog を分割する場合
-/artifacts/<slug>/<version>/<file>.zip   不変・長期 immutable
+/tatsunarisounds/artifacts/<slug>/<version>/<file>.zip   不変・長期 immutable
 ```
 
 ### 3.2 バッジ用 `latest.json`
@@ -72,7 +72,7 @@
 |---|---|---|
 | `os` | ✓ | `macos` / `windows` |
 | `arch` | ✓ | `arm64` / `amd64` |
-| `url` | ✓ | `/artifacts/installer/<version>/tatsunari-<os>-<arch>` |
+| `url` | ✓ | `/tatsunarisounds/artifacts/installer/<version>/tatsunari-<os>-<arch>` |
 | `size` | ✓ | バイト数 |
 | `sha256` | ✓ | ブートストラップが検証に使う |
 
@@ -80,7 +80,7 @@
 > `tatsunari-<os>-<arch>` の複数バイナリとして配信される（5.1）ため、ブートストラップが
 > 対象を選べる構造が必要。加えて、5.1 の信頼モデルは「スクリプトが SHA-256 で検証」を
 > 前提にしているので、**ハッシュがスキーマ上に存在しなければその検証が成立しない**。
-> `/updates/v1/` を凍結する前にこの形にすること。
+> `/tatsunarisounds/updates/v1/` を凍結する前にこの形にすること。
 
 > 不変条件 3 により、`latest` / `minSupported` は**閉じられる通知の材料**にしか
 > 使わない（強制更新の判断には使わない）。
@@ -159,7 +159,10 @@
 
 - JSON は UTF-8、時刻は UTC の RFC 3339、サイズは非負整数、SHA-256 は小文字 64 桁。
 - SemVer は `MAJOR.MINOR.PATCH` を必須とし、stable では prerelease/build metadata を拒否する。
-- URL は HTTPS の絶対 URLとし、許可済み独自 host のみ。redirect 後も host を再検証する。
+- URL は HTTPS の絶対 URL とし、host は `6sryusk.com` とする。update feed の取得先は
+  `/tatsunarisounds/updates/v1/`、ダウンロード対象は `/tatsunarisounds/artifacts/`、
+  `changelogUrl` は `/tatsunarisounds/notes/` 配下だけを許可する。redirect 後も host と
+  フィールド用途に対応する path prefix の両方を再検証する。
 - `slug`、channel、variant、format、OS、arch は ASCII の列挙値として比較する。
 - 多言語値は `en` を必須 fallback とし、未知 locale は無視する。
 - 重複する `(slug, variant)`、version、asset `(format, os, arch)` は manifest 全体の生成エラー。

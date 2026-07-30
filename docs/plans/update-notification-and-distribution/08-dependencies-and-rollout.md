@@ -8,7 +8,7 @@
 PR プレビュー ────（完全に独立）
 ```
 
-1. **ドメイン取得 + R2 移行 + スキーマ確定 + 配置先データ駆動化** — バッジより
+1. **公開 URL 確定 + R2 移行 + スキーマ確定 + 配置先データ駆動化** — バッジより
    必ず先。出荷済みバイナリに URL が焼き込まれるため後戻りできない。
 2. **インストーラの自己インストール（5.4）** — バッジのダイアログからの起動導線の
    前提。
@@ -28,7 +28,7 @@ PR プレビューは上記と独立。段階 1 のみなら即着手可能。
 
 | Phase | 内容 | Exit criteria |
 |---|---|---|
-| A | ドメイン、脅威モデル、schema fixture | 人間承認、parser/generator 全 fixture pass |
+| A | 公開 URL、脅威モデル、schema fixture | 6.1 の人間承認、parser/generator 全 fixture pass |
 | B | R2 staging、promote/rollback | immutable/TTL、backup key drill が pass |
 | C | resolver、scope、CLAP、受領書 | OS × scope 統合試験、旧版互換が pass |
 | D | TUI 機能と自己配置 | headless/golden、権限失敗 rollback が pass |

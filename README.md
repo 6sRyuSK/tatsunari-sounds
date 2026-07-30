@@ -15,7 +15,7 @@ UI は JUCE 非依存の Visage 製です（JUCE 製のバイナリを出荷す�
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
 | Dynamic Tatsunari EQ | EQ | 2.0.0 | VST3, AU | Multiband dynamic EQ with per-band detection |
-| Resonance TatSuppressor | EQ | 3.1.0 | VST3, AU | Dynamic spectral resonance / harshness suppression |
+| Resonance TatSuppressor | EQ | 3.1.1 | VST3, AU | Dynamic spectral resonance / harshness suppression |
 
 
 ### In progress (1)

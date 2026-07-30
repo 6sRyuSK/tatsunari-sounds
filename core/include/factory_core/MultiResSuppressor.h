@@ -241,8 +241,15 @@ namespace factory_core
         // Merge the two engines' magnitude spectra onto the low (display) grid:
         // bins below kSplitHz come from the low engine verbatim, bins at/above it
         // are resampled from the high engine (linear in dB along log-frequency).
-        // `scratch` is caller-owned, sized numBins(); an internal buffer holds the
-        // high engine's grid (GUI thread only, benign race like the meters).
+        // `scratch` is caller-owned, sized numBins(); the internal `mergeHi` buffer
+        // holds the high engine's grid.
+        //
+        // THREAD CONTRACT: `mergeHi` is preallocated in prepare() (so this call
+        // allocates nothing and IS callable from the audio thread — RsCore::process
+        // does exactly that, under its showDisplay gate), but it is SHARED, caller-
+        // owned scratch: this must be called from ONE thread at a time. Calling it
+        // from the GUI thread while the audio thread is inside it is a real data
+        // race on mergeHi, not the benign per-scalar race the meters have.
         const double* magnitudeDb (double* scratch) const noexcept
         {
             lowEng.magnitudeDb (scratch);          // low grid, in dB
@@ -254,7 +261,8 @@ namespace factory_core
         // Pre-gain (input) magnitude merge (Phase 5a-1-A): the same low/high
         // grid merge as magnitudeDb(), but sourced from each sub-engine's
         // magnitudePreDb() (the input spectrum ahead of suppression). Reuses the
-        // mergeHi scratch (GUI thread only, benign race like the meters).
+        // mergeHi scratch, so the same one-thread-at-a-time contract as
+        // magnitudeDb() applies (see above).
         const double* magnitudePreDb (double* scratch) const noexcept
         {
             lowEng.magnitudePreDb (scratch);

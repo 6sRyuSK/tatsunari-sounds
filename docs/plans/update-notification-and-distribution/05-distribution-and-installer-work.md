@@ -8,10 +8,10 @@
 - **`tools/release_plan.py` の差分判定** — 「前回リリースの `manifest.json`」を
   GitHub ではなく R2 から取得するよう変更。
 - **bootstrap スクリプトの移転** — 現在 `raw.githubusercontent.com` 配信。
-  CDN ドメインへ。
+  `https://6sryusk.com/tatsunarisounds/` の固定パスへ。
 - **リリースノートの置き場所** — GitHub Releases の UI が無くなるため代替が要る。
   **決定**: repo にソースを置き（`plugins/<slug>/CHANGELOG.md`）、リリース時に CDN へ
-  publish（`/notes/<slug>/<version>.md`）。`catalog.json` の `changelogUrl` がここを
+  publish（`/tatsunarisounds/notes/<slug>/<version>.md`）。`catalog.json` の `changelogUrl` がここを
   指す。**git が真実の源、CDN は配信**という関係を崩さない。GitHub Releases のノートは
   失うが、`CHANGELOG.md` が repo に残るので追跡性はむしろ上がる。
 - **git tag は残す**（無料、追跡性が保てる。「Release を作らない」だけでよい）。
@@ -23,10 +23,10 @@ Cloudflare 配信**になる。
 
 | 対象 | 配置 | キャッシュ |
 |---|---|---|
-| プラグイン成果物 | `/artifacts/<slug>/<version>/…` | 不変・長期 immutable |
-| インストーラバイナリ | `/artifacts/installer/<version>/tatsunari-<os>-<arch>` | 不変・長期 immutable |
-| `latest.json` / `catalog.json` | `/updates/v1/` | 短 TTL 60s + ETag |
-| **ブートストラップスクリプト** | 例 `/install.sh` / `/install.ps1` | **短 TTL + ETag** |
+| プラグイン成果物 | `/tatsunarisounds/artifacts/<slug>/<version>/…` | 不変・長期 immutable |
+| インストーラバイナリ | `/tatsunarisounds/artifacts/installer/<version>/tatsunari-<os>-<arch>` | 不変・長期 immutable |
+| `latest.json` / `catalog.json` | `/tatsunarisounds/updates/v1/` | 短 TTL 60s + ETag |
+| **ブートストラップスクリプト** | 例 `/tatsunarisounds/install.sh` / `/tatsunarisounds/install.ps1` | **短 TTL + ETag** |
 
 インストーラバイナリの発見は `catalog.json` の `client.assets[]`（3.3）で既に表現できる。
 
