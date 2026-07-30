@@ -70,6 +70,21 @@ namespace rs_ui
 
     void RsNodePanel::setNode (int id)
     {
+        // Close an in-flight mini-knob drag on the OLD paramIndex BEFORE the knobs
+        // are rebound. mouseDrag/mouseUp re-read paramIndex from the MiniKnob every
+        // time, so a rebind mid-drag would (a) write dragNorm_ — a normalised value
+        // of the OLD range — into the NEWLY selected node's parameter, and (b) send
+        // the endGesture to that new parameter, stranding the old one in a
+        // begin-without-end the host can latch in touch/write. Same fix shape as
+        // factory_ui_visage::Knob::rebind. (Reachable from RsEditor::selectNode via
+        // a curve-view node click / preset / A-B switch while a knob is held.)
+        if (dragKnob_ >= 0)
+        {
+            model_.store().endGesture (minis()[(std::size_t) dragKnob_]->paramIndex);
+            dragKnob_ = -1;
+            if (onGestureEnd) onGestureEnd();
+        }
+
         nodeId_ = id;
         isCut_ = RsProfileModel::isCut (id);
         choiceCount_ = isCut_ ? 4 : 6;

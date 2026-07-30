@@ -3,10 +3,12 @@
 #include "factory_params/ParamDesc.h"
 #include "factory_params/Range.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 //
@@ -58,23 +60,45 @@ namespace factory_params
               queue  (static_cast<std::size_t> (kHostWriteSlots))
         {
             ranges.reserve (descriptors.size());
+            byUid.reserve (descriptors.size());
             for (std::size_t i = 0; i < descriptors.size(); ++i)
             {
                 ranges.push_back (makeRange (descriptors[i]));
                 values[i].store (descriptors[i].defaultValue, std::memory_order_relaxed);
                 epochs[i].store (0, std::memory_order_relaxed);
+                // Hash the id here rather than trusting desc.uid: a hand-written
+                // table may leave uid at 0, and indexOf must work regardless.
+                byUid.emplace_back (fnv1a32 (descriptors[i].id), i);
             }
+            std::sort (byUid.begin(), byUid.end());
         }
 
         // --- lookup -----------------------------------------------------------
         int size() const noexcept { return static_cast<int> (descriptors.size()); }
         const ParamDesc& desc (int idx) const noexcept { return descriptors[static_cast<std::size_t> (idx)]; }
 
+        // Binary search over the uid-sorted (uid -> index) table built in the
+        // constructor. Callers build "name -> index" caches by calling this once per
+        // parameter, so a linear scan made that O(n^2): dynamic-eq's 361 parameters
+        // cost ~130k string compares per cache (shell + curve view + every band
+        // switch). Hashing first makes each lookup O(log n) with ONE string compare
+        // on the hit (uid collisions fall back to comparing the remaining run).
         int indexOf (std::string_view id) const noexcept
         {
-            for (std::size_t i = 0; i < descriptors.size(); ++i)
-                if (descriptors[i].id == id)
-                    return static_cast<int> (i);
+            const std::uint32_t uid = fnv1a32 (id);
+            std::size_t lo = 0, hi = byUid.size();
+            while (lo < hi)                              // lower_bound on uid
+            {
+                const std::size_t mid = lo + ((hi - lo) >> 1);
+                if (byUid[mid].first < uid) lo = mid + 1;
+                else                        hi = mid;
+            }
+            for (; lo < byUid.size() && byUid[lo].first == uid; ++lo)
+            {
+                const std::size_t idx = byUid[lo].second;
+                if (descriptors[idx].id == id)
+                    return static_cast<int> (idx);
+            }
             return -1;
         }
 
@@ -192,6 +216,9 @@ namespace factory_params
         std::vector<std::atomic<float>>          values;   // sized from descriptors
         std::vector<std::atomic<std::uint32_t>>  epochs;   // sized from descriptors
         std::vector<RangeSpec>                   ranges;   // one per parameter (snap/clamp)
+        // (fnv1a32(id) -> index into descriptors), sorted by uid — indexOf's index.
+        // Built once in the constructor; const for the store's lifetime.
+        std::vector<std::pair<std::uint32_t, std::size_t>> byUid;
 
         std::vector<HostWrite>       queue;                // fixed size == kHostWriteSlots
         std::atomic<std::size_t>     queueHead { 0 };      // producer (UI) index

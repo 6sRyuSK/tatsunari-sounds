@@ -141,6 +141,13 @@ libxrandr-dev libxrender-dev libfreetype-dev libfontconfig1-dev mesa-common-dev
 libgl1-mesa-dev` for the VST3 SDK + the Visage GUIs), plus `libasound2-dev`
 ONLY if the JUCE oracles are on; Linux builds are for local verification only —
 it is not a shipping target.
+If the configure dies on `Build step for freetype failed` you are behind an egress
+proxy that blocks `gitlab.freedesktop.org` (visage's FreeType remote). Clone the
+GitHub mirror once and point the build at it — no repo edit, no proxy bypass:
+`git clone --depth 1 -b VER-2-14-1 https://github.com/freetype/freetype.git <dir>`
+then add `-DFACTORY_FREETYPE_MIRROR_DIR=<dir>` to every configure. Without it NO
+active plugin configures at all (the shell pulls Visage), so plugin CTest is
+unavailable — treat a missing mirror as "cannot verify locally", never as green.
 
 ## Architecture rules
 - DSP lives in a plain C++ class **separable from the plugin framework**,
