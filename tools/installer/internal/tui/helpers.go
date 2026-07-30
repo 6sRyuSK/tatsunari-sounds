@@ -34,9 +34,9 @@ func keyMatches(msg tea.KeyMsg, b key.Binding) bool {
 // osFormats returns the formats available on the target OS (AU only on macOS).
 func (m Model) osFormats() []model.Format {
 	if m.targetOS == model.OSMacOS {
-		return []model.Format{model.FormatVST3, model.FormatAU}
+		return []model.Format{model.FormatVST3, model.FormatAU, model.FormatCLAP}
 	}
-	return []model.Format{model.FormatVST3}
+	return []model.Format{model.FormatVST3, model.FormatCLAP}
 }
 
 // pluginInstallable reports whether a plugin has any asset for this OS.

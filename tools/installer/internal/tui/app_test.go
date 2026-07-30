@@ -59,8 +59,8 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 	if m.screen != screenFormats {
 		t.Fatalf("screen = %v, want formats", m.screen)
 	}
-	if len(m.formatOpts) != 2 {
-		t.Errorf("macOS should offer VST3+AU, got %v", m.formatOpts)
+	if len(m.formatOpts) != 3 {
+		t.Errorf("macOS should offer VST3+AU+CLAP, got %v", m.formatOpts)
 	}
 
 	// enter -> scope

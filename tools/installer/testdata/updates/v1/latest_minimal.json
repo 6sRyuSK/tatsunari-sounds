@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "generated": "2026-07-30T00:00:00Z",
+  "plugins": [
+    {
+      "slug": "resonance-suppressor",
+      "latest": "1.0.0"
+    }
+  ]
+}

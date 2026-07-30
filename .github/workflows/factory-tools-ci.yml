@@ -55,6 +55,10 @@ jobs:
       - name: Skill reference freshness
         run: python tools/check_skill_refs.py
 
+      # Gate stable/dev CLAP ID + AU subtype uniqueness (plan §1.6).
+      - name: Plugin identity uniqueness
+        run: python tools/check_plugin_ids.py --check
+
       # Stdlib-only unit tests for gen_catalog.py, release_plan.py and
       # check_skill_refs.py.
       - name: Unit tests

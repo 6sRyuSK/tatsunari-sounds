@@ -297,9 +297,10 @@ func TestViewsRenderAcrossScreens(t *testing.T) {
 	}
 }
 
-func TestWindowsOffersOnlyVST3(t *testing.T) {
+func TestWindowsOffersVST3AndCLAP(t *testing.T) {
 	m := New(nil, model.OSWindows)
-	if got := m.osFormats(); len(got) != 1 || got[0] != model.FormatVST3 {
-		t.Errorf("Windows osFormats = %v, want [VST3]", got)
+	got := m.osFormats()
+	if len(got) != 2 || got[0] != model.FormatVST3 || got[1] != model.FormatCLAP {
+		t.Errorf("Windows osFormats = %v, want [VST3 CLAP]", got)
 	}
 }

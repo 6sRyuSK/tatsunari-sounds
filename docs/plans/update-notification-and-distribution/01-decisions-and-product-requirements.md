@@ -103,7 +103,7 @@
 
 | 項目 | 決定 |
 |---|---|
-| CLAP ID | サフィックス `.dev`（`com.tatsunari-sounds.<slug>.dev`） |
+| CLAP ID | サフィックス `.dev`（`jp.tatsunari-sounds.<slug>.dev`） |
 | VST3 UID | CLAP ID から決定論的に派生 |
 | AU subtype | 末尾 1 文字を `D` に置換 |
 | AU manufacturer | 同一のまま（同一ベンダー） |

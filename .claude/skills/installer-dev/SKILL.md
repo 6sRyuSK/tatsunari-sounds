@@ -51,9 +51,14 @@ go run . --no-tui --dry-run        --os Windows --plugins resonance-suppressor -
   `__apply` は宛先を install-root **allowlist** で、ソースを staging dir で
   再検証してから move する(改竄された plan が任意特権書き込みにならないため)。
   この検証を弱めない。
-- **receipt は常に非特権の親が書く**(root で書くと以後の per-user 更新が壊れる)。
+- **receipt**: schema 2 keys are `(slug, variant, scope)`. User receipts stay
+  user-owned (non-privileged parent). System receipts live under
+  `/Library/Application Support/…` / `%ProgramData%\…` and are written by
+  `__apply` (plan §5.5). Legacy v1 slug-keyed files migrate on read.
 - per-user スコープは昇格なしで in-process 適用。
-- ダウンロードは HTTPS のみ + `SHA256SUMS.txt` 照合してから展開。
+- ダウンロードは HTTPS のみ + checksum / catalog sha256 照合してから展開。
+- 自己配置（plan §5.4）: apply 計画に実行中バイナリのコピーを含め、scope の
+  installer bin へ置く。探索順は user → system（PATH 非依存）。
 - 詳細・手動 smoke 手順は `tools/installer/README.md`(必要時のみ)。
 
 ## リリースとの関係

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -42,9 +43,10 @@ type InstalledItem struct {
 // Installer stages downloads under a private temp dir and applies them under
 // the requested scope (one elevation prompt for system scope).
 type Installer struct {
-	Client    *release.Client
-	Checksums release.Checksums
-	OS        model.OS
+	Client      *release.Client
+	Checksums   release.Checksums
+	OS          model.OS
+	SelfInstall bool // copy this executable into the scope's installer bin (plan §5.4)
 }
 
 type stagedItem struct {
@@ -119,6 +121,30 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 		}
 	}
 
+	if in.SelfInstall {
+		exe, err := os.Executable()
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("self-install: resolve executable: %v", err))
+		} else {
+			selfDir := filepath.Join(stageDir, "self")
+			if err := os.MkdirAll(selfDir, 0o700); err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("self-install: stage dir: %v", err))
+			} else {
+				stagedBin := filepath.Join(selfDir, install.InstallerBinaryName(in.OS))
+				if err := copyFileSimple(exe, stagedBin); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("self-install: stage binary: %v", err))
+				} else {
+					mv, err := install.SelfInstallMove(in.OS, scope, stagedBin)
+					if err != nil {
+						result.Errors = append(result.Errors, fmt.Sprintf("self-install: %v", err))
+					} else {
+						moves = append(moves, mv)
+					}
+				}
+			}
+		}
+	}
+
 	if len(moves) == 0 {
 		return result, nil, nil // nothing staged; only errors (if any)
 	}
@@ -158,9 +184,12 @@ func (in *Installer) verify(zipPath, assetName string) error {
 	return release.Verify(zipPath, want)
 }
 
-// WriteReceipt records the installed items into the user receipt, grouping by
-// slug (versions from the plan items). Always called from the unprivileged
-// parent so the receipt stays user-owned.
+// WriteReceipt records the installed items into the receipt for their scope.
+// User-scope rows are written by the unprivileged parent (user-owned file).
+// System-scope rows are recorded into an in-memory receipt that the caller
+// must persist via the elevated path (SaveForScope); for the transitional
+// GitHub-release path we still write system rows into the user receipt so
+// reconcile keeps working until __apply owns system receipts (plan §5.5).
 func WriteReceipt(installed []InstalledItem, versionOf map[string]string) error {
 	if len(installed) == 0 {
 		return nil
@@ -171,21 +200,49 @@ func WriteReceipt(installed []InstalledItem, versionOf map[string]string) error 
 	}
 	type agg struct {
 		scope   model.Scope
+		variant model.Variant
 		formats []model.Format
 		paths   []string
 	}
-	bySlug := map[string]*agg{}
+	byKey := map[string]*agg{}
 	for _, ii := range installed {
-		a := bySlug[ii.Item.Slug]
+		variant := ii.Item.Variant
+		if variant == "" {
+			variant = model.VariantStable
+		}
+		key := install.EntryKey(ii.Item.Slug, variant, ii.Item.Scope)
+		a := byKey[key]
 		if a == nil {
-			a = &agg{scope: ii.Item.Scope}
-			bySlug[ii.Item.Slug] = a
+			a = &agg{scope: ii.Item.Scope, variant: variant}
+			byKey[key] = a
 		}
 		a.formats = append(a.formats, ii.Item.Format)
 		a.paths = append(a.paths, ii.Dst)
 	}
-	for slug, a := range bySlug {
-		r.Record(slug, versionOf[slug], a.scope, a.formats, a.paths)
+	for key, a := range byKey {
+		slug, variant, scope, err := install.ParseEntryKey(key)
+		if err != nil {
+			return err
+		}
+		r.Record(slug, variant, versionOf[slug], scope, a.formats, a.paths)
+		_ = a.variant
 	}
 	return r.Save()
+}
+
+func copyFileSimple(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

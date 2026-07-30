@@ -146,15 +146,12 @@
 - テレメトリ送信先 URL（不変条件 9）
 - クライアントの挙動を変えるリモート設定フラグ
 
-### 3.5 既知の問題: `reference` の公開
+### 3.5 `reference` フィールド
 
-`plugins/<slug>/plugin.toml` は `reference = "oeksound soothe2"` のような**競合
-製品名**を持つ。`tools/gen_catalog.py --emit-json` はこれをそのまま出力し、
-`installer.yml` がリリース資産として添付しているため、**現在すでに公開されて
-いる**。
-
-新スキーマでは `reference` を**公開カタログから除外**する。内部の設計意図で
-あってユーザーに見せるものではない。
+`plugins/<slug>/plugin.toml` の `reference` は内部の設計意図であり、ユーザー向け面に
+出すものではない。値の一般名称化（§1.8）は完了済み。**新スキーマでは `reference` を
+公開カタログからフィールドごと除外する**（parser は出現時にその plugin 行を拒否）。
+過去の GitHub Release 添付 `catalog.json` に残る値は、R2 移行後に陳腐化する。
 
 ---
 

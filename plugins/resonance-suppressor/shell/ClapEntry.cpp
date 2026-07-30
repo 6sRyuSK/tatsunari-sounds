@@ -63,7 +63,7 @@ namespace
         "",                                           // manual_url
         "",                                           // support_url
         RS_CLAP_VERSION,                              // version (from plugin.toml)
-        "Soothe-style dynamic resonance suppressor",  // description
+        "Dynamic spectral resonance / harshness suppression",  // description
         s_features
     };
 

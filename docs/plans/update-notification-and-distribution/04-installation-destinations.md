@@ -12,6 +12,17 @@
 | 全ユーザー | `/Library/Audio/Plug-Ins` | `%CommonProgramFiles%` | 要 |
 | ユーザー | `~/Library/Audio/Plug-Ins` | `%LOCALAPPDATA%\Programs\Common` | 不要 |
 
+#### 既定 `subpath`（カタログ未宣言時 / レガシー zip）
+
+| OS | Format | subpath |
+|---|---|---|
+| macOS | VST3 | `VST3` |
+| macOS | AU | `Components` |
+| macOS | CLAP | `CLAP` |
+| Windows | VST3 (system) | `VST3/tatsunari-sounds` |
+| Windows | VST3 (user) | `VST3` |
+| Windows | CLAP | `CLAP` |
+
 カスタムパス指定は仕様から落としたため（1.7）、**ルートはバイナリ内の enum
 2 通りだけ**。これにより `__apply` の許可リストが完全に閉じる（不変条件 5）。
 

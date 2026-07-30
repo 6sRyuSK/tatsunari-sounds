@@ -62,12 +62,36 @@ func TestDestinationWindows(t *testing.T) {
 
 func TestInstallRoots(t *testing.T) {
 	t.Setenv("HOME", "/Users/tester")
+	t.Setenv("APPDATA", "/Users/tester/AppData/Roaming")
+	t.Setenv("ProgramData", `C:\ProgramData`)
+	t.Setenv("ProgramFiles", `C:\Program Files`)
+	t.Setenv("CommonProgramFiles", `C:\Program Files\Common Files`)
+	t.Setenv("LOCALAPPDATA", `C:\Users\tester\AppData\Local`)
+
 	roots := InstallRoots(model.OSMacOS)
-	if len(roots) != 4 {
-		t.Fatalf("macOS should have 4 install roots, got %d: %v", len(roots), roots)
+	// plugin×2 + installer×2 + receipt×2
+	if len(roots) != 6 {
+		t.Fatalf("macOS should have 6 install roots, got %d: %v", len(roots), roots)
 	}
 	win := InstallRoots(model.OSWindows)
-	if len(win) != 2 {
-		t.Fatalf("windows should have 2 install roots (VST3 only), got %d: %v", len(win), win)
+	if len(win) != 6 {
+		t.Fatalf("windows should have 6 install roots, got %d: %v", len(win), win)
+	}
+}
+
+func TestDestinationCLAP(t *testing.T) {
+	t.Setenv("HOME", "/Users/tester")
+	got, err := Destination(model.OSMacOS, model.FormatCLAP, model.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.ToSlash(got) != "/Users/tester/Library/Audio/Plug-Ins/CLAP" {
+		t.Errorf("clap dest = %q", got)
+	}
+}
+
+func TestResolvePathRejectsTraversal(t *testing.T) {
+	if _, err := ResolvePath("/Library/Audio/Plug-Ins", "../etc", "x.vst3"); err == nil {
+		t.Fatal("expected traversal rejection")
 	}
 }

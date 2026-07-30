@@ -35,6 +35,7 @@ type InstallPlan struct {
 // screen; the progress step turns successfully-staged items into Moves.
 type PlanItem struct {
 	Slug        string
+	Variant     Variant
 	Name        string
 	Format      Format
 	Scope       Scope

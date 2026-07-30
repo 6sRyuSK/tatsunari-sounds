@@ -57,7 +57,7 @@ namespace
         "",                                           // manual_url
         "",                                           // support_url
         DEQ_CLAP_VERSION,                             // version (from plugin.toml)
-        "Pro-Q-style multi-band dynamic EQ",          // description
+        "Multiband dynamic EQ with per-band detection",  // description
         s_features
     };
 

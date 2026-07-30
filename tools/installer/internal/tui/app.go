@@ -317,7 +317,7 @@ func (m Model) beginInstall() (tea.Model, tea.Cmd) {
 	m.total = len(m.items)
 	ch := make(chan tea.Msg, 32)
 	m.installCh = ch
-	installer := &app.Installer{Client: m.client, Checksums: m.cat.Checksums, OS: m.targetOS}
+	installer := &app.Installer{Client: m.client, Checksums: m.cat.Checksums, OS: m.targetOS, SelfInstall: true}
 	return m, startInstall(ch, installer, m.items, m.scope, m.versionOf)
 }
 

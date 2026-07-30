@@ -1,0 +1,86 @@
+# PR preview stage 1 (plan §7): build tools/ui-dev WASM apps and upload
+# Playwright screenshots as artifacts. Non-blocking — UI review aid only;
+# does not gate merge and does not claim host/DSP coverage.
+name: ui-preview
+
+on:
+  pull_request:
+    paths:
+      - "tools/ui-dev/**"
+      - "ui/visage/**"
+      - "ui/**"
+      - "params/**"
+      - "core/**"
+      - "presets/**"
+      - "cmake/**"
+      - "shell/**"
+      - "plugins/*/ui/**"
+      - "plugins/*/Source/**"
+      - "plugins/*/shell/**"
+      - "plugins/*/CMakeLists.txt"
+      - ".github/workflows/ui-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    # Stage 1: artifact-only. Never required for merge.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI deps (Visage / FreeType)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libfreetype-dev libfontconfig1-dev \
+            mesa-common-dev libgl1-mesa-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/ui-dev/playwright/package-lock.json
+
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: tools/ui-dev/.emsdk
+          key: emsdk-6.0.3-${{ runner.os }}
+
+      - name: Cache FetchContent (visage / freetype)
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/ui-dev/build-rel/_deps
+            ~/.cache/visage
+          key: ui-dev-deps-${{ runner.os }}-${{ hashFiles('ui/visage/CMakeLists.txt', 'tools/ui-dev/CMakeLists.txt') }}
+
+      - name: Bootstrap + build (rel) + Playwright capture
+        working-directory: tools/ui-dev
+        run: |
+          ./setup.sh --with-playwright
+          ./dev.sh --rel --app gallery --verify
+          ./dev.sh --rel --app rs-editor --verify
+          ./dev.sh --rel --app pitch-fix --verify
+          ./dev.sh --rel --app dynamic-eq --verify
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-preview-${{ github.event.pull_request.number || 'manual' }}-${{ github.sha }}
+          path: tools/ui-dev/artifacts/
+          if-no-files-found: warn
+          retention-days: 14
