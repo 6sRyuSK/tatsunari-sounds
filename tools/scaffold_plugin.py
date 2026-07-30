@@ -41,7 +41,7 @@ registration step is needed.
 
 Usage:
   python tools/scaffold_plugin.py <slug> --name "Product Name" \
-      --category Dynamics --reference "SSL G bus comp" \
+      --category Dynamics --reference "VCA-style bus compressor" \
       [--code Xxxx] [--description "one-line host description"]
 
 Requires Python 3.11+ (stdlib only).

@@ -188,24 +188,66 @@ summary`。新機能は**画面を増やさず既存画面のキー操作とし�
 
 #### 棚卸し結果
 
-| 区分 | 箇所 | 内容 |
+`reference` フィールドは全 17 プラグイン（active 3 + archive 14）に存在し、うち
+**12 件が具体的な製品名**（競合プラグイン / ハードウェアペダル / コンソール）だった。
+
+| 区分 | 箇所 | 件数 |
 |---|---|---|
-| 製品メタデータ | `plugins/resonance-suppressor/plugin.toml:8` | 競合 EQ 製品名 |
-| 製品メタデータ | `plugins/dynamic-eq/plugin.toml:8` | 競合 EQ 製品名 |
-| 製品メタデータ | `plugins/pitch-fix/plugin.toml:8` | 競合ピッチ補正製品名 ×2 |
-| 製品メタデータ | `archive/plugins/multiband-enhancer/plugin.toml:8` | 競合エンハンサ製品名 |
+| 製品メタデータ | `plugins/*/plugin.toml` の `reference` | 3 件すべて製品名 |
+| 製品メタデータ | `archive/plugins/*/plugin.toml` の `reference` | 14 件中 9 件が製品名 |
 | 生成物 | `README.md`（CATALOG ブロックの Reference 列） | 上記 toml から生成 |
 | 生成物 | `catalog.json` | 上記 toml から生成 |
-| テスト | `tools/tests/test_gen_catalog.py:72` | フィクスチャに製品名 |
-| 利用者向け文書 | `docs/manual/resonance-tatsuppressor.md:3,37` | 「〜-style」という比較記述 |
-| 内部文書 | `.claude/skills/core-primitives/SKILL.md:79` | 「〜系」という分類記述 |
+| テスト | `tools/tests/test_gen_catalog.py` のフィクスチャ | 3 件 |
+| ツール | `tools/scaffold_plugin.py` の usage 例 | 1 件 |
+| 設定 | `roadmap.toml` のコメント例 | 1 件 |
+| 利用者向け文書 | `docs/manual/resonance-tatsuppressor.md` | 2 件（「〜-style」という比較記述） |
+| 内部文書 | `.claude/skills/core-primitives/SKILL.md` | 1 件（「〜系」という分類記述） |
 | 内部文書 | 本メモ §0 / §4.4 | 設計動機・未公証配布の先行事例 |
 
-置き換えは**機能の一般記述**にする（例: 競合製品名 → 「dynamic resonance
-suppression」「parallel multiband harmonic enhancement」のような機能名）。
+残り 5 件（`granular-delay` / `saturator` / `shimmer-reverb` / `vocal-mbcomp` /
+`nam-player`）は既に一般記述か、帰属表示（後述）のため変更不要。
 
-**適用範囲は未確定**（6.2）。内部文書まで含めるかで、本メモ §0 / §4.4 の判断根拠が
-追えなくなるかどうかが変わる。
+置き換えは**機能の一般記述**にする（例: 競合製品名 → 「Dynamic spectral resonance /
+harshness suppression」「Multiband parallel harmonic enhancement」のような機能名）。
+
+#### 適用範囲（決定）
+
+**公開される製品面と利用者向け文書のみ**を対象とする。
+
+| 対象に含める | 対象外 |
+|---|---|
+| `plugins/*/plugin.toml` の `reference` | `.claude/skills/**`（開発者向け） |
+| `archive/plugins/*/plugin.toml` の `reference` | `docs/plans/**`（本メモを含む設計文書） |
+| `README.md`（生成物 — 再生成する） | |
+| `catalog.json`（生成物） | |
+| `docs/manual/**` | |
+| `roadmap.toml` のコメント例 | |
+| `tools/tests/**` のフィクスチャ | |
+| `tools/scaffold_plugin.py` の usage 例 | |
+
+内部の設計文書を対象外にしたのは、本メモ §0（設計動機）と §4.4（未公証配布の
+先行事例）から実名を落とすと**判断の根拠が追えなくなる**ため。先行事例・比較対象と
+しての言及は開発者向け文書に留める。
+
+#### 例外: 依存ライブラリへの帰属表示は残す
+
+`archive/plugins/nam-player/plugin.toml` の `reference` は**競合製品への言及ではなく、
+実際に使用しているライブラリの作者・バージョンへの帰属表示**（`cmake/NamCore.cmake`
+が取り込む依存）。帰属は残すべきものなので置き換えない。
+
+#### 実施状況
+
+本 PR で実施済み。
+
+- `plugin.toml` **12 ファイル**（active 3 + archive 9）
+- `docs/manual/resonance-tatsuppressor.md` 2 箇所
+- `roadmap.toml` のコメント例 1 箇所
+- `tools/tests/test_gen_catalog.py` のフィクスチャ 3 箇所
+- `tools/scaffold_plugin.py` の usage 例 1 箇所
+- `README.md` は `gen_catalog.py` で再生成
+
+検証: `gen_catalog.py --check` / `check_skill_refs.py` / `tools/tests`（46 件）
+すべて通過。
 
 ---
 
@@ -761,25 +803,11 @@ chmod +x "$bin"
 
 ## 6. 未決定事項
 
-### 6.1 ★ 具体的なドメイン名 — 唯一のブロッカー
+### 6.1 ★ 具体的なドメイン名 — 唯一の未決定事項
 
 方式（単一ドメイン + 用途別サブドメイン）は決定済み。**実際の名前が未定。**
 出荷済みバイナリに焼き込まれ後から変更できないため、バッジ実装より前に確定必須。
 Cloudflare Registrar で原価取得できる。
-
-### 6.2 商標記述の置き換え範囲
-
-1.8 で「商標に関わる記述はすべて一般名称に置き換える」と決定したが、**適用範囲**が
-未確定。棚卸し結果は 1.8 の表を参照。
-
-- **(a) 公開される製品面と利用者向け文書のみ**（`plugin.toml` / README / `docs/manual/`
-  / テストフィクスチャ）。開発者向けの内部文書（`.claude/skills/`、`docs/plans/`）は
-  先行事例・設計動機の記述として残す。
-- **(b) リポジトリ内のすべて。** 本設計メモの §0（UA Connect / Waves Central を
-  動機として挙げている部分）と §4.4（ZL Audio の未公証配布の先行事例）も
-  書き換えが必要になり、**判断の根拠が追えなくなる**。
-- (c) (a) + 内部文書も一般名詞化するが、設計判断の根拠となる箇所（§0 / §4.4）だけ
-  例外として残す。
 
 ---
 

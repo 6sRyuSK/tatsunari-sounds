@@ -14,15 +14,15 @@ UI は JUCE 非依存の Visage 製です（JUCE 製のバイナリを出荷す�
 
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
-| Dynamic Tatsunari EQ | EQ | 2.0.0 | VST3, AU | FabFilter Pro-Q 4 |
-| Resonance TatSuppressor | EQ | 3.1.0 | VST3, AU | oeksound soothe2 |
+| Dynamic Tatsunari EQ | EQ | 2.0.0 | VST3, AU | Multiband dynamic EQ with per-band detection |
+| Resonance TatSuppressor | EQ | 3.1.0 | VST3, AU | Dynamic spectral resonance / harshness suppression |
 
 
 ### In progress (1)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
-| Pitch TatFixer | Pitch Correction | Antares Auto-Tune / Waves Tune Real-Time |
+| Pitch TatFixer | Pitch Correction | Real-time monophonic pitch correction |
 
 
 ### Planned (0)
@@ -36,19 +36,19 @@ _Not built or released (excluded from CI); sources kept under `archive/plugins/`
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
-| Tatsunari Bus Compressor | Dynamics | SSL G-series bus comp |
-| Fuzznari | Fuzz | ZVEX Fuzz Factory / Fuzz Face / Big Muff |
+| Tatsunari Bus Compressor | Dynamics | VCA-style bus compressor |
+| Fuzznari | Fuzz | Gated / octave fuzz distortion |
 | Tatsunular Delay | Delay | Granular cloud delay (pitch + tempo-sync) |
-| Tatsunari Madoromi | Looper | Chase Bliss MOOD MKII |
-| Tatsunari Mochi Stretch | Pitch | Red Panda Tensor |
-| Tatsumin Enhancer | Enhancer | Waves Vitamin (multiband parallel harmonic enhancer) |
+| Tatsunari Madoromi | Looper | Micro-loop sampler with parallel effect stages |
+| Tatsunari Mochi Stretch | Pitch | Real-time time-stretch / pitch-shift buffer effect |
+| Tatsumin Enhancer | Enhancer | Multiband parallel harmonic enhancement |
 | Super Tatsunari NAM Player | Amp Sim | Steven Atkinson — Neural Amp Modeler (sdatkinson/NeuralAmpModelerCore v0.5.4) |
-| Tatsunari Omoide Echo | Delay | Chase Bliss Habit |
-| Onsen Delay | Delay | Chase Bliss Thermae (harmonic glide delay) |
+| Tatsunari Omoide Echo | Delay | Looping echo with reverse / modifier stages |
+| Onsen Delay | Delay | Harmonic glide delay (pitch-shifting feedback) |
 | Taturator | Saturation | Analog tape / tube soft-clip |
 | Tammer Reverb | Reverb | FDN shimmer (octave-up feedback) |
-| Tatsunari Surikire | Lo-Fi | Chase Bliss / Cooper FX Generation Loss MKII |
-| Tumble Delay | Delay | OP-1 Tombola sequencer × granular echo |
+| Tatsunari Surikire | Lo-Fi | Lo-fi tape degradation (wow / flutter / dropout) |
+| Tumble Delay | Delay | Physical-bounce granular echo with sequencer |
 | Multi Tatsunari Comp | Dynamics | Vocal-tuned 3-band compressor |
 
 <!-- END:CATALOG -->

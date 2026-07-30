@@ -5,4 +5,4 @@ category  = "Looper"
 status    = "in-progress"
 version   = "0.2.0"
 formats   = ["VST3", "AU"]
-reference = "Chase Bliss MOOD MKII"
+reference = "Micro-loop sampler with parallel effect stages"
