@@ -1,35 +1,47 @@
 # tatsunari-sounds installer bootstrap (Windows).
 #
-#   irm https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.ps1 | iex
+#   irm https://6sryusk.com/tatsunarisounds/install.ps1 | iex
 #
-# Downloads the matching installer binary from the latest release and launches
-# the TUI. The installer runs unelevated; it asks the OS for a UAC prompt only
-# when you choose a system-wide install.
+# Resolves the matching installer binary from
+# /tatsunarisounds/updates/v1/catalog.json, verifies SHA-256, and launches the
+# TUI. The installer runs unelevated; it asks the OS for a UAC prompt only when
+# you choose a system-wide install.
 $ErrorActionPreference = 'Stop'
 
-$repo = '6sRyuSK/tatsunari-sounds'
+$Base = 'https://6sryusk.com/tatsunarisounds'
+$CatalogUrl = "$Base/updates/v1/catalog.json"
+$catalogOs = 'windows'
+$catalogArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
 
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$asset = "tatsunari-windows-$arch.exe"
-
-Write-Host "Finding the latest tatsunari-sounds release..."
-$rel = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$repo/releases/latest"
-$dl = ($rel.assets | Where-Object { $_.name -eq $asset }).browser_download_url
-if (-not $dl) {
-    # Only windows-amd64 is currently published; fall back to it on arm64.
-    $asset = 'tatsunari-windows-amd64.exe'
-    $dl = ($rel.assets | Where-Object { $_.name -eq $asset }).browser_download_url
+Write-Host "Fetching installer catalog..."
+$doc = Invoke-RestMethod -UseBasicParsing $CatalogUrl
+$asset = $doc.client.assets | Where-Object { $_.os -eq $catalogOs -and $_.arch -eq $catalogArch } | Select-Object -First 1
+if (-not $asset) {
+    # Fall back to amd64 when an arm64 client asset is not published yet.
+    $asset = $doc.client.assets | Where-Object { $_.os -eq $catalogOs -and $_.arch -eq 'amd64' } | Select-Object -First 1
 }
-if (-not $dl) {
-    throw "Could not find '$asset' in the latest release. The installer binary may not be published yet."
+if (-not $asset) {
+    throw "Could not resolve a windows installer asset from $CatalogUrl"
 }
 
 $dir = Join-Path $env:TEMP ("tatsunari-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $dir | Out-Null
 $bin = Join-Path $dir 'tatsunari.exe'
 
-Write-Host "Downloading $asset..."
-Invoke-WebRequest -UseBasicParsing $dl -OutFile $bin
+Write-Host "Downloading installer..."
+Invoke-WebRequest -UseBasicParsing $asset.url -OutFile $bin
+
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$fs = [System.IO.File]::OpenRead($bin)
+try {
+    $hash = ($sha.ComputeHash($fs) | ForEach-Object { $_.ToString('x2') }) -join ''
+} finally {
+    $fs.Dispose()
+    $sha.Dispose()
+}
+if ($hash -ne $asset.sha256) {
+    throw "SHA-256 mismatch for installer binary (want $($asset.sha256), got $hash)"
+}
 
 # Pick the bilingual UI language from the Windows culture (Windows has no $LANG).
 if (-not $env:TATSUNARI_LANG) {

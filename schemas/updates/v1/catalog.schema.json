@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tatsunari.sounds.invalid/schemas/updates/v1/catalog.schema.json",
-  "title": "updates/v1 catalog.json",
+  "$id": "https://6sryusk.com/tatsunarisounds/schemas/updates/v1/catalog.schema.json",
+  "title": "tatsunarisounds/updates/v1 catalog.json",
   "type": "object",
   "required": ["schema", "generated", "channels", "plugins"],
   "additionalProperties": true,

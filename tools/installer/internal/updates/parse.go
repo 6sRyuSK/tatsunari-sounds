@@ -67,7 +67,7 @@ func ParseLatest(data []byte) (ParseResult[LatestDocument], error) {
 			continue
 		}
 		if p.ChangelogURL != "" {
-			if err := CheckHTTPSURL(p.ChangelogURL); err != nil {
+			if err := CheckURL(URLNotes, p.ChangelogURL); err != nil {
 				out.Issues = append(out.Issues, ParseIssue{
 					Kind: "plugin", Slug: p.Slug, Detail: "changelogUrl: " + err.Error(),
 				})
@@ -193,6 +193,11 @@ func parseClient(raw json.RawMessage) (*ClientInfo, []ParseIssue) {
 	}
 	if c.Latest == "" {
 		return nil, []ParseIssue{{Kind: "client", Detail: "latest is required"}}
+	}
+	if c.ChangelogURL != "" {
+		if err := CheckURL(URLNotes, c.ChangelogURL); err != nil {
+			issues = append(issues, ParseIssue{Kind: "client", Detail: "changelogUrl: " + err.Error()})
+		}
 	}
 	var assets []ClientAsset
 	for i, a := range c.Assets {
@@ -363,7 +368,7 @@ func sanitizeAsset(a Asset) (Asset, error) {
 	if err := validateSHA256(a.SHA256); err != nil {
 		return Asset{}, err
 	}
-	if err := CheckHTTPSURL(a.URL); err != nil {
+	if err := CheckURL(URLArtifact, a.URL); err != nil {
 		return Asset{}, err
 	}
 	if err := ValidateSubpath(a.Subpath); err != nil {
@@ -398,7 +403,7 @@ func validateClientAsset(a ClientAsset) error {
 	if err := validateSHA256(a.SHA256); err != nil {
 		return err
 	}
-	return CheckHTTPSURL(a.URL)
+	return CheckURL(URLArtifact, a.URL)
 }
 
 func validateSHA256(s string) error {

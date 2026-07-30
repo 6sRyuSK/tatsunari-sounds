@@ -30,7 +30,7 @@ func readFixture(t *testing.T, name string) []byte {
 func withHosts(t *testing.T) {
 	t.Helper()
 	prev := updates.AllowedHostsSnapshot()
-	updates.SetAllowedHosts([]string{"cdn.example.test", "updates.example.test"})
+	updates.SetAllowedHosts([]string{updates.PublicHost})
 	t.Cleanup(func() { updates.SetAllowedHosts(prev) })
 }
 
@@ -226,7 +226,7 @@ func TestRejectDuplicateJSONKeys(t *testing.T) {
       "stateCompatVersion": "1.0.0",
       "assets": [{
         "format": "vst3", "os": "macos", "arch": "universal",
-        "url": "https://cdn.example.test/a.zip", "size": 1,
+        "url": "https://6sryusk.com/tatsunarisounds/artifacts/a.zip", "size": 1,
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "subpath": "VST3", "bundleName": "X.vst3"
       }]
@@ -240,9 +240,28 @@ func TestRejectDuplicateJSONKeys(t *testing.T) {
 
 func TestHostAllowlistFailClosed(t *testing.T) {
 	updates.SetAllowedHosts(nil)
-	t.Cleanup(func() { updates.SetAllowedHosts(nil) })
-	if err := updates.CheckHTTPSURL("https://cdn.example.test/x"); err == nil {
+	t.Cleanup(func() { updates.SetAllowedHosts([]string{updates.PublicHost}) })
+	if err := updates.CheckHTTPSURL("https://6sryusk.com/tatsunarisounds/artifacts/x"); err == nil {
 		t.Fatal("empty allowlist must reject")
+	}
+}
+
+func TestPathPrefixByKind(t *testing.T) {
+	withHosts(t)
+	if err := updates.CheckURL(updates.URLArtifact, "https://6sryusk.com/tatsunarisounds/artifacts/x.zip"); err != nil {
+		t.Fatal(err)
+	}
+	if err := updates.CheckURL(updates.URLNotes, "https://6sryusk.com/tatsunarisounds/notes/x.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := updates.CheckURL(updates.URLArtifact, "https://6sryusk.com/tatsunarisounds/notes/x.md"); err == nil {
+		t.Fatal("notes path must not pass as artifact")
+	}
+	if err := updates.CheckURL(updates.URLNotes, "https://6sryusk.com/tatsunarisounds/artifacts/x.zip"); err == nil {
+		t.Fatal("artifact path must not pass as notes")
+	}
+	if err := updates.CheckURL(updates.URLArtifact, "https://evil.example/tatsunarisounds/artifacts/x.zip"); err == nil {
+		t.Fatal("foreign host must fail")
 	}
 }
 

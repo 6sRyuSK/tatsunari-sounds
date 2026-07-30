@@ -3,7 +3,7 @@ package updates
 // Localized is a locale -> string map. "en" is the required fallback.
 type Localized map[string]string
 
-// LatestDocument is the badge-only /updates/v1/latest.json envelope.
+// LatestDocument is the badge-only /tatsunarisounds/updates/v1/latest.json envelope.
 type LatestDocument struct {
 	Schema    int            `json:"schema"`
 	Generated string         `json:"generated"`
@@ -19,7 +19,7 @@ type LatestPlugin struct {
 	ChangelogURL string   `json:"changelogUrl,omitempty"`
 }
 
-// CatalogDocument is the installer /updates/v1/catalog.json envelope.
+// CatalogDocument is the installer /tatsunarisounds/updates/v1/catalog.json envelope.
 type CatalogDocument struct {
 	Schema           int         `json:"schema"`
 	Generated        string      `json:"generated"`

@@ -9,5 +9,5 @@ const (
 	SHA256HexLen      = 64
 )
 
-// SchemaVersion is the frozen /updates/v1/ envelope version.
+// SchemaVersion is the frozen /tatsunarisounds/updates/v1/ envelope version.
 const SchemaVersion = 1
