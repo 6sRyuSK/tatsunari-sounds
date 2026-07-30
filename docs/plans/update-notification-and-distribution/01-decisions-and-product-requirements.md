@@ -37,8 +37,9 @@
   Pages ビルド）は Cloudflare へのデプロイ用であり、macOS/Windows ランナーも
   Apple ツールチェーンも持たないため代替にならない。
 - 構成: `Actions でビルド` → `R2 へアップロード` → `CDN で配信`。
-- ドメインは **単一ドメイン + 用途別サブドメイン**（`cdn.` / `updates.` /
-  `preview.`）。Cloudflare Registrar で取得する。
+- 既存の個人所有ドメイン **`6sryusk.com`** を運営の基点とし、Tatsunari Sounds は
+  **`/tatsunarisounds/` 配下の事業ブランド**として公開する。用途別サブドメインは
+  増やさず、人間向け更新ページと機械向け update feed をパスで分離する（6.1）。
 - **Worker を DL 集計用に導入する。**
 - **マニフェストに minisign / Sigstore 署名を導入する。** 自前配信は配信元の
   信頼を自分で背負うことになるため。

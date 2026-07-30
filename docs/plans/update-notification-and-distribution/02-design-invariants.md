@@ -16,14 +16,18 @@
 6. **ad-hoc 署名は必ず行う**（Apple Silicon で SIGKILL されないため）。将来
    Developer ID 署名を導入する場合は、**必ずセキュアタイムスタンプ**を付ける
    （証明書失効後も署名は有効に保たれる。公証チケットも期限切れしない）。
-7. バイナリに焼き込む URL は**必ず自前の独自ドメイン**。`*.r2.dev` /
-   `*.workers.dev` は不可（ホスティング変更時に出荷済みバイナリが孤児になる）。
+7. バイナリに焼き込む URL は**必ず `https://6sryusk.com` の固定パス**。
+   `*.r2.dev` / `*.workers.dev` は不可（ホスティング変更時に出荷済みバイナリが
+   孤児になる）。取得クライアントは host だけでなく、
+   `/tatsunarisounds/updates/v1/` と `/tatsunarisounds/artifacts/` の path prefix も
+   許可リストで検証する。
 8. 更新チェックは**静的 JSON**。動的エンドポイントにしない。
 9. **プラグインにテレメトリを入れない。** 統計はサーバ側で取る。
-10. 成果物は**不変オブジェクト**（`/artifacts/<slug>/<version>/…`、長期
-    immutable キャッシュ）。可変なのはポインタ JSON のみ（短 TTL + ETag）。
-11. スキーマは `/updates/v1/` で凍結する。未知フィールドは無視、未知フォーマット
-    / プラグインは**その行だけ**スキップする。
+10. 成果物は**不変オブジェクト**
+    （`/tatsunarisounds/artifacts/<slug>/<version>/…`、長期 immutable キャッシュ）。
+    可変なのはポインタ JSON のみ（短 TTL + ETag）。
+11. スキーマは `/tatsunarisounds/updates/v1/` で凍結する。未知フィールドは無視、
+    未知フォーマット / プラグインは**その行だけ**スキップする。
 
 ### 2.1 不変条件を腐らせないためのゲート
 
@@ -45,7 +49,7 @@
 | 自己更新禁止 | client version が古くても操作可能な統合試験 |
 | フック禁止 | JSON Schema の `additionalProperties` 検査と禁止キー fixture |
 | 書込先制限 | path traversal、絶対パス、symlink/junction adversarial test |
-| 独自ドメイン | schema lint で URL host allowlist を検証 |
+| 独自ドメイン | schema lint で URL host + path prefix allowlist を検証 |
 | テレメトリ禁止 | 更新確認 fixture で GET 以外がないことを transport で検証 |
 | immutable | artifact response の Cache-Control と上書き拒否を staging で検証 |
 

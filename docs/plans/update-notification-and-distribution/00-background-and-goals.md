@@ -41,6 +41,6 @@ UA Connect / Waves Central 型の「常駐アプリが勝手に更新する」�
 ## 着手条件
 
 1. ドメインと DNS 管理者が人間により決定済みである。
-2. `/updates/v1/` の fixture と公開鍵 ID がレビュー済みである。
+2. `/tatsunarisounds/updates/v1/` の fixture と公開鍵 ID がレビュー済みである。
 3. 本番へのアップロード、DNS 変更、秘密鍵操作の承認者が指定されている。
 4. 各実装 PR が本索引のどのセクションを満たすか明記されている。
