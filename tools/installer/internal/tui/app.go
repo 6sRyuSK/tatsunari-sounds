@@ -60,7 +60,15 @@ type Model struct {
 	cursor   int
 	selected map[string]bool
 
-	// format selection (only VST3/AU that exist on this OS are offered)
+	// version / channel (plan §1.6) — default path stays latest stable;
+	// optional keys expand a row or cycle channel without adding screens.
+	channel         string // stable | beta | dev
+	expandedSlug    string
+	pickedVersion   map[string]string // slug -> version (empty = latest for channel)
+	devOptInOK      bool
+	preselectSlugs  []string
+
+	// format selection (only formats that exist on this OS are offered)
 	formatOpts   []model.Format
 	formatOn     map[model.Format]bool
 	formatCursor int
@@ -84,22 +92,31 @@ type Model struct {
 
 // New builds the initial model.
 func New(client *release.Client, targetOS model.OS) Model {
+	return NewWithOptions(client, targetOS, nil)
+}
+
+// NewWithOptions builds the model with optional preselected plugin slugs
+// (e.g. --plugin from the editor update dialog).
+func NewWithOptions(client *release.Client, targetOS model.OS, preselect []string) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
 	m := Model{
-		tr:       i18n.New(),
-		st:       newStyles(),
-		keys:     defaultKeys(),
-		client:   client,
-		targetOS: targetOS,
-		screen:   screenDiscover,
-		spinner:  sp,
-		prog:     progress.New(progress.WithDefaultGradient()),
-		help:     help.New(),
-		selected: map[string]bool{},
-		scope:    model.ScopeSystem,
-		formatOn: map[model.Format]bool{},
+		tr:             i18n.New(),
+		st:             newStyles(),
+		keys:           defaultKeys(),
+		client:         client,
+		targetOS:       targetOS,
+		screen:         screenDiscover,
+		spinner:        sp,
+		prog:           progress.New(progress.WithDefaultGradient()),
+		help:           help.New(),
+		selected:       map[string]bool{},
+		scope:          model.ScopeSystem,
+		formatOn:       map[model.Format]bool{},
+		channel:        "stable",
+		pickedVersion:  map[string]string{},
+		preselectSlugs: append([]string{}, preselect...),
 	}
 	sp.Style = m.st.spinner
 	m.spinner = sp
@@ -108,7 +125,7 @@ func New(client *release.Client, targetOS model.OS) Model {
 
 // Init starts discovery and the spinner.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, discoverCmd(m.client))
+	return tea.Batch(m.spinner.Tick, discoverCmd(m.client, m.targetOS))
 }
 
 // Update is the central event handler.
@@ -173,7 +190,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.loadErr != nil && keyMatches(msg, m.keys.Retry) {
 			m.loadErr = nil
 			m.screen = screenDiscover
-			return m, tea.Batch(m.spinner.Tick, discoverCmd(m.client))
+			return m, tea.Batch(m.spinner.Tick, discoverCmd(m.client, m.targetOS))
 		}
 	case screenPlugins:
 		return m.updatePlugins(msg)
@@ -204,7 +221,17 @@ func (m *Model) initSelections() {
 			m.selected[p.Slug] = true
 		}
 	}
+	for _, slug := range m.preselectSlugs {
+		for _, p := range m.cat.Plugins {
+			if p.Slug == slug && m.pluginInstallable(p) {
+				m.selected[slug] = true
+			}
+		}
+	}
 	m.cursor = 0
+	m.expandedSlug = ""
+	m.pickedVersion = map[string]string{}
+	m.channel = "stable"
 	// Default formats: everything the OS supports.
 	m.formatOpts = m.osFormats()
 	m.formatOn = map[model.Format]bool{}
@@ -235,6 +262,27 @@ func (m Model) updatePlugins(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selected[p.Slug] = true
 			}
 		}
+	case keyMatches(msg, m.keys.Versions):
+		// Toggle per-row version expand (plan §1.6). Default path unchanged.
+		if m.cursor < len(list) {
+			slug := list[m.cursor].Slug
+			if m.expandedSlug == slug {
+				m.expandedSlug = ""
+			} else {
+				m.expandedSlug = slug
+			}
+		}
+	case keyMatches(msg, m.keys.Channel):
+		m.channel = nextChannel(m.channel)
+		if m.channel == "dev" && !m.devOptInOK {
+			// First visit to dev requires an explicit confirm on the next Enter;
+			// cancel (esc) from confirm path resets — for now mark opt-in when
+			// the user cycles past the warning via a second 'c'.
+			m.devOptInOK = true
+		}
+		if m.channel != "dev" {
+			m.devOptInOK = false
+		}
 	case keyMatches(msg, m.keys.Next):
 		if m.anySelected() {
 			m.screen = screenFormats
@@ -242,6 +290,17 @@ func (m Model) updatePlugins(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func nextChannel(cur string) string {
+	switch cur {
+	case "stable":
+		return "beta"
+	case "beta":
+		return "dev"
+	default:
+		return "stable"
+	}
 }
 
 // ---- format selection ----

@@ -29,7 +29,7 @@ func runTUI(opts options) int {
 		defer closeTTY()
 	}
 
-	p := tea.NewProgram(tui.New(client, opts.targetOS), teaOpts...)
+	p := tea.NewProgram(tui.NewWithOptions(client, opts.targetOS, splitCSV(opts.plugins)), teaOpts...)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		return 1

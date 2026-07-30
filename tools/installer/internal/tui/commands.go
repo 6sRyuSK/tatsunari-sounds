@@ -26,11 +26,14 @@ type installDoneMsg struct {
 	err    error
 }
 
-// discoverCmd fetches the latest release and reconciles with the local receipt.
-func discoverCmd(c *release.Client) tea.Cmd {
+// discoverCmd fetches the latest release and reconciles with local receipts
+// (user + system projected to slug→version for the legacy reconcile path).
+func discoverCmd(c *release.Client, osID model.OS) tea.Cmd {
 	return func() tea.Msg {
 		var installed map[string]string
-		if rec, err := install.LoadReceipt(); err == nil {
+		if rec, err := install.LoadAllReceipts(osID); err == nil {
+			installed = rec.InstalledVersions()
+		} else if rec, err := install.LoadReceipt(); err == nil {
 			installed = rec.InstalledVersions()
 		}
 		cat, err := app.Discover(context.Background(), c, installed)
