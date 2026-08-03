@@ -69,16 +69,16 @@ class GenCatalogTest(unittest.TestCase):
         # Two shipped, one in-progress, plus a roadmap (planned) entry.
         make_plugin(self.root, "alpha-eq", name="Alpha EQ", category="EQ",
                     version="1.2.0", status="shipped", formats=["VST3", "AU"],
-                    reference="Pro-Q")
+                    reference="Dynamic EQ")
         make_plugin(self.root, "beta-comp", name="Beta Comp", category="Dynamics",
                     version="1.0.0", status="shipped", formats=["VST3"],
-                    reference="SSL")
+                    reference="Bus compressor")
         make_plugin(self.root, "gamma-verb", name="Gamma Verb", category="Reverb",
                     version="0.1.0", status="in-progress", formats=["VST3", "AU"],
                     reference="FDN")
         make_plugin(self.root, "old-fuzz", name="Old Fuzz", category="Distortion",
                     version="0.3.0", status="shipped", formats=["VST3", "AU"],
-                    reference="Fuzz Face", archived=True)
+                    reference="Fuzz distortion", archived=True)
         (self.root / "roadmap.toml").write_text(
             "[[plugin]]\n"
             'name      = "Delta Delay"\n'

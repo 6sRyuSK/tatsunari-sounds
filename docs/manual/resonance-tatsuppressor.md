@@ -1,6 +1,6 @@
 # Resonance TatSuppressor — User Manual
 
-A spectral resonance / harshness suppressor (soothe-style). It analyses the
+A spectral resonance / harshness suppressor. It analyses the
 signal in the frequency domain, builds a self-referencing "how much does each
 frequency stick out" profile, and applies dynamic spectral attenuation. This
 page documents every user-facing parameter; the values come straight from the
@@ -34,7 +34,7 @@ The host compensates for this on playback (PDC). Two consequences:
 |---|---|---|---|
 | **Depth** | 0 – 100 % | 30 % | Overall amount of suppression. |
 | **Detail** | 0 – 100 % | 50 % | Detection macro: how tightly the process targets narrow resonances vs. broad tonal balance. Also sets the reduction-smoothing width. |
-| **Mode** | Soft / Hard | Soft | Soft = adaptive, level-independent (reacts to *relative* tonal spikes). Hard = absolute-level threshold set by Depth (soothe2-style). |
+| **Mode** | Soft / Hard | Soft | Soft = adaptive, level-independent (reacts to *relative* tonal spikes). Hard = absolute-level threshold set by Depth. |
 | **Attack** | 1 – 200 ms | 20 ms | How fast the suppressor grabs a rising resonance. |
 | **Release** | 5 – 500 ms | 65 ms | How fast it lets go. |
 | **Tilt** | −100 … +100 % | 0 % | Frequency-dependent ballistics: bias reaction speed toward highs (faster) or lows (slower), pivoting around 1 kHz. |

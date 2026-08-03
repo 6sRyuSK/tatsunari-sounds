@@ -9,4 +9,4 @@
 # [[plugin]]
 # name      = "Bus Compressor"
 # category  = "Dynamics"
-# reference = "SSL G-series bus comp"
+# reference = "VCA-style bus compressor"

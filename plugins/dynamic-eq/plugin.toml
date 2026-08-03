@@ -5,4 +5,4 @@ category  = "EQ"
 status    = "shipped"
 version   = "2.0.0"
 formats   = ["VST3", "AU"]
-reference = "FabFilter Pro-Q 4"
+reference = "Multiband dynamic EQ with per-band detection"
