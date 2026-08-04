@@ -8,8 +8,9 @@
 //   * factory_shell::ClapShellPlugin<...>  — the generic CLAP glue
 //
 // pitch-fix is clap-first FROM BIRTH: there is no JUCE processor at all (unlike
-// RS, which keeps one as its migration byte-equivalence oracle), so migrateState
-// is a no-op — the only wire format that exists is StateCodec v1+.
+// RS, which keeps one as its migration byte-equivalence oracle). migrateState
+// fills Accuracy from the saved Stability (wire id "tolerance") when an older
+// session has no "accuracy" key, so residual character is preserved.
 //
 // clap_plugin_descriptor id: jp.tatsunari-sounds.pitch-fix (reverse-DNS).
 //
@@ -65,7 +66,7 @@ namespace
     {
         int amount, retune, glide, tolerance, hysteresis;
         int minPitch, maxPitch, threshold;
-        int buffer, key, scale, a4, mix, out;
+        int buffer, key, scale, a4, mix, out, accuracy;
     };
 
     PfIx computePfIx (const factory_params::ParamStore& store)
@@ -85,6 +86,7 @@ namespace
         ix.a4         = store.indexOf ("a4");
         ix.mix        = store.indexOf ("mix");
         ix.out        = store.indexOf ("out");
+        ix.accuracy   = store.indexOf ("accuracy");
         return ix;
     }
 
@@ -106,7 +108,8 @@ namespace
         s.amount       = store.value (ix.amount);
         s.retuneMs     = store.value (ix.retune);
         s.glideMs      = store.value (ix.glide);
-        s.toleranceCt  = store.value (ix.tolerance);
+        s.stabilityCt  = store.value (ix.tolerance);
+        s.accuracyCt   = store.value (ix.accuracy);
         s.hysteresisCt = store.value (ix.hysteresis);
         s.minPitchHz   = store.value (ix.minPitch);
         s.maxPitchHz   = store.value (ix.maxPitch);
@@ -149,9 +152,14 @@ namespace
         // No legacy JUCE build ever existed — the whole table is the surface.
         static bool isClapExposed (const factory_params::ParamDesc&) { return true; }
 
-        // Clap-first from birth: StateCodec v1+ is the only wire format, so
-        // there is nothing to migrate (foreign blobs are rejected upstream).
-        static void migrateState (factory_presets::StateModel&) {}
+        // Pre-Accuracy sessions saved Stability under "tolerance" only. Copy that
+        // value into "accuracy" so the residual character matches the old
+        // Tolerance behaviour. New instances (no saved state) keep Accuracy = 0.
+        static void migrateState (factory_presets::StateModel& m)
+        {
+            if (! m.has ("accuracy") && m.has ("tolerance"))
+                m.set ("accuracy", m.get ("tolerance", 12.0));
+        }
 
         static void prepare (Core& core, double sampleRate, std::uint32_t maxFrames)
         {

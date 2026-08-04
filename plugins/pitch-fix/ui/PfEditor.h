@@ -97,8 +97,8 @@ namespace pf_ui
         factory_params::ParamStore&     store_;
         PfPresetModel&                  presets_;
 
-        // Big correction row.
-        std::unique_ptr<factory_ui_visage::Knob> amount_, retune_, glide_, tolerance_, hysteresis_;
+        // Big correction row (Stability keeps wire id "tolerance"; Accuracy is new).
+        std::unique_ptr<factory_ui_visage::Knob> amount_, retune_, glide_, tolerance_, accuracy_, hysteresis_;
         // Detector / output row.
         std::unique_ptr<factory_ui_visage::Knob> minPitch_, maxPitch_, threshold_, mix_, out_;
         // Musical context.

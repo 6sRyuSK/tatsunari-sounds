@@ -5,9 +5,10 @@
 // TWO FAMILIES (per the product brief):
 //   * PERFORMANCE presets (Realtime/Fast/Normal/Quality) change ONLY the
 //     Buffer mode — sound-neutral latency/quality trade-offs.
-//   * SOUND presets shape the correction character (speed, tolerance, glide);
-//     they all pin Buffer to Normal so a sound choice never surprises the
-//     session's latency budget.
+//   * SOUND presets shape the correction character (speed, Stability/Accuracy,
+//     glide); they all pin Buffer to Normal so a sound choice never surprises
+//     the session's latency budget. Accuracy is set to the pre-split Tolerance
+//     value so each preset keeps its previous residual character.
 //
 // The musical context — key, scale, A4 reference — is NEVER written by any
 // preset (including Init): those ids live in kExclude and PresetSession skips
@@ -31,29 +32,37 @@ namespace pitch_fix_presets
     inline constexpr PresetParam kQuality[]  = { { "buffer", 3.0f } };
 
     // --- sound family (Buffer pinned to Normal) ------------------------------
+    // Accuracy = former Tolerance so residual character is preserved; Stability
+    // (wire id "tolerance") keeps the same numeric value as before the split.
     inline constexpr PresetParam kNaturalVocal[] = {
         { "buffer", 2.0f }, { "amount", 90.0f },  { "retune", 140.0f },
-        { "glide", 90.0f }, { "tolerance", 25.0f }, { "hysteresis", 25.0f },
+        { "glide", 90.0f }, { "tolerance", 25.0f }, { "accuracy", 25.0f },
+        { "hysteresis", 25.0f },
     };
     inline constexpr PresetParam kTightPop[] = {
         { "buffer", 2.0f }, { "amount", 100.0f }, { "retune", 25.0f },
-        { "glide", 30.0f }, { "tolerance", 5.0f },  { "hysteresis", 12.0f },
+        { "glide", 30.0f }, { "tolerance", 5.0f },  { "accuracy", 5.0f },
+        { "hysteresis", 12.0f },
     };
     inline constexpr PresetParam kHardTune[] = {
         { "buffer", 2.0f }, { "amount", 100.0f }, { "retune", 0.0f },
-        { "glide", 0.0f },  { "tolerance", 0.0f },  { "hysteresis", 8.0f },
+        { "glide", 0.0f },  { "tolerance", 0.0f },  { "accuracy", 0.0f },
+        { "hysteresis", 8.0f },
     };
     inline constexpr PresetParam kGentleTouch[] = {
         { "buffer", 2.0f }, { "amount", 65.0f },  { "retune", 220.0f },
-        { "glide", 140.0f }, { "tolerance", 35.0f }, { "hysteresis", 25.0f },
+        { "glide", 140.0f }, { "tolerance", 35.0f }, { "accuracy", 35.0f },
+        { "hysteresis", 25.0f },
     };
     inline constexpr PresetParam kBalladGlide[] = {
         { "buffer", 2.0f }, { "amount", 95.0f },  { "retune", 110.0f },
-        { "glide", 260.0f }, { "tolerance", 18.0f }, { "hysteresis", 20.0f },
+        { "glide", 260.0f }, { "tolerance", 18.0f }, { "accuracy", 18.0f },
+        { "hysteresis", 20.0f },
     };
     inline constexpr PresetParam kVibratoKeeper[] = {
         { "buffer", 2.0f }, { "amount", 100.0f }, { "retune", 90.0f },
-        { "glide", 60.0f },  { "tolerance", 45.0f }, { "hysteresis", 30.0f },
+        { "glide", 60.0f },  { "tolerance", 45.0f }, { "accuracy", 45.0f },
+        { "hysteresis", 30.0f },
     };
 
     inline constexpr Preset kPresets[] = {
@@ -61,12 +70,12 @@ namespace pitch_fix_presets
         { "Fast",           kFast,          1 },
         { "Normal",         kNormal,        1 },
         { "Quality",        kQuality,       1 },
-        { "Natural Vocal",  kNaturalVocal,  6 },
-        { "Tight Pop",      kTightPop,      6 },
-        { "Hard Tune",      kHardTune,      6 },
-        { "Gentle Touch",   kGentleTouch,   6 },
-        { "Ballad Glide",   kBalladGlide,   6 },
-        { "Vibrato Keeper", kVibratoKeeper, 6 },
+        { "Natural Vocal",  kNaturalVocal,  7 },
+        { "Tight Pop",      kTightPop,      7 },
+        { "Hard Tune",      kHardTune,      7 },
+        { "Gentle Touch",   kGentleTouch,   7 },
+        { "Ballad Glide",   kBalladGlide,   7 },
+        { "Vibrato Keeper", kVibratoKeeper, 7 },
     };
 
     inline const PresetBank bank { kPresets, 10 };

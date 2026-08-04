@@ -7,14 +7,29 @@
 //
 // SIGNAL PATH (per block)
 //   in L/R ──┬─ mid sum → HP(minPitch) → detector ring ──(hop)── PitchDetector
+//            │                                   │ acquisition / tracking window
 //            │                                   │ median filter (mode depth)
 //            │                                   │ scale quantiser + hysteresis
-//            │                                   │ tolerance deadzone → amount
+//            │                                   │ Stability deadzone + Accuracy
 //            │                                   │ glide + retune one-poles
 //            │                                   ▼
 //            ├─ PsolaShifter (pitch-synchronous OLA, stereo phase-locked) ─ wet
 //            └─ dry delay (== lookahead) ──────────────────────────────── dry
 //   out = (wet*mix + dry*(1-mix)) * outputGain          (LinearRamp smoothed)
+//
+// DETECTION WINDOWS (docs/plans/pitch-fix-detection-accuracy.md §3 P1)
+//   Acquisition uses kWindowPeriods[mode] periods of Min Pitch (the long window
+//   that can hear the floor). Tracking shrinks to >= 6 periods of the tracked
+//   f0 so lagMax = n/2 still reaches one octave below the track (anti lock-in).
+//   Tracking periodically re-runs acquisition (~50 ms); a single disagreeing
+//   candidate never switches the track — 2 consecutive confirms are required.
+//   Unvoiced runs / clarity drops / large pitch jumps fall back to acquisition.
+//
+// ANALYSIS TIMEBASE (docs/plans/pitch-fix-detection-accuracy.md §3 P2)
+//   The analysis window is centred on the grain-read time (written - L) plus
+//   the median filter's group delay, so the f0 estimate applied to a grain is
+//   the estimate of the same source time the grain is reading. No intentional
+//   anticipation is baked into the analysis position.
 //
 // LOOKAHEAD / LATENCY — the Buffer parameter (Realtime/Fast/Normal/Quality)
 // scales the lookahead in PERIODS OF THE MIN-PITCH PARAMETER, so the latency
@@ -36,6 +51,8 @@
 #include "factory_core/PsolaShifter.h"
 #include "factory_core/LinearRamp.h"
 #include "factory_core/SmoothingCoeff.h"
+#include "PfNote.h"
+#include "PfCorrection.h"
 
 #include <algorithm>
 #include <atomic>
@@ -52,7 +69,8 @@ namespace pf_core
         float amount        = 100.0f;  // %   (0..150)
         float retuneMs      = 80.0f;   // ms  (0..600)
         float glideMs       = 60.0f;   // ms  (0..750)
-        float toleranceCt   = 12.0f;   // cents deadzone (0..75)
+        float stabilityCt   = 12.0f;   // cents deadzone / Stability (0..75); wire id "tolerance"
+        float accuracyCt    = 0.0f;    // cents residual Accuracy (0..75); new instances default 0
         float hysteresisCt  = 18.0f;   // cents note-switch margin (0..75)
         float minPitchHz    = 75.0f;   // Hz  (25..500)
         float maxPitchHz    = 1300.0f; // Hz  (200..4000)
@@ -79,6 +97,27 @@ namespace pf_core
         static constexpr double kTargetHoldSec     = 0.4;  // note memory across gaps
         static constexpr double kMaxShiftCents     = 1200.0;
 
+        // Tracking window: >= 6 periods of tracked f0 so lagMax = n/2 reaches one
+        // octave below the track (4 periods sat exactly on the octave boundary and
+        // locked in — see pitch-fix-detection-accuracy.md §2.6-1).
+        static constexpr double kTrackingMinPeriods   = 6.0;
+        static constexpr double kAcqIntervalSec        = 0.050; // periodic full-band reacquire
+        static constexpr int    kReacqConfirmNeeded    = 2;     // consecutive agreeing candidates
+        static constexpr int    kTrackEnterStableHops  = 3;     // median+clarity settle before track
+        static constexpr double kPitchJumpRatio        = 1.414; // ~half octave → fall back to acq
+        static constexpr double kReacqMatchCents       = 50.0;  // within this = same candidate
+
+        // P3 trajectory (causal, within existing latency — no extra lookahead):
+        // keep a short history of NSDF candidates and pick the path that maximises
+        // clarity while paying continuity + near-exact-octave jump costs.
+        // Harmonic-support scoring is intentionally absent (§2.1).
+        static constexpr int    kTrajCand              = 8;
+        static constexpr int    kTrajHist              = 5;
+        static constexpr double kTrajContPerOctave     = 1.5;   // |log2| cost weight
+        static constexpr double kTrajOctaveBump        = 0.75;  // extra near ±1/±2 octaves
+        static constexpr double kTrajOctaveWindowCt    = 80.0;  // "near" = within this of k*1200
+        static constexpr double kTrajEmitClarity       = 1.0;   // emission = 1 - clarity
+
         // The PSOLA budget: PsolaShifter demands 2*P + P/4 + 4 <= lookahead for a
         // VOICED grain and degrades to its identity path otherwise — silently, so
         // the pitch would still read out in the UI while nothing gets corrected.
@@ -98,15 +137,25 @@ namespace pf_core
 
             const int maxPeriod = (int) std::ceil (fs / kMinPitchFloorHz) + 4;
             const int maxLook   = (int) std::ceil (kLookaheadPeriods[3] * fs / kMinPitchFloorHz) + 8;
-            maxWin = (int) std::ceil ((kWindowPeriods[3] + 0.3) * fs / kMinPitchFloorHz) + 2;
+            // Tracking windows need >= 6 periods of the lowest trackable f0, which
+            // can EXCEED the acquisition window (acquisition is only ~3.2 periods of
+            // Min Pitch). Size the detector / scratch / ring for both.
+            const double maxWinPeriods = std::max (kWindowPeriods[3] + 0.3, kTrackingMinPeriods);
+            maxWin = (int) std::ceil (maxWinPeriods * fs / kMinPitchFloorHz) + 2;
+            // Median group-delay compensation can push the analysis window start
+            // back by up to ((7-1)/2) * hop samples past the grain-read cursor.
+            const int maxMedDelay = 3 * (int) std::ceil (kHopSeconds[0] * fs) + 8;
 
-            detector.prepare (fs, kMinPitchFloorHz, kWindowPeriods[3] + 0.3);
+            detector.prepare (fs, kMinPitchFloorHz, maxWinPeriods);
             shifter.prepare (fs, maxBlock, maxLook, maxPeriod);
 
-            detSize = nextPow2 (maxWin + maxBlock + 8);
+            // P2: window may be centred near written - L, so the ring must hold
+            // lookahead + window + median delay behind the write cursor.
+            detSize = nextPow2 (maxLook + maxWin + maxMedDelay + maxBlock + 8);
             detMask = detSize - 1;
             detRing.assign ((size_t) detSize, 0.0f);
             scratch.assign ((size_t) maxWin, 0.0f);
+            scratchAcq.assign ((size_t) maxWin, 0.0f);
 
             drySize = nextPow2 (maxLook + maxBlock + 8);
             dryMask = drySize - 1;
@@ -152,6 +201,7 @@ namespace pf_core
             std::fill (dryL.begin(),    dryL.end(),    0.0f);
             std::fill (dryR.begin(),    dryR.end(),    0.0f);
             std::fill (scratch.begin(), scratch.end(), 0.0f);
+            std::fill (scratchAcq.begin(), scratchAcq.end(), 0.0f);
             shifter.reset();
             detHp[0].reset();            // state only — the design follows minHz
             detHp[1].reset();
@@ -210,6 +260,15 @@ namespace pf_core
         std::atomic<float> uiShiftCents   { 0.0f };
         std::atomic<int>   uiLatencySamples { 0 };
 
+        // Contract-test / diagnostics readouts (same lock-free contract as ui*).
+        // detMode: 0 = acquisition, 1 = tracking.
+        std::atomic<int>   uiDetMode       { 0 };
+        std::atomic<int>   uiWinLen        { 0 };
+        std::atomic<int>   uiAcqRunCount   { 0 };
+        std::atomic<int>   uiReacqStreak   { 0 };
+        std::atomic<float> uiTrackHz       { 0.0f };
+        std::atomic<float> uiLastClarity   { 0.0f };
+
     private:
         static int nextPow2 (int v) noexcept
         {
@@ -227,10 +286,34 @@ namespace pf_core
             glidedCents    = 0.0;
             targetNote     = -1;
             unvoicedHops   = 0;
+            acqUnvoicedHops = 0;
             targetHeldHops = 0;
+            detMode        = DetMode::Acquisition;
+            trackF0Hz      = 0.0;
+            stableTrackHops = 0;
+            samplesSinceAcq = 0;
+            reacqStreak    = 0;
+            reacqCandidateHz = 0.0;
+            lastClarity    = 0.0;
+            pendingReacqF0 = 0.0;
+            winLen         = 0;
+            trajHistCount  = 0;
+            trajHistPos    = 0;
+            for (int h = 0; h < kTrajHist; ++h)
+                trajN[h] = 0;
+            publishDetDiag();
             uiDetectedHz.store (0.0f, std::memory_order_relaxed);
             uiTargetHz.store (0.0f, std::memory_order_relaxed);
             uiShiftCents.store (0.0f, std::memory_order_relaxed);
+        }
+
+        void publishDetDiag() noexcept
+        {
+            uiDetMode.store (detMode == DetMode::Tracking ? 1 : 0, std::memory_order_relaxed);
+            uiWinLen.store (winLen, std::memory_order_relaxed);
+            uiReacqStreak.store (reacqStreak, std::memory_order_relaxed);
+            uiTrackHz.store ((float) trackF0Hz, std::memory_order_relaxed);
+            uiLastClarity.store ((float) lastClarity, std::memory_order_relaxed);
         }
 
         void applySnapshot (const PfParamSnapshot& s) noexcept
@@ -238,7 +321,8 @@ namespace pf_core
             amount   = std::clamp ((double) s.amount, 0.0, 150.0) * 0.01;
             retuneMs = std::clamp ((double) s.retuneMs, 0.0, 600.0);
             glideMs  = std::clamp ((double) s.glideMs, 0.0, 750.0);
-            tolCt    = std::clamp ((double) s.toleranceCt, 0.0, 75.0);
+            stabilityCt = std::clamp ((double) s.stabilityCt, 0.0, 75.0);
+            accuracyCt  = std::clamp ((double) s.accuracyCt, 0.0, 75.0);
             hystCt   = std::clamp ((double) s.hysteresisCt, 0.0, 75.0);
             minHz    = std::clamp ((double) s.minPitchHz, kMinPitchFloorHz, 500.0);
             // Respect the user's Max Pitch; only guarantee it sits a little above
@@ -255,9 +339,10 @@ namespace pf_core
             mixRamp.setTargetValue (std::clamp ((double) s.mixPct, 0.0, 100.0) * 0.01);
             gainRamp.setTargetValue (std::pow (10.0, std::clamp ((double) s.outDb, -24.0, 24.0) / 20.0));
 
-            winLen = std::min ((int) std::lround (kWindowPeriods[mode] * fs / minHz), maxWin);
+            acqWinLen = std::min ((int) std::lround (kWindowPeriods[mode] * fs / minHz), maxWin);
             hopLen = std::max (32, (int) std::lround (kHopSeconds[mode] * fs));
             medLen = kMedianDepth[mode];
+            acqIntervalSamples = std::max (hopLen, (int) std::lround (kAcqIntervalSec * fs));
             if (hopCounter >= hopLen) hopCounter = 0;   // keep hopCounter < hopLen if hopLen shrank
 
             // The median window is a ring of medLen entries; a Buffer change that
@@ -270,6 +355,10 @@ namespace pf_core
                 medCount   = 0;
                 medPos     = 0;
                 prevMedLen = medLen;
+                // Depth change invalidates the "stable enough to track" count.
+                stableTrackHops = 0;
+                if (detMode == DetMode::Tracking)
+                    enterAcquisition();
             }
 
             // Analysis-path high-pass, DETECTOR FEED ONLY (the audio that reaches
@@ -304,7 +393,8 @@ namespace pf_core
             // held note in the old scale is never kept as a correction target once
             // it becomes an out-of-scale pitch (targetNote < 0 -> fresh pick, no
             // hysteresis, at the next voiced hop).
-            if ((key != prevKey || scale != prevScale) && targetNote >= 0 && ! noteAllowed (targetNote))
+            if ((key != prevKey || scale != prevScale) && targetNote >= 0
+                && ! noteAllowed (targetNote, key, scale))
                 targetNote = -1;
             prevKey = key; prevScale = scale;
 
@@ -332,6 +422,59 @@ namespace pf_core
             uiLatencySamples.store (pendingLookahead, std::memory_order_relaxed);
         }
 
+        void enterAcquisition() noexcept
+        {
+            detMode = DetMode::Acquisition;
+            stableTrackHops = 0;
+            reacqStreak = 0;
+            reacqCandidateHz = 0.0;
+            // Keep trackF0Hz as a hint for diagnostics; the next voiced estimate
+            // re-seeds it. samplesSinceAcq resets so the next hop runs a full acq.
+            samplesSinceAcq = acqIntervalSamples;
+            // Drop trajectory history so a harmonic lock cannot keep voting
+            // through the acquisition restart.
+            trajHistCount = 0;
+            trajHistPos = 0;
+            for (int h = 0; h < kTrajHist; ++h)
+                trajN[h] = 0;
+        }
+
+        int trackingWindowLen (double f0) const noexcept
+        {
+            if (! (f0 > 0.0) || fs <= 0.0)
+                return acqWinLen;
+            // ceil so rounding never undershoots the 6-period contract.
+            const int want = (int) std::ceil (kTrackingMinPeriods * fs / f0 - 1.0e-12);
+            // Do NOT clamp to acqWinLen: at low tracked f0 (e.g. 110 Hz with
+            // Min Pitch 75 / Quality) 6 periods exceeds the acquisition window
+            // (~3.2 periods of Min Pitch). Clamping there was the lock-in margin
+            // we just added — only the prepare() budget (maxWin) is the ceiling.
+            return std::clamp (want, 16, maxWin);
+        }
+
+        // Assemble W samples centred on the grain-read time, advanced by the
+        // median group delay so the post-median f0 lines up with that grain.
+        // When medDelay > lookahead (high Min Pitch / shallow L), the ideal
+        // centre would sit PAST the write cursor — clamp so the window never
+        // reads unwritten / wrap-around-stale samples.
+        void fillAnalysisWindow (float* dst, int W) noexcept
+        {
+            const int medDelay = ((medLen - 1) / 2) * hopLen;
+            std::int64_t center = written
+                                - (std::int64_t) committedLookahead
+                                + (std::int64_t) medDelay;
+            // Window end must be <= written (exclusive of the next write slot).
+            const std::int64_t maxCenter = written - (std::int64_t) (W / 2);
+            if (center > maxCenter)
+                center = maxCenter;
+            const std::int64_t start = center - (std::int64_t) (W / 2);
+            for (int i = 0; i < W; ++i)
+            {
+                const std::int64_t t = start + i;
+                dst[(size_t) i] = t >= 0 ? detRing[(size_t) (t & detMask)] : 0.0f;
+            }
+        }
+
         // Process one span [start, start+m) whose track state was fixed by the hop
         // that opened it (the caller fires the closing hop). No hop firing here, so
         // a host-block boundary that lands inside a hop interval leaves the track
@@ -344,9 +487,9 @@ namespace pf_core
             {
                 const float l = L[i];
                 const float r = R != nullptr ? R[i] : l;
-                const double m = detHp[1].processSample (
+                const double mid = detHp[1].processSample (
                                      detHp[0].processSample (0.5 * ((double) l + (double) r)));
-                detRing[(size_t) (written & detMask)] = (float) m;
+                detRing[(size_t) (written & detMask)] = (float) mid;
                 dryL[(size_t) (written & dryMask)] = l;
                 dryR[(size_t) (written & dryMask)] = r;
                 ++written;
@@ -372,30 +515,389 @@ namespace pf_core
             }
         }
 
+        // Continuity cost between two f0s: |octaves| plus a bump when the jump
+        // lands near an exact octave (the harmonic-lock signature). Does NOT
+        // reward harmonic relatedness — that has no discriminatory power (§2.1).
+        static double trajTransitionCost (double fromHz, double toHz) noexcept
+        {
+            if (! (fromHz > 0.0) || ! (toHz > 0.0))
+                return 4.0; // heavy: connecting through an unvoiced gap
+            const double cents = std::abs (1200.0 * std::log2 (toHz / fromHz));
+            double cost = kTrajContPerOctave * (cents / 1200.0);
+            for (int k = 1; k <= 2; ++k)
+            {
+                const double oct = 1200.0 * (double) k;
+                if (std::abs (cents - oct) <= kTrajOctaveWindowCt)
+                    cost += kTrajOctaveBump;
+            }
+            return cost;
+        }
+
+        // Push this hop's candidates into the history ring and pick the f0 that
+        // ends the minimum-cost path over the retained hops (causal Viterbi).
+        // Returns false when no usable candidate exists (treat as unvoiced).
+        //
+        // Candidate gate (load-bearing): a pure tone has perfect NSDF peaks at
+        // every sub-multiple (f0/2, f0/3, …) with clarity ≈ 1. Flooding the
+        // trajectory with those locks onto a random subharmonic. We therefore
+        // keep ONLY (a) the MPM pick (first peak ≥ kPeakRatio * best) and
+        // (b) peaks within a continuity band of the current track — never the
+        // whole subharmonic comb. Harmonic-support scoring stays forbidden.
+        bool selectTrajectory (const factory_core::PitchCandidate* cands, int nCand,
+                               double clarityGate,
+                               double& outF0, double& outClarity) noexcept
+        {
+            outF0 = 0.0;
+            outClarity = 0.0;
+            if (cands == nullptr || nCand <= 0)
+            {
+                trajN[trajHistPos] = 0;
+                trajHistPos = (trajHistPos + 1) % kTrajHist;
+                if (trajHistCount < kTrajHist) ++trajHistCount;
+                return false;
+            }
+
+            double bestVal = 0.0;
+            for (int i = 0; i < nCand; ++i)
+                bestVal = std::max (bestVal, cands[i].clarity);
+
+            // MPM pick: first (shortest-lag) candidate reaching kPeakRatio * best.
+            int mpm = -1;
+            for (int i = 0; i < nCand; ++i)
+                if (cands[i].clarity >= factory_core::PitchDetector::kPeakRatio * bestVal
+                    && cands[i].f0Hz >= minHz)
+                { mpm = i; break; }
+
+            int kept = 0;
+            auto push = [&] (int i) noexcept
+            {
+                if (i < 0 || kept >= kTrajCand) return;
+                for (int k = 0; k < kept; ++k)
+                    if (std::abs (1200.0 * std::log2 (trajF0[trajHistPos][k] / cands[i].f0Hz)) < 5.0)
+                        return; // already have this peak
+                trajF0[trajHistPos][kept] = cands[i].f0Hz;
+                trajCl[trajHistPos][kept] = cands[i].clarity;
+                ++kept;
+            };
+
+            if (mpm >= 0)
+                push (mpm);
+
+            // Near-track alternatives (the residual harmonic-error case): allow a
+            // lower-clarity peak that continues the track when MPM jumped away.
+            if (trackF0Hz > 0.0)
+            {
+                for (int i = 0; i < nCand; ++i)
+                {
+                    if (cands[i].f0Hz < minHz || cands[i].clarity < clarityGate * 0.85)
+                        continue;
+                    const double ct = std::abs (1200.0 * std::log2 (cands[i].f0Hz / trackF0Hz));
+                    if (ct <= 250.0) // ~quarter-octave continuity band
+                        push (i);
+                }
+            }
+
+            trajN[trajHistPos] = kept;
+            const int curSlot = trajHistPos;
+            trajHistPos = (trajHistPos + 1) % kTrajHist;
+            if (trajHistCount < kTrajHist) ++trajHistCount;
+            if (kept == 0)
+                return false;
+
+            // Single candidate → trivial path (cold-start / MPM-only frames).
+            if (kept == 1)
+            {
+                outF0 = trajF0[curSlot][0];
+                outClarity = trajCl[curSlot][0];
+                return outF0 >= minHz && outClarity >= clarityGate * 0.85;
+            }
+
+            // Forward DP over the occupied history (oldest → current).
+            const int H = trajHistCount;
+            double dp[kTrajHist][kTrajCand];
+
+            auto slotAt = [&] (int chron) noexcept -> int
+            {
+                return (curSlot - (H - 1 - chron) + kTrajHist * 4) % kTrajHist;
+            };
+
+            int start = 0;
+            while (start < H && trajN[slotAt (start)] == 0)
+                ++start;
+            if (start >= H)
+                return false;
+
+            {
+                const int s0 = slotAt (start);
+                for (int j = 0; j < trajN[s0]; ++j)
+                    dp[start][j] = kTrajEmitClarity * (1.0 - trajCl[s0][j]);
+            }
+
+            for (int h = start + 1; h < H; ++h)
+            {
+                const int s = slotAt (h);
+                const int n = trajN[s];
+                if (n == 0)
+                {
+                    // Hole in history: restart the chain after it.
+                    start = h + 1;
+                    while (start < H && trajN[slotAt (start)] == 0)
+                        ++start;
+                    if (start >= H)
+                        return false;
+                    const int s1 = slotAt (start);
+                    for (int j = 0; j < trajN[s1]; ++j)
+                        dp[start][j] = kTrajEmitClarity * (1.0 - trajCl[s1][j]);
+                    h = start;
+                    continue;
+                }
+
+                int prev = h - 1;
+                while (prev >= start && trajN[slotAt (prev)] == 0)
+                    --prev;
+                if (prev < start)
+                {
+                    for (int j = 0; j < n; ++j)
+                        dp[h][j] = kTrajEmitClarity * (1.0 - trajCl[s][j]);
+                    continue;
+                }
+
+                const int sp = slotAt (prev);
+                const int np = trajN[sp];
+                for (int j = 0; j < n; ++j)
+                {
+                    double best = 1.0e300;
+                    for (int i = 0; i < np; ++i)
+                    {
+                        const double cost = dp[prev][i]
+                                          + trajTransitionCost (trajF0[sp][i], trajF0[s][j]);
+                        if (cost < best) best = cost;
+                    }
+                    dp[h][j] = best + kTrajEmitClarity * (1.0 - trajCl[s][j]);
+                }
+            }
+
+            const int sc = slotAt (H - 1);
+            const int nc = trajN[sc];
+            if (nc <= 0)
+                return false;
+            int bestJ = 0;
+            for (int j = 1; j < nc; ++j)
+                if (dp[H - 1][j] < dp[H - 1][bestJ])
+                    bestJ = j;
+
+            outF0 = trajF0[sc][bestJ];
+            outClarity = trajCl[sc][bestJ];
+            return outF0 >= minHz && outClarity >= clarityGate * 0.85;
+        }
+
         // One detection/decision step (every hopLen samples). Real-time safe:
         // the detector runs on preallocated buffers, everything here is O(win).
         void runHop() noexcept
         {
-            // Assemble the last winLen samples (ring → contiguous scratch).
-            const int W = winLen;
-            const std::int64_t start = written - (std::int64_t) W;
-            for (int i = 0; i < W; ++i)
-            {
-                const std::int64_t t = start + i;
-                scratch[(size_t) i] = t >= 0 ? detRing[(size_t) (t & detMask)] : 0.0f;
-            }
+            samplesSinceAcq += hopLen;
 
-            const auto est = detector.estimate (scratch.data(), W, minHz, maxHz, thresh);
+            // Primary analysis window: acquisition (Min-Pitch periods) or tracking
+            // (>= 6 periods of tracked f0).
+            const bool tracking = (detMode == DetMode::Tracking && trackF0Hz > 0.0);
+            winLen = tracking ? trackingWindowLen (trackF0Hz) : acqWinLen;
+            const int W = winLen;
+            fillAnalysisWindow (scratch.data(), W);
+
+            // P3: multi-candidate + causal trajectory (not the single-frame MPM pick).
+            factory_core::PitchCandidate cands[kTrajCand];
+            const int nCand = detector.estimateCandidates (
+                scratch.data(), W, minHz, maxHz, cands, kTrajCand);
+
+            double estF0 = 0.0, estClarity = 0.0;
+            const bool trajOk = selectTrajectory (cands, nCand, thresh, estF0, estClarity);
+            lastClarity = estClarity;
 
             // Keep the tracked pitch inside the band the PSOLA budget is sized
             // for (see kPsolaBudgetPeriods): PitchDetector's documented acceptance
             // reaches 0.9*minHz, which at Realtime would need 2.5 periods against
             // a 2.35-period lookahead — tracked and displayed, never corrected.
-            const bool inRange = est.voiced && est.f0Hz >= minHz;
+            const bool inRange = trajOk && estF0 >= minHz;
+
+            // --- acquisition / tracking state machine -------------------------
+            pendingReacqF0 = 0.0;
+            if (! inRange)
+            {
+                // Unvoiced: fall back to acquisition after a short hold so
+                // consonants do not thrash the mode every hop. (Separate from
+                // unvoicedHops, which gates note-memory across longer gaps.)
+                if (detMode == DetMode::Tracking)
+                {
+                    if (++acqUnvoicedHops * (double) hopLen > 0.030 * fs)
+                        enterAcquisition();
+                }
+                else
+                {
+                    stableTrackHops = 0;
+                    ++acqUnvoicedHops;
+                }
+            }
+            else
+            {
+                acqUnvoicedHops = 0;
+
+                // Large pitch jump while tracking → re-acquire (protects against
+                // harmonic lock-in AND lets genuine leaps restart cleanly).
+                if (detMode == DetMode::Tracking && trackF0Hz > 0.0)
+                {
+                    const double ratio = estF0 / trackF0Hz;
+                    if (ratio > kPitchJumpRatio || ratio < 1.0 / kPitchJumpRatio)
+                        enterAcquisition();
+                }
+
+                // Clarity collapse relative to the threshold → re-acquire.
+                if (detMode == DetMode::Tracking && lastClarity < thresh * 0.85)
+                    enterAcquisition();
+
+                if (detMode == DetMode::Acquisition)
+                {
+                    // Spec: only count hops whose f0 AGREES with the prospective
+                    // track. A run of high-clarity but mutually disagreeing
+                    // estimates (onset / legato octave flicker) must NOT enter
+                    // tracking with a wrong narrow window.
+                    if (trackF0Hz > 0.0 && stableTrackHops > 0)
+                    {
+                        const double dc = std::abs (1200.0 * std::log2 (estF0 / trackF0Hz));
+                        if (dc > kReacqMatchCents)
+                            stableTrackHops = 0;
+                    }
+                    ++stableTrackHops;
+                    trackF0Hz = estF0; // seed / refresh the prospective track
+                    if (stableTrackHops >= kTrackEnterStableHops)
+                    {
+                        detMode = DetMode::Tracking;
+                        reacqStreak = 0;
+                        reacqCandidateHz = 0.0;
+                        samplesSinceAcq = 0; // start the periodic-acq clock fresh
+                        // Adopt the tracking window on the same hop we enter, so
+                        // diagnostics / the next hop's sizing aren't stuck on acq.
+                        if (trackF0Hz > 0.0)
+                            winLen = trackingWindowLen (trackF0Hz);
+                    }
+                }
+                else if (detMode == DetMode::Tracking)
+                {
+                    trackF0Hz = estF0;
+                }
+            }
+
+            // Periodic full-band acquisition while tracking (never switch on a
+            // single disagreeing frame — need kReacqConfirmNeeded consecutive
+            // agreeing candidates). Use trajectory over the acquisition-window
+            // candidates so a lone harmonic MPM pick cannot force a switch.
+            if (detMode == DetMode::Tracking && samplesSinceAcq >= acqIntervalSamples)
+            {
+                samplesSinceAcq = 0;
+                uiAcqRunCount.fetch_add (1, std::memory_order_relaxed);
+
+                fillAnalysisWindow (scratchAcq.data(), acqWinLen);
+                factory_core::PitchCandidate acqCands[kTrajCand];
+                const int nAcq = detector.estimateCandidates (
+                    scratchAcq.data(), acqWinLen, minHz, maxHz, acqCands, kTrajCand);
+
+                // Prefer the MPM pick of the acquisition window; also consider a
+                // near-track alternative. Do not score the full subharmonic comb.
+                double bestVal = 0.0;
+                for (int i = 0; i < nAcq; ++i)
+                    bestVal = std::max (bestVal, acqCands[i].clarity);
+                double acqF0 = 0.0;
+                for (int i = 0; i < nAcq; ++i)
+                {
+                    if (acqCands[i].clarity >= factory_core::PitchDetector::kPeakRatio * bestVal
+                        && acqCands[i].f0Hz >= minHz
+                        && acqCands[i].clarity >= thresh * 0.85)
+                    { acqF0 = acqCands[i].f0Hz; break; }
+                }
+                // If MPM jumped an octave away from the track but a near-track
+                // peak is still present, prefer that (continuity over MPM).
+                if (trackF0Hz > 0.0 && acqF0 > 0.0)
+                {
+                    const double mpmCt = std::abs (1200.0 * std::log2 (acqF0 / trackF0Hz));
+                    if (mpmCt > kReacqMatchCents)
+                    {
+                        for (int i = 0; i < nAcq; ++i)
+                        {
+                            if (acqCands[i].f0Hz < minHz
+                                || acqCands[i].clarity < thresh * 0.85)
+                                continue;
+                            const double ct = std::abs (
+                                1200.0 * std::log2 (acqCands[i].f0Hz / trackF0Hz));
+                            if (ct <= kReacqMatchCents)
+                            {
+                                acqF0 = acqCands[i].f0Hz;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (acqF0 >= minHz && trackF0Hz > 0.0)
+                {
+                    const double cents = 1200.0 * std::log2 (acqF0 / trackF0Hz);
+                    if (std::abs (cents) <= kReacqMatchCents)
+                    {
+                        // Agrees with the track — clear any pending reacquire.
+                        reacqStreak = 0;
+                        reacqCandidateHz = 0.0;
+                    }
+                    else
+                    {
+                        if (reacqCandidateHz > 0.0)
+                        {
+                            const double dc = 1200.0 * std::log2 (acqF0 / reacqCandidateHz);
+                            if (std::abs (dc) <= kReacqMatchCents)
+                                ++reacqStreak;
+                            else
+                            {
+                                reacqStreak = 1;
+                                reacqCandidateHz = acqF0;
+                            }
+                        }
+                        else
+                        {
+                            reacqStreak = 1;
+                            reacqCandidateHz = acqF0;
+                        }
+
+                        if (reacqStreak >= kReacqConfirmNeeded)
+                        {
+                            // Confirmed: adopt the acquisition candidate as the
+                            // new track (true octave leaps included).
+                            trackF0Hz = reacqCandidateHz;
+                            pendingReacqF0 = reacqCandidateHz;
+                            for (int i = 0; i < medLen; ++i)
+                                medBuf[(size_t) i] = reacqCandidateHz;
+                            medCount = medLen;
+                            reacqStreak = 0;
+                            reacqCandidateHz = 0.0;
+                        }
+                    }
+                }
+                else
+                {
+                    // Unusable acquisition frame (unvoiced / below gate): break
+                    // the confirm streak so a later agreeing candidate cannot
+                    // pair with a stale one across the gap.
+                    reacqStreak = 0;
+                    reacqCandidateHz = 0.0;
+                }
+            }
+
+            publishDetDiag();
 
             // Median over the last medLen hops (octave-glitch suppression; the
             // depth is the Buffer mode's quality lever).
-            medBuf[(size_t) medPos] = inRange ? est.f0Hz : 0.0;
+            double medSample = inRange ? estF0 : 0.0;
+            // After a confirmed reacquire, prefer the confirmed f0 so a stale
+            // tracking-window harmonic estimate cannot vote the median back.
+            if (pendingReacqF0 > 0.0)
+                medSample = pendingReacqF0;
+            medBuf[(size_t) medPos] = medSample;
             medPos = (medPos + 1) % medLen;
             if (medCount < medLen) ++medCount;
 
@@ -434,7 +936,7 @@ namespace pf_core
                 const double detCents = 1200.0 * std::log2 (f0 / a4);
 
                 // -- scale quantiser with note hysteresis --
-                const int cand = nearestAllowedNote (detCents);
+                const int cand = nearestAllowedNote (detCents, key, scale);
                 if (targetNote < 0)
                 {
                     targetNote     = cand;
@@ -460,13 +962,11 @@ namespace pf_core
                 const double cg = factory_core::onePoleCoeffForMs (glideMs, hopRate);
                 glidedCents += (1.0 - cg) * (noteCents (targetNote) - glidedCents);
 
-                // -- tolerance deadzone + amount + retune smoothing --
-                const double err  = glidedCents - detCents;
-                double dead = 0.0;
-                if (err >  tolCt) dead = err - tolCt;
-                if (err < -tolCt) dead = err + tolCt;
-                const double corrTarget =
-                    std::clamp (dead * amount, -kMaxShiftCents, kMaxShiftCents);
+                // -- Stability deadzone + Accuracy residual + amount + retune --
+                // Continuous form lives in PfCorrection.h (P4 correction stage).
+                const double err = glidedCents - detCents;
+                const double corrTarget = correctionTargetCents (
+                    err, stabilityCt, accuracyCt, amount, kMaxShiftCents);
                 const double cr = factory_core::onePoleCoeffForMs (retuneMs, hopRate);
                 corrCents += (1.0 - cr) * (corrTarget - corrCents);
 
@@ -491,9 +991,6 @@ namespace pf_core
             uiShiftCents.store ((float) (correcting ? corrCents : 0.0), std::memory_order_relaxed);
         }
 
-        // Cents of a MIDI note relative to A4 (note 69).
-        static double noteCents (int note) noexcept { return (note - 69) * 100.0; }
-
         // Hops a freshly picked target may keep following the nearest-note
         // candidate before hysteresis takes over.
         //
@@ -512,45 +1009,14 @@ namespace pf_core
         // resumes, so vibrato crossing a semitone boundary is still held.
         int settleHops() const noexcept
         {
-            return (hopLen > 0 ? (winLen + hopLen - 1) / hopLen : 0) + medLen;
-        }
-
-        // Is `note` (MIDI number) in the current Key/Scale mask? Chromatic (scale 0)
-        // allows every note. Shared by nearestAllowedNote and the Key/Scale-change
-        // target invalidation in applySnapshot.
-        bool noteAllowed (int note) const noexcept
-        {
-            static constexpr int kMajor[12] = { 1,0,1,0,1,1,0,1,0,1,0,1 };
-            static constexpr int kMinor[12] = { 1,0,1,1,0,1,0,1,1,0,1,0 };
-            const int pc  = ((note % 12) + 12) % 12;
-            const int deg = ((pc - key) % 12 + 12) % 12;
-            if (scale == 1) return kMajor[deg] != 0;
-            if (scale == 2) return kMinor[deg] != 0;
-            return true;
-        }
-
-        // Nearest MIDI note whose pitch class is allowed by the key/scale mask.
-        int nearestAllowedNote (double detCents) const noexcept
-        {
-            const double noteF = detCents / 100.0 + 69.0;
-            const int nn = (int) std::lround (noteF);
-            int    best  = nn;
-            double bestD = 1.0e9;
-            for (int cand = nn - 12; cand <= nn + 12; ++cand)
-            {
-                if (! noteAllowed (cand)) continue;
-                const double d = std::abs (noteF - (double) cand);
-                if (d < bestD)
-                {
-                    bestD = d;
-                    best  = cand;
-                }
-            }
-            return best;
+            const int W = winLen > 0 ? winLen : acqWinLen;
+            return (hopLen > 0 ? (W + hopLen - 1) / hopLen : 0) + medLen;
         }
 
         static constexpr int    kMaxMedian = 7;
         static constexpr double kButterQ   = 0.70710678118654752440; // 1/sqrt(2)
+
+        enum class DetMode : int { Acquisition = 0, Tracking = 1 };
 
         // --- composition ---
         factory_core::PitchDetector detector;
@@ -564,17 +1030,18 @@ namespace pf_core
         int    maxWin = 0;
 
         // --- rings ---
-        std::vector<float> detRing, scratch, dryL, dryR;
+        std::vector<float> detRing, scratch, scratchAcq, dryL, dryR;
         int detSize = 0, drySize = 0;
         std::int64_t detMask = 0, dryMask = 0;
         std::int64_t written = 0;
 
         // --- live params (block-latched) ---
         double amount = 1.0, retuneMs = 80.0, glideMs = 60.0;
-        double tolCt = 12.0, hystCt = 18.0;
+        double stabilityCt = 12.0, accuracyCt = 0.0, hystCt = 18.0;
         double minHz = 75.0, maxHz = 1300.0, thresh = 0.80, a4 = 440.0;
         int    mode = 2, key = 0, scale = 0;
-        int    winLen = 0, hopLen = 512, medLen = 1;
+        int    winLen = 0, acqWinLen = 0, hopLen = 512, medLen = 1;
+        int    acqIntervalSamples = 1;
         double hpDesignedHz = 0.0;   // minHz the detHp cascade is currently designed for
 
         // --- latency latching (see applySnapshot / latencySamples / prepare) ---
@@ -590,6 +1057,24 @@ namespace pf_core
         double corrCents = 0.0, glidedCents = 0.0;
         int    targetNote = -1;
         std::int64_t unvoicedHops = 0;
+        int    acqUnvoicedHops = 0;  // short hold before falling back to acquisition
         int    targetHeldHops = 0;   // voiced hops since targetNote was picked fresh
+
+        // --- acquisition / tracking mode (§3 P1) ---
+        DetMode detMode = DetMode::Acquisition;
+        double  trackF0Hz = 0.0;
+        int     stableTrackHops = 0;
+        int     samplesSinceAcq = 0;
+        int     reacqStreak = 0;
+        double  reacqCandidateHz = 0.0;
+        double  lastClarity = 0.0;
+        double  pendingReacqF0 = 0.0; // confirmed reacquire f0 for this hop's median
+
+        // --- P3 causal trajectory history ---
+        double trajF0[kTrajHist][kTrajCand] = {};
+        double trajCl[kTrajHist][kTrajCand] = {};
+        int    trajN[kTrajHist] = {};
+        int    trajHistPos = 0;
+        int    trajHistCount = 0;
     };
 } // namespace pf_core

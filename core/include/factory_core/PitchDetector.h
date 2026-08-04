@@ -10,14 +10,16 @@
 //   * prepare(sampleRate, lowestMinHz, maxWindowPeriods) sizes every buffer for
 //     the worst case (window up to maxWindowPeriods periods of lowestMinHz,
 //     plus one period of lag range) and precomputes one FFT per usable order.
-//     estimate() then never allocates, locks, or makes a syscall — safe to run
-//     on the audio thread.
+//     estimate() / estimateCandidates() then never allocate, lock, or make a
+//     syscall — safe to run on the audio thread.
 //   * estimate(x, n, minHz, maxHz, clarityThreshold) analyses one contiguous
-//     frame. The caller chooses n >= 2 * sampleRate/minHz (so the summation
-//     window still spans a full period at the largest lag) and
-//     minHz >= lowestMinHz. The FFT order is derived from the frame + lag
-//     length, so the analysis resolution scales with the sample rate by
-//     construction (a fixed order is forbidden repo-wide).
+//     frame and returns the MPM single-frame pick (first peak reaching
+//     kPeakRatio of the global maximum).
+//   * estimateCandidates(...) fills up to maxOut NSDF local-maximum candidates
+//     (parabolically interpolated), for callers that want temporal trajectory
+//     selection instead of the single-frame MPM pick. NO harmonic-support
+//     scoring is applied here — periodicity alone cannot distinguish f0 from
+//     integer multiples (see pitch-fix-detection-accuracy.md §2.1).
 //   * Absolute silence floor (regression policy: detectors must never produce
 //     phantom output on silence): a frame whose mean square is below
 //     kPowerFloor is unvoiced regardless of the NSDF shape.
@@ -40,6 +42,12 @@ namespace factory_core
         bool   voiced  = false;
     };
 
+    struct PitchCandidate
+    {
+        double f0Hz    = 0.0;
+        double clarity = 0.0;   // NSDF peak height, [0, 1]
+    };
+
     class PitchDetector
     {
     public:
@@ -51,6 +59,12 @@ namespace factory_core
         // kPeakRatio * (global maximum) wins, which suppresses octave-down
         // errors without biasing the chosen peak's position.
         static constexpr double kPeakRatio = 0.90;
+
+        // Default floor for estimateCandidates: expose secondary peaks (incl. the
+        // true f0 when MPM would prefer a harmonic) without dumping noise.
+        static constexpr double kCandidateRatio = 0.45;
+
+        static constexpr int kMaxCandidates = 64;
 
         void prepare (double sampleRate, double lowestMinHz, double maxWindowPeriods)
         {
@@ -73,21 +87,67 @@ namespace factory_core
         int maxWindowSamples() const noexcept { return maxWin; }
 
         // Analyse one frame of n samples (the most recent last). Allocation-free.
+        // MPM single-frame pick — unchanged contract for existing callers/tests.
         PitchEstimate estimate (const float* x, int n,
                                 double minHz, double maxHz,
                                 double clarityThreshold) noexcept
         {
             PitchEstimate out;
-            if (x == nullptr || n < 16 || fs <= 0.0)
+            PitchCandidate cands[kMaxCandidates];
+            const int nCand = estimateCandidates (x, n, minHz, maxHz,
+                                                  cands, kMaxCandidates, kPeakRatio);
+            if (nCand <= 0)
                 return out;
+
+            // MPM: first candidate reaching kPeakRatio of the global maximum.
+            // estimateCandidates already filtered by minClarityRatio; with
+            // kPeakRatio that leaves only peaks >= 0.9*best, still ordered by
+            // ascending lag — so index 0 is the MPM pick.
+            double bestVal = 0.0;
+            for (int c = 0; c < nCand; ++c)
+                bestVal = std::max (bestVal, cands[c].clarity);
+            int pick = -1;
+            for (int c = 0; c < nCand; ++c)
+                if (cands[c].clarity >= kPeakRatio * bestVal) { pick = c; break; }
+            if (pick < 0)
+                return out;
+
+            const double peakVal = cands[pick].clarity;
+            const double f0 = cands[pick].f0Hz;
+            if (! (f0 > 0.0) || f0 < minHz * 0.9 || f0 > maxHz * 1.1)
+                return out;
+
+            out.f0Hz    = f0;
+            out.clarity = peakVal;
+            out.voiced  = peakVal >= clarityThreshold;
+            if (! out.voiced)
+            {
+                out.f0Hz = 0.0;
+                return out;
+            }
+            return out;
+        }
+
+        // Fill `out[0..return)` with NSDF local-maximum candidates inside
+        // [minHz, maxHz], sorted by ascending lag (highest frequency first).
+        // Only peaks with clarity >= minClarityRatio * bestPeak are kept.
+        // Allocation-free. Returns 0 on silence / no peaks.
+        int estimateCandidates (const float* x, int n,
+                                double minHz, double maxHz,
+                                PitchCandidate* out, int maxOut,
+                                double minClarityRatio = kCandidateRatio) noexcept
+        {
+            if (out == nullptr || maxOut <= 0 || x == nullptr || n < 16 || fs <= 0.0)
+                return 0;
             n = std::min (n, maxWin);
+            minClarityRatio = std::clamp (minClarityRatio, 0.0, 1.0);
 
             // --- silence floor -------------------------------------------------
             double power = 0.0;
             for (int i = 0; i < n; ++i)
                 power += (double) x[i] * (double) x[i];
             if (power / (double) n < kPowerFloor)
-                return out;
+                return 0;
 
             // --- lag range from the requested pitch range ----------------------
             int lagMin = (int) std::floor (fs / std::max (1.0, maxHz));
@@ -95,7 +155,7 @@ namespace factory_core
             lagMin = std::max (2, lagMin);
             lagMax = std::min ({ lagMax, maxLag, n / 2 });
             if (lagMax <= lagMin + 2)
-                return out;
+                return 0;
 
             // --- autocorrelation r(tau) via FFT (Wiener–Khinchin) ---------------
             const int   order = orderForLength (n + lagMax + 1);
@@ -121,16 +181,11 @@ namespace factory_core
                 nsdf[(size_t) tau] = m > 1.0e-12 ? 2.0 * a[tau].real() / m : 0.0;
             }
 
-            // --- McLeod key-maximum picking -------------------------------------
-            // Collect the highest point of every positive NSDF region inside the
-            // lag range, then take the FIRST candidate reaching kPeakRatio of the
-            // best one. Regions are delimited by zero crossings, which excludes
-            // the tau≈0 main lobe (still positive at lagMin) unless a genuine
-            // local maximum lives inside the range.
+            // --- Collect positive-region local maxima --------------------------
             double bestVal = 0.0;
-            int    nCand   = 0;
-            int    candTau[kMaxCandidates];
-            double candVal[kMaxCandidates];
+            int    nRaw    = 0;
+            int    rawTau[kMaxCandidates];
+            double rawVal[kMaxCandidates];
 
             bool   inRegion  = false;
             double regionVal = 0.0;
@@ -153,55 +208,48 @@ namespace factory_core
                 }
                 if ((v <= 0.0 || tau == lagMax) && inRegion)
                 {
-                    if (regionHasPeak && nCand < kMaxCandidates)
+                    if (regionHasPeak && nRaw < kMaxCandidates)
                     {
-                        candTau[nCand] = regionTau;
-                        candVal[nCand] = regionVal;
-                        ++nCand;
+                        rawTau[nRaw] = regionTau;
+                        rawVal[nRaw] = regionVal;
+                        ++nRaw;
                         bestVal = std::max (bestVal, regionVal);
                     }
                     inRegion = false;
                 }
             }
-            if (nCand == 0 || bestVal <= 0.0)
-                return out;
+            if (nRaw == 0 || bestVal <= 0.0)
+                return 0;
 
-            int pick = -1;
-            for (int c = 0; c < nCand; ++c)
-                if (candVal[c] >= kPeakRatio * bestVal) { pick = c; break; }
-            if (pick < 0)
-                return out;
-
-            // --- parabolic interpolation around the picked lag ------------------
-            const int    t  = candTau[pick];
-            const double y0 = nsdf[(size_t) (t - 1)];
-            const double y1 = nsdf[(size_t) t];
-            const double y2 = nsdf[(size_t) (t + 1)];
-            const double den = y0 - 2.0 * y1 + y2;
-            double delta = 0.0;
-            if (std::abs (den) > 1.0e-15)
-                delta = std::clamp (0.5 * (y0 - y2) / den, -1.0, 1.0);
-            const double tauStar = (double) t + delta;
-            const double peakVal = std::clamp (y1 - 0.25 * (y0 - y2) * delta, 0.0, 1.0);
-
-            const double f0 = fs / tauStar;
-            if (! (f0 > 0.0) || f0 < minHz * 0.9 || f0 > maxHz * 1.1)
-                return out;
-
-            out.f0Hz    = f0;
-            out.clarity = peakVal;
-            out.voiced  = peakVal >= clarityThreshold;
-            if (! out.voiced)
+            const double floor = minClarityRatio * bestVal;
+            int written = 0;
+            for (int c = 0; c < nRaw && written < maxOut; ++c)
             {
-                out.f0Hz = 0.0;
-                return out;
+                if (rawVal[c] < floor)
+                    continue;
+
+                const int    t  = rawTau[c];
+                const double y0 = nsdf[(size_t) (t - 1)];
+                const double y1 = nsdf[(size_t) t];
+                const double y2 = nsdf[(size_t) (t + 1)];
+                const double den = y0 - 2.0 * y1 + y2;
+                double delta = 0.0;
+                if (std::abs (den) > 1.0e-15)
+                    delta = std::clamp (0.5 * (y0 - y2) / den, -1.0, 1.0);
+                const double tauStar = (double) t + delta;
+                const double peakVal = std::clamp (y1 - 0.25 * (y0 - y2) * delta, 0.0, 1.0);
+                const double f0 = fs / tauStar;
+                if (! (f0 > 0.0) || f0 < minHz * 0.9 || f0 > maxHz * 1.1)
+                    continue;
+
+                out[written].f0Hz    = f0;
+                out[written].clarity = peakVal;
+                ++written;
             }
-            return out;
+            return written;
         }
 
     private:
-        static constexpr int kMaxCandidates = 64;
-
         static int orderForLength (int len) noexcept
         {
             int o = 1;

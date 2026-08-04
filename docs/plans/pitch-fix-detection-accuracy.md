@@ -1,12 +1,14 @@
 # pitch-fix 検出精度 — Codex 指摘の精査と作業計画
 
-- ステータス: **仕様確定・未実装**。§4 の裁定はすべて完了し、試作で出た
-  acquisition lock-in（§2.6-1）も P1 の確定仕様に織り込み済み。**残っている
-  意思決定は無い**（§4.4 の後回し項目を除く）。試作コードは意図的に破棄してあり、
-  この PR はプランのみ。次セッションで §3 P1 → P2 → §4.1 の順に実装する。
-- ブランチ: `claude/pitch-fix-algorithm-review-0733rn`
-- 対象: `plugins/pitch-fix/PfCore.h`, `core/include/factory_core/PitchDetector.h`,
-  `core/include/factory_core/PsolaShifter.h`
+- ステータス: **素材待ち以外は実装済み**。
+  - 完了: P1 / P2（Realtime は ±1 hop、深い median は窓ブレンド下限でゲート）/
+    §4.1 / P3（既存 L 内）/ P4（`PfNote`・`PfCorrection` 純関数分離）/
+    P0・P5 の非ゲート計測ハーネス（`tools/pitch-fix-eval/`）
+  - 未着手（ブロッカーあり）: P0 実声セットと CTest 昇格、P2'、P3 追加レイテンシ量、
+    P5 の代替 resynth エンジン本体、プリセット味再設計
+- ブランチ: `cursor/pitch-fix-detection-accuracy-894d`
+- 対象: `plugins/pitch-fix/PfCore.h`, `PfNote.h`, `PfCorrection.h`, `PfParams.h`,
+  `PfPresets.h`, shell/UI/tests, `core/.../PitchDetector.h`, `tools/pitch-fix-eval/`
 - 実測環境: 現行 `main` (`361c920`) のヘッダを直接コンパイルした probe 群
   （`PfCore.h` + `factory_core` はヘッダオンリーなので、Visage/CLAP を configure
   せずに単体ビルドできる）。`pitch_fix_dsp_test` は 48 kHz で全項目 PASS を確認済み。

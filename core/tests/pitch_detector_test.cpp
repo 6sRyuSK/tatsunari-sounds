@@ -208,6 +208,29 @@ static void detectorTests (double Fs)
             fail ("vibrato sine outside band (got " + std::to_string (e.f0Hz)
                   + ") @" + std::to_string (Fs));
     }
+
+    // --- 10. estimateCandidates: MPM pick is first; subharmonics also appear ---
+    {
+        const int W = (int) std::ceil (4.0 * Fs / 70.0);
+        auto x = makeSine (W, Fs, 440.0, 0.5);
+        factory_core::PitchCandidate cands[16];
+        const int n = det.estimateCandidates (x.data(), W, 70.0, 1600.0, cands, 16);
+        if (n < 1)
+            fail ("estimateCandidates returned no peaks @" + std::to_string (Fs));
+        // Ascending lag → first candidate is the highest frequency (= MPM pick).
+        if (std::abs (centsBetween (cands[0].f0Hz, 440.0)) > 5.0)
+            fail ("estimateCandidates[0] not the MPM f0 (got " + std::to_string (cands[0].f0Hz)
+                  + ") @" + std::to_string (Fs));
+        // Pure sine exposes subharmonics; at least one lower peak should appear
+        // when the ratio floor is the default (0.45).
+        if (n < 2)
+            fail ("estimateCandidates should expose subharmonic peaks on a sine @"
+                  + std::to_string (Fs));
+        // estimate() must still agree with cands[0] under MPM rules.
+        const auto e = det.estimate (x.data(), W, 70.0, 1600.0, kThresh);
+        if (! e.voiced || std::abs (centsBetween (e.f0Hz, cands[0].f0Hz)) > 1.0)
+            fail ("estimate() diverged from candidates MPM pick @" + std::to_string (Fs));
+    }
 }
 
 int main (int argc, char** argv)
