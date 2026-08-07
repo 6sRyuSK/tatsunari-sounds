@@ -122,6 +122,8 @@ add_library(factory_ui_visage STATIC
   src/LinkSlider.cpp
   src/SpectrumModel.cpp
   src/SpectrumView.cpp
+  src/UpdateBadge.cpp
+  src/UpdateDialog.cpp
 )
 
 target_compile_features(factory_ui_visage PUBLIC cxx_std_17)
@@ -141,6 +143,10 @@ target_link_libraries(factory_ui_visage PUBLIC
                   # PRIVATE deps propagating through the static archive.
   factory_ui_visage_fonts
 )
+
+# UpdateUiHost.h pulls factory_update. The design-system lib itself does NOT
+# link it (WASM gallery / theme tests stay free of HTTP). Clap GUI shells that
+# include UpdateUiHost.h must link factory_update explicitly.
 
 # --- CLAP editor host (native clap-first shells only) -------------------------
 # The Visage-backed factory_shell::IClapEditor base + the fixed/resizable derivations

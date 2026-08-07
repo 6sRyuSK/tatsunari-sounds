@@ -59,7 +59,8 @@ if(FACTORY_DEQ_CLAP_GUI)
 
   # factory_ui_visage_clap_host brings the shared Visage IClapEditor host base +
   # factory_ui_visage (visage + params/core includes) + factory_shell + clap.
-  target_link_libraries(dynamic-eq-impl PUBLIC factory_ui_visage_clap_host)
+  # factory_update backs the in-editor update badge (UpdateUiHost).
+  target_link_libraries(dynamic-eq-impl PUBLIC factory_ui_visage_clap_host factory_update)
 
   target_compile_definitions(dynamic-eq-impl PRIVATE FACTORY_DEQ_CLAP_GUI=1)
 

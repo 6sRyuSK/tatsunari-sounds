@@ -73,7 +73,8 @@ if(FACTORY_RS_CLAP_GUI)
 
   # factory_ui_visage_clap_host brings the shared Visage IClapEditor host base +
   # factory_ui_visage (visage + params/core includes) + factory_shell + clap.
-  target_link_libraries(resonance-suppressor-impl PUBLIC factory_ui_visage_clap_host)
+  # factory_update backs the in-editor update badge (UpdateUiHost).
+  target_link_libraries(resonance-suppressor-impl PUBLIC factory_ui_visage_clap_host factory_update)
 
   target_compile_definitions(resonance-suppressor-impl PRIVATE FACTORY_RS_CLAP_GUI=1)
 

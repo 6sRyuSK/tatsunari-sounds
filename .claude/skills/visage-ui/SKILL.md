@@ -58,6 +58,9 @@ draw 毎に `store.value()` を読む(setter 呼び出し不要)。
 | `ValueText.h` | — | 値直接入力の **visage-free 側**の契約: `ValueEntryRequest`(rect は **window px** + `prefill` + `fontPx` + `commit`)/ `ValueEntryOpener` / prefill 生成 / 共有 commit(parse → 不正なら**書かず revert** → gestured write)。ホストコンパイラで通るので `value_text_test.cpp` が headless 検証する |
 | `SpectrumView` | `(theme, model, sampleRate)` | アナライザ描画。`onTick`(フレーム毎のフィード注入), `setFrozen` |
 | `SpectrumModel` | — | JUCE-free/visage-free の数理。`setOrderForSampleRate`(固定 order 禁止), `writeSamples`, `update`, `smoothedDb/peakDb`; `LogFreqAxis`(20Hz–20kHz log), `VerticalAxis` |
+| `UpdateBadge` | `(theme)` | 更新ありのときだけ出す受動 pill。`onClick` |
+| `UpdateDialog` | `(theme)` | opt-in / 更新詳細のフルカバスクリプトモーダル。`openOptIn` / `openUpdate` |
+| `UpdateUiHost.h` | `(theme, slug, version)` | `factory_update::UpdateCheck` と Badge/Dialog の配線。**clap GUI シェルだけ**が include + `factory_update` を link（WASM gallery は触らない） |
 
 補助: `Chrome.h` の `paintBackground` / `paintCard`(warm-white 背景とカード)、
 `Fonts.h` の `regularFont(px)` / `boldFont(px)`(常にこれ経由; 書体切替は

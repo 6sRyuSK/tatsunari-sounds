@@ -158,6 +158,10 @@ target_compile_features(factory_params INTERFACE cxx_std_20)
 
 enable_testing()
 
+# --- Shared update-check library (badge side; Visage-free / JUCE-free) ---
+# Linked by clap GUI shells + its own headless CTest. Does not pull Visage.
+add_subdirectory(update)
+
 # --- Direct per-primitive tests for the shared factory_core DSP primitives ---
 # (links only factory_core, headless; one CTest case per standard sample rate).
 add_subdirectory(core/tests)

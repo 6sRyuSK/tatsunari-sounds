@@ -30,11 +30,16 @@
 #include "factory_presets/PresetSession.h"
 
 #include "factory_ui_visage/ClapEditorHost.h"
+#include "factory_ui_visage/UpdateUiHost.h"
 
 #include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
+
+#ifndef RS_CLAP_VERSION
+#  define RS_CLAP_VERSION "0.0.0"
+#endif
 
 namespace
 {
@@ -113,11 +118,19 @@ namespace
             // Per analyser frame: drain the editor's gesture queue into its undo timeline
             // (the REAL feed refreshes itself from the audio thread), then flush pending GUI
             // edits to the host while the plugin is inactive.
+            updates_ = std::make_unique<factory_ui_visage::UpdateUiHost> (
+                theme_.base, "resonance-suppressor", RS_CLAP_VERSION);
+            editor_->addChild (&updates_->badge());
+            editor_->addChild (&updates_->dialog());
+
             editor_->curve().onTick = [this]
             {
                 if (editor_ == nullptr) return;
                 editor_->pumpGestures();
                 flushEditsIfInactive();
+                layoutUpdates();
+                if (updates_)
+                    updates_->tick();
             };
 
             // Undo/redo applies a bulk parameter change; relay it like a preset / A-B switch
@@ -129,22 +142,48 @@ namespace
         }
 
         visage::Frame* editorFrame() const override { return editor_.get(); }
-        void resetEditor() override { editor_.reset(); }
+        void resetEditor() override
+        {
+            editor_.reset();
+            updates_.reset();
+        }
         void setEditorWindowScale (float windowScale) override { if (editor_) editor_->setWindowScale (windowScale); }
         void onStateReplacedHook() override { if (editor_) editor_->onStateReplaced(); }
 
         // The analyser is live: let the core publish display spectra + run display-time
         // smoothing (both skipped while no editor is attached). Cleared on destroy.
-        void onEditorCreated() override    { feed_.setDisplayActive (true); }
-        void onEditorDestroying() override { feed_.setDisplayActive (false); }
+        void onEditorCreated() override
+        {
+            feed_.setDisplayActive (true);
+            if (updates_)
+                updates_->onShown();
+        }
+        void onEditorDestroying() override
+        {
+            if (updates_)
+                updates_->onHidden();
+            feed_.setDisplayActive (false);
+        }
 
     private:
+        void layoutUpdates()
+        {
+            if (editor_ == nullptr || updates_ == nullptr)
+                return;
+            const float w = editor_->width(), h = editor_->height();
+            const float k = h / rs_ui::RsEditor::kDesignH;
+            updates_->layoutDialog (w, h);
+            // Just left of the header right-cluster (bypass sits at the far right).
+            updates_->layoutBadge (w - 280.0f * k, 22.0f * k, 72.0f * k, 24.0f * k);
+        }
+
         rs_ui::RsTheme        theme_;   // owned; the editor holds a const ref
         rs_ui::RsFeedFromCore feed_;    // real feed over the shell's RsCore
         SessionPresetModel    presets_; // real, over PresetSession
         rs_ui::AbCompareModel ab_;      // real A/B: params + program index (RsAbState.h)
 
         std::unique_ptr<rs_ui::RsEditor> editor_;
+        std::unique_ptr<factory_ui_visage::UpdateUiHost> updates_;
     };
 } // namespace
 

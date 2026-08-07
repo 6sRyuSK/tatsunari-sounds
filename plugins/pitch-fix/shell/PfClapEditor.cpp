@@ -20,12 +20,17 @@
 #include "factory_presets/PresetSession.h"
 #include "factory_ui_visage/Theme.h"
 #include "factory_ui_visage/ClapEditorHost.h"
+#include "factory_ui_visage/UpdateUiHost.h"
 
 #include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef PF_CLAP_VERSION
+#  define PF_CLAP_VERSION "0.0.0"
+#endif
 
 namespace
 {
@@ -86,18 +91,46 @@ namespace
         visage::Frame* buildEditor() override
         {
             editor_ = std::make_unique<pf_ui::PfEditor> (theme_, store_, feed_, presets_);
+            updates_ = std::make_unique<factory_ui_visage::UpdateUiHost> (
+                theme_, "pitch-fix", PF_CLAP_VERSION);
+            editor_->addChild (&updates_->badge());
+            editor_->addChild (&updates_->dialog()); // frontmost
             // Once per drawn frame (the status badge self-redraws): flush pending GUI edits to
             // the host while the plugin is inactive (harmless while active).
-            editor_->setFrameTick ([this] { flushEditsIfInactive(); });
+            editor_->setFrameTick ([this]
+            {
+                flushEditsIfInactive();
+                layoutUpdates();
+                if (updates_)
+                    updates_->tick();
+            });
             app_->addChild (*editor_);
             return editor_.get();
         }
 
         visage::Frame* editorFrame() const override { return editor_.get(); }
-        void resetEditor() override { editor_.reset(); }
+        void resetEditor() override
+        {
+            // Drop the editor first (children are non-owning), then the update chrome.
+            editor_.reset();
+            updates_.reset();
+        }
         void onStateReplacedHook() override { if (editor_) editor_->onStateReplaced(); }
+        void onEditorCreated() override { if (updates_) updates_->onShown(); }
+        void onEditorDestroying() override { if (updates_) updates_->onHidden(); }
 
     private:
+        void layoutUpdates()
+        {
+            if (editor_ == nullptr || updates_ == nullptr)
+                return;
+            const float w = editor_->width(), h = editor_->height();
+            const float k = w / (float) pf_ui::PfEditor::kDesignW;
+            updates_->layoutDialog (w, h);
+            // Left of the preset selector (preset at design x=600).
+            updates_->layoutBadge (520.0f * k, 40.0f * k, 72.0f * k, 24.0f * k);
+        }
+
         // Bulk change (preset load): the host re-pulls values/text + marks dirty (no
         // per-parameter automation), then the editor resyncs to the replaced state.
         void onPresetLoaded()
@@ -111,6 +144,7 @@ namespace
         SessionPresetModel       presets_;
 
         std::unique_ptr<pf_ui::PfEditor> editor_;
+        std::unique_ptr<factory_ui_visage::UpdateUiHost> updates_;
     };
 } // namespace
 

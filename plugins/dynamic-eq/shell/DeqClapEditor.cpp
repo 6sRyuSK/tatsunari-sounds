@@ -18,12 +18,17 @@
 #include "factory_presets/PresetSession.h"
 #include "factory_ui_visage/Theme.h"
 #include "factory_ui_visage/ClapEditorHost.h"
+#include "factory_ui_visage/UpdateUiHost.h"
 
 #include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef DEQ_CLAP_VERSION
+#  define DEQ_CLAP_VERSION "0.0.0"
+#endif
 
 namespace
 {
@@ -86,18 +91,45 @@ namespace
         visage::Frame* buildEditor() override
         {
             editor_ = std::make_unique<deq_ui::DeqEditor> (theme_, store_, feed_, presets_);
+            updates_ = std::make_unique<factory_ui_visage::UpdateUiHost> (
+                theme_, "dynamic-eq", DEQ_CLAP_VERSION);
+            editor_->addChild (&updates_->badge());
+            editor_->addChild (&updates_->dialog());
             editor_->onResizeRequest = [this] (float w, float h) { requestResizeFromEditor (w, h); };
-            editor_->setFrameTick ([this] { flushEditsIfInactive(); });
+            editor_->setFrameTick ([this]
+            {
+                flushEditsIfInactive();
+                layoutUpdates();
+                if (updates_)
+                    updates_->tick();
+            });
             app_->addChild (*editor_);
             return editor_.get();
         }
 
         visage::Frame* editorFrame() const override { return editor_.get(); }
-        void resetEditor() override { editor_.reset(); }
+        void resetEditor() override
+        {
+            editor_.reset();
+            updates_.reset();
+        }
         void setEditorWindowScale (float windowScale) override { if (editor_) editor_->setWindowScale (windowScale); }
         void onStateReplacedHook() override { if (editor_) editor_->onStateReplaced(); }
+        void onEditorCreated() override { if (updates_) updates_->onShown(); }
+        void onEditorDestroying() override { if (updates_) updates_->onHidden(); }
 
     private:
+        void layoutUpdates()
+        {
+            if (editor_ == nullptr || updates_ == nullptr)
+                return;
+            const float w = editor_->width(), h = editor_->height();
+            const float k = h / (float) deq_ui::DeqEditor::kDesignH;
+            updates_->layoutDialog (w, h);
+            // Between title (~150) and preset; sits clear of Bypass on the right.
+            updates_->layoutBadge (170.0f * k, 16.0f * k, 72.0f * k, 24.0f * k);
+        }
+
         // Bulk change (preset load): host re-pulls values/text + marks dirty (no
         // per-parameter automation), then the editor resyncs to the replaced state.
         void onPresetLoaded()
@@ -111,6 +143,7 @@ namespace
         SessionPresetModel       presets_;
 
         std::unique_ptr<deq_ui::DeqEditor> editor_;
+        std::unique_ptr<factory_ui_visage::UpdateUiHost> updates_;
     };
 } // namespace
 
