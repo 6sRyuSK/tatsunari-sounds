@@ -72,6 +72,10 @@ _Not built or released (excluded from CI); sources kept under `archive/plugins/`
 
 UI は日本語 / 英語のバイリンガルで、OS のロケールに従います。ソースとビルド手順は
 [`tools/installer/`](tools/installer/README.md) にあります。
+
+配置先は、**VST3 / CLAP** が各形式の標準フォルダ直下の `tatsunari-sounds/`
+サブフォルダ、**AU** は `Components` 直下です（AU は Audio Component の標準配置で
+なければ DAW が見つけられないため、ここだけサブフォルダを作りません）。
 <!-- END:BOOTSTRAP -->
 
 ## ドキュメント
