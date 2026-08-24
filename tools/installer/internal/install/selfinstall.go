@@ -9,13 +9,18 @@ import (
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
 )
 
-// InstallerBinaryName is the on-disk name for the package manager binary.
-// Must not contain install/setup/update/patch (Windows UAC heuristics).
+// InstallerBinaryName is the on-disk name for the package manager binary
+// (plan §11.5). The name deliberately contains "installer", which trips the
+// Windows UAC Installer Detection heuristic for UNMANIFESTED executables — the
+// Windows build therefore embeds an explicit application manifest declaring
+// requestedExecutionLevel=asInvoker (see winres/), which suppresses the
+// heuristic entirely. System-scope elevation stays the sole responsibility of
+// the __apply boundary. Do not drop that manifest.
 func InstallerBinaryName(osID model.OS) string {
 	if osID == model.OSWindows {
-		return "tatsunari.exe"
+		return "tatsunari-sounds-installer.exe"
 	}
-	return "tatsunari"
+	return "tatsunari-sounds-installer"
 }
 
 // InstallerBinaryPath is the canonical permanent path for the installer under scope.

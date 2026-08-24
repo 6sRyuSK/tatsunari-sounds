@@ -95,16 +95,16 @@ func TestPsQuote(t *testing.T) {
 }
 
 func TestBuildDarwinScript(t *testing.T) {
-	got := buildDarwinScript("/opt/tatsunari", "/stage/plan.json", "/stage/result.json")
-	want := `do shell script "'/opt/tatsunari' __apply --plan '/stage/plan.json' --result '/stage/result.json'" with administrator privileges`
+	got := buildDarwinScript("/opt/tatsunari-sounds-installer", "/stage/plan.json", "/stage/result.json")
+	want := `do shell script "'/opt/tatsunari-sounds-installer' __apply --plan '/stage/plan.json' --result '/stage/result.json'" with administrator privileges`
 	if got != want {
 		t.Fatalf("buildDarwinScript mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
 
 func TestBuildDarwinScriptQuotesPathsWithSpaces(t *testing.T) {
-	got := buildDarwinScript("/Applications/My App/tatsunari", "/var folders/plan.json", "/var folders/result.json")
-	want := `do shell script "'/Applications/My App/tatsunari' __apply --plan '/var folders/plan.json' --result '/var folders/result.json'" with administrator privileges`
+	got := buildDarwinScript("/Applications/My App/tatsunari-sounds-installer", "/var folders/plan.json", "/var folders/result.json")
+	want := `do shell script "'/Applications/My App/tatsunari-sounds-installer' __apply --plan '/var folders/plan.json' --result '/var folders/result.json'" with administrator privileges`
 	if got != want {
 		t.Fatalf("buildDarwinScript with spaces mismatch:\n got: %s\nwant: %s", got, want)
 	}
@@ -114,25 +114,25 @@ func TestBuildDarwinScriptEscapesSingleQuoteInPath(t *testing.T) {
 	// A path with a single quote is first sh-escaped to '\'' by shQuote, then
 	// the backslash is AppleScript-escaped to \\ by asQuote, yielding '\\''.
 	// This double-escaping is exactly the original behavior and must be exact.
-	got := buildDarwinScript("/Users/o'brien/tatsunari", "/stage/plan.json", "/stage/result.json")
-	want := `do shell script "'/Users/o'\\''brien/tatsunari' __apply --plan '/stage/plan.json' --result '/stage/result.json'" with administrator privileges`
+	got := buildDarwinScript("/Users/o'brien/tatsunari-sounds-installer", "/stage/plan.json", "/stage/result.json")
+	want := `do shell script "'/Users/o'\\''brien/tatsunari-sounds-installer' __apply --plan '/stage/plan.json' --result '/stage/result.json'" with administrator privileges`
 	if got != want {
 		t.Fatalf("buildDarwinScript with single quote mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
 
 func TestBuildDarwinScriptUnicodePath(t *testing.T) {
-	got := buildDarwinScript("/Users/太郎/tatsunari", "/stage/計画.json", "/stage/結果.json")
-	want := `do shell script "'/Users/太郎/tatsunari' __apply --plan '/stage/計画.json' --result '/stage/結果.json'" with administrator privileges`
+	got := buildDarwinScript("/Users/太郎/tatsunari-sounds-installer", "/stage/計画.json", "/stage/結果.json")
+	want := `do shell script "'/Users/太郎/tatsunari-sounds-installer' __apply --plan '/stage/計画.json' --result '/stage/結果.json'" with administrator privileges`
 	if got != want {
 		t.Fatalf("buildDarwinScript unicode mismatch:\n got: %s\nwant: %s", got, want)
 	}
 }
 
 func TestBuildWindowsCommand(t *testing.T) {
-	got := buildWindowsCommand(`C:\Program Files\tatsunari.exe`, `C:\stage\plan.json`, `C:\stage\result.json`)
+	got := buildWindowsCommand(`C:\Program Files\tatsunari-sounds-installer.exe`, `C:\stage\plan.json`, `C:\stage\result.json`)
 	want := `$ErrorActionPreference='Stop';` +
-		`$p = Start-Process -FilePath 'C:\Program Files\tatsunari.exe'` +
+		`$p = Start-Process -FilePath 'C:\Program Files\tatsunari-sounds-installer.exe'` +
 		` -ArgumentList '__apply','--plan','C:\stage\plan.json','--result','C:\stage\result.json'` +
 		` -Verb RunAs -WindowStyle Hidden -Wait -PassThru;` +
 		`exit $p.ExitCode`
@@ -143,9 +143,9 @@ func TestBuildWindowsCommand(t *testing.T) {
 
 func TestBuildWindowsCommandEscapesSingleQuote(t *testing.T) {
 	// An apostrophe in the path must be doubled inside the PS single-quoted string.
-	got := buildWindowsCommand(`C:\Users\o'brien\tatsunari.exe`, `C:\stage\plan.json`, `C:\stage\result.json`)
+	got := buildWindowsCommand(`C:\Users\o'brien\tatsunari-sounds-installer.exe`, `C:\stage\plan.json`, `C:\stage\result.json`)
 	want := `$ErrorActionPreference='Stop';` +
-		`$p = Start-Process -FilePath 'C:\Users\o''brien\tatsunari.exe'` +
+		`$p = Start-Process -FilePath 'C:\Users\o''brien\tatsunari-sounds-installer.exe'` +
 		` -ArgumentList '__apply','--plan','C:\stage\plan.json','--result','C:\stage\result.json'` +
 		` -Verb RunAs -WindowStyle Hidden -Wait -PassThru;` +
 		`exit $p.ExitCode`
@@ -155,9 +155,9 @@ func TestBuildWindowsCommandEscapesSingleQuote(t *testing.T) {
 }
 
 func TestBuildWindowsCommandUnicodeAndEmpty(t *testing.T) {
-	got := buildWindowsCommand(`C:\太郎\tatsunari.exe`, ``, ``)
+	got := buildWindowsCommand(`C:\太郎\tatsunari-sounds-installer.exe`, ``, ``)
 	want := `$ErrorActionPreference='Stop';` +
-		`$p = Start-Process -FilePath 'C:\太郎\tatsunari.exe'` +
+		`$p = Start-Process -FilePath 'C:\太郎\tatsunari-sounds-installer.exe'` +
 		` -ArgumentList '__apply','--plan','','--result',''` +
 		` -Verb RunAs -WindowStyle Hidden -Wait -PassThru;` +
 		`exit $p.ExitCode`

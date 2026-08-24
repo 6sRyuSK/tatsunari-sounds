@@ -67,7 +67,7 @@ type AssetKey struct {
 
 // Asset is one downloadable release asset (a per-plugin zip).
 type Asset struct {
-	Name        string // e.g. "resonance-suppressor-v0_2_1-macOS-VST3.zip"
+	Name        string // e.g. "tn-resonance-suppressor-v0_2_1-macOS-VST3.zip"
 	DownloadURL string // https browser_download_url
 	Size        int64
 	SHA256      string // optional; populated from catalog when available

@@ -13,7 +13,7 @@ import (
 // this order. Everything else keeps the catalog's slug order below them. This is
 // a presentation choice, so it lives in the TUI — the release-layer Reconcile
 // stays a deterministic slug sort.
-var featuredOrder = []string{"resonance-suppressor", "dynamic-eq", "saturator"}
+var featuredOrder = []string{"tn-resonance-suppressor", "tn-equalizer", "saturator"}
 
 // featuredRank returns a slug's position in featuredOrder, or len(featuredOrder)
 // for anything not featured (sorted after the flagships).

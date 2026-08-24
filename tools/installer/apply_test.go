@@ -65,8 +65,8 @@ func TestRunApplyHappyPath(t *testing.T) {
 	root := t.TempDir()
 	withInstallRoots(t, []string{root})
 
-	src := stageBundle(t, staging, "resonance-suppressor.vst3")
-	dst := filepath.Join(root, "resonance-suppressor.vst3")
+	src := stageBundle(t, staging, "tn-resonance-suppressor.vst3")
+	dst := filepath.Join(root, "tn-resonance-suppressor.vst3")
 	planPath, resultPath := writePlan(t, staging, model.InstallPlan{
 		Moves: []model.Move{{Src: src, Dst: dst}},
 	})

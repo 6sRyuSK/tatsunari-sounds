@@ -62,7 +62,7 @@ func TestFindInstallerBinaryOrder(t *testing.T) {
 func TestSelfInstallMoveInAllowlist(t *testing.T) {
 	t.Setenv("HOME", "/Users/tester")
 	staging := t.TempDir()
-	src := filepath.Join(staging, "tatsunari")
+	src := filepath.Join(staging, "tatsunari-sounds-installer")
 	if err := os.WriteFile(src, []byte("bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -74,5 +74,18 @@ func TestSelfInstallMoveInAllowlist(t *testing.T) {
 	roots := InstallRoots(model.OSMacOS)
 	if err := ValidatePlan(plan, roots, staging); err != nil {
 		t.Fatalf("self-install move must be allowlisted: %v", err)
+	}
+}
+
+// §11.5 pins the shipping filename. The plugins' in-editor update badge locates
+// the installer by this exact name (update/src/InstallerLocator.cpp), the
+// bootstrap scripts write it, and the release assets are named after it — they
+// all have to move together, so make the name itself a gated constant.
+func TestInstallerBinaryName(t *testing.T) {
+	if got := InstallerBinaryName(model.OSWindows); got != "tatsunari-sounds-installer.exe" {
+		t.Errorf("windows installer name = %q", got)
+	}
+	if got := InstallerBinaryName(model.OSMacOS); got != "tatsunari-sounds-installer" {
+		t.Errorf("macOS installer name = %q", got)
 	}
 }

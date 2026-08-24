@@ -8,15 +8,15 @@ import (
 )
 
 func testCatalog() release.Catalog {
-	manifest := map[string]string{"resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
+	manifest := map[string]string{"tn-resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
 	assets := release.ParsePluginAssets(&release.Release{Tag: "2026.2", Assets: []model.Asset{
-		{Name: "resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rs-au"},
-		{Name: "resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs-vst3"},
-		{Name: "resonance-suppressor-v0_2_1-Windows.zip", DownloadURL: "https://x/rs-win"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rs-au"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs-vst3"},
+		{Name: "tn-resonance-suppressor-v0_2_1-Windows.zip", DownloadURL: "https://x/rs-win"},
 		{Name: "nam-player-v0_1_0-Windows.zip", DownloadURL: "https://x/nam-win"},
 	}})
 	installed := map[string]string{
-		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
+		model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
 	}
 	return release.Reconcile("2026.2", manifest, assets, nil, installed, nil)
 }
@@ -27,7 +27,7 @@ func TestBuildPlanItemsMacOS(t *testing.T) {
 	items, err := BuildPlanItems(cat, Selection{
 		OS: model.OSMacOS,
 		Rows: []SelectedRow{{
-			Slug: "resonance-suppressor", Variant: model.VariantStable,
+			Slug: "tn-resonance-suppressor", Variant: model.VariantStable,
 			Scope: model.ScopeUser, Version: "0.2.1",
 		}},
 		Formats: []model.Format{model.FormatVST3, model.FormatAU},
@@ -59,7 +59,7 @@ func TestBuildPlanItemsWindowsSkipsAU(t *testing.T) {
 	items, err := BuildPlanItems(cat, Selection{
 		OS: model.OSWindows,
 		Rows: []SelectedRow{{
-			Slug: "resonance-suppressor", Variant: model.VariantStable, Scope: model.ScopeSystem,
+			Slug: "tn-resonance-suppressor", Variant: model.VariantStable, Scope: model.ScopeSystem,
 		}},
 		Formats: []model.Format{model.FormatVST3, model.FormatAU},
 		Scope:   model.ScopeSystem,
@@ -104,7 +104,7 @@ func TestBuildPlanItemsChannelDevRequiresVariant(t *testing.T) {
 	cat := testCatalog()
 	_, err := BuildPlanItems(cat, Selection{
 		OS:      model.OSMacOS,
-		Rows:    []SelectedRow{{Slug: "resonance-suppressor"}},
+		Rows:    []SelectedRow{{Slug: "tn-resonance-suppressor"}},
 		Formats: []model.Format{model.FormatVST3},
 		Scope:   model.ScopeUser,
 		Channel: "dev",
@@ -120,7 +120,7 @@ func TestBuildPlanItemsPickedVersionCarried(t *testing.T) {
 	items, err := BuildPlanItems(cat, Selection{
 		OS: model.OSMacOS,
 		Rows: []SelectedRow{{
-			Slug: "resonance-suppressor", Variant: model.VariantStable,
+			Slug: "tn-resonance-suppressor", Variant: model.VariantStable,
 			Scope: model.ScopeUser, Version: "0.2.0",
 		}},
 		Formats: []model.Format{model.FormatVST3},

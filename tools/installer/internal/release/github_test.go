@@ -12,7 +12,7 @@ func TestFetchLatestRelease(t *testing.T) {
 		{"tag_name":"2026.1","assets":[{"name":"manifest.json","browser_download_url":"https://x/1","size":1}]},
 		{"tag_name":"2026.2","assets":[{"name":"manifest.json","browser_download_url":"https://x/2","size":2}]},
 		{"tag_name":"2025.9","assets":[]},
-		{"tag_name":"dynamic-eq-v0.4.0","assets":[]},
+		{"tag_name":"tn-equalizer-v0.4.0","assets":[]},
 		{"tag_name":"2026.2","draft":true,"assets":[]}
 	]`
 	// A TLS test server so the client's HTTPS-only enforcement stays exercised;

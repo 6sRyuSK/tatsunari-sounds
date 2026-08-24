@@ -69,7 +69,7 @@ want_sha="$(printf '%s\n' "$resolved" | sed -n '2p')"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-bin="${tmp}/tatsunari"
+bin="${tmp}/tatsunari-sounds-installer"
 
 echo "Downloading installer…" >&2
 curl -fsSL "$url" -o "$bin"

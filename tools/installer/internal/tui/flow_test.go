@@ -22,7 +22,7 @@ func atPlugins(t *testing.T) Model {
 	return m
 }
 
-// atConfirm walks the flow to the confirm screen with resonance-suppressor
+// atConfirm walks the flow to the confirm screen with tn-resonance-suppressor
 // selected (pre-selected because it has an update) and both formats on.
 func atConfirm(t *testing.T) Model {
 	t.Helper()

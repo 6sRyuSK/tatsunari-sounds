@@ -24,9 +24,9 @@ if (-not $asset) {
     throw "Could not resolve a windows installer asset from $CatalogUrl"
 }
 
-$dir = Join-Path $env:TEMP ("tatsunari-" + [guid]::NewGuid().ToString('N'))
+$dir = Join-Path $env:TEMP ("tatsunari-sounds-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $dir | Out-Null
-$bin = Join-Path $dir 'tatsunari.exe'
+$bin = Join-Path $dir 'tatsunari-sounds-installer.exe'
 
 Write-Host "Downloading installer..."
 Invoke-WebRequest -UseBasicParsing $asset.url -OutFile $bin

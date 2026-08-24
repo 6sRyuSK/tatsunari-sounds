@@ -10,14 +10,14 @@ import (
 )
 
 func fakeCatalog() release.Catalog {
-	manifest := map[string]string{"resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
+	manifest := map[string]string{"tn-resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
 	assets := release.ParsePluginAssets(&release.Release{Tag: "2026.2", Assets: []model.Asset{
-		{Name: "resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs"},
-		{Name: "resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rsau"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rsau"},
 		{Name: "nam-player-v0_1_0-macOS-VST3.zip", DownloadURL: "https://x/nam"},
 	}})
 	installed := map[string]string{
-		model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
+		model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
 	}
 	return release.Reconcile("2026.2", manifest, assets, nil, installed, nil)
 }
@@ -48,8 +48,8 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 	if m.screen != screenPlugins {
 		t.Fatalf("after discovery, screen = %v, want plugins", m.screen)
 	}
-	// resonance-suppressor has an update -> pre-selected; nam-player not.
-	rsKey := model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser)
+	// tn-resonance-suppressor has an update -> pre-selected; nam-player not.
+	rsKey := model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser)
 	namKey := model.EntryKey("nam-player", model.VariantStable, "")
 	if !m.selected[rsKey] {
 		t.Error("update-available plugin should be pre-selected")
@@ -82,7 +82,7 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 		t.Fatal("confirm screen should have plan items")
 	}
 	for _, it := range m.items {
-		if it.Slug != "resonance-suppressor" {
+		if it.Slug != "tn-resonance-suppressor" {
 			t.Errorf("unexpected item slug %q", it.Slug)
 		}
 		if it.Action != "update" {
@@ -101,7 +101,7 @@ func TestSelectAllUpdatable(t *testing.T) {
 	m = step(t, m, discoveredMsg{cat: fakeCatalog()})
 
 	// Deselect everything by toggling the pre-selected one off, then 'a'.
-	rsKey := model.EntryKey("resonance-suppressor", model.VariantStable, model.ScopeUser)
+	rsKey := model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser)
 	m.selected[rsKey] = false
 	m = step(t, m, keyPress("a"))
 	if !m.selected[rsKey] {

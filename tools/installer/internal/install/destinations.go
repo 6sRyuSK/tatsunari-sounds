@@ -107,28 +107,38 @@ func appSupportRoot(osID model.OS, scope model.Scope) (string, error) {
 	return "", fmt.Errorf("appSupportRoot only defined for macOS")
 }
 
+// VendorFolder is the per-vendor directory placed directly under a format's
+// standard discovery root (plan §11.4). It applies to VST3 and CLAP on both
+// operating systems and in both scopes. AU deliberately does NOT use it.
+const VendorFolder = "tatsunari-sounds"
+
 // DefaultSubpath returns the conventional relative placement for a format when
 // the catalog asset does not declare subpath (legacy GitHub zip path).
+//
+// Per plan §11.4 the rule is uniform: the format's standard discovery root is
+// never changed, and a "tatsunari-sounds" vendor folder is created directly
+// under it for every format that tolerates one. AU is the documented exception
+// — Audio Components must sit directly in Components/, because no contract says
+// every target DAW rescans that directory recursively, and vendor identity for
+// AU lives in the bundle identifier / manufacturer code rather than in the
+// filesystem layout.
 func DefaultSubpath(osID model.OS, format model.Format) (string, error) {
 	switch osID {
 	case model.OSMacOS:
 		switch format {
 		case model.FormatVST3:
-			return "VST3", nil
+			return "VST3/" + VendorFolder, nil
 		case model.FormatAU:
 			return "Components", nil
 		case model.FormatCLAP:
-			return "CLAP", nil
+			return "CLAP/" + VendorFolder, nil
 		}
 	case model.OSWindows:
 		switch format {
 		case model.FormatVST3:
-			// Preserve the existing tools/install.ps1 layout for system installs
-			// by using the same relative path under CommonProgramFiles; user
-			// installs stay flat under Programs\Common\VST3.
-			return "VST3/tatsunari-sounds", nil
+			return "VST3/" + VendorFolder, nil
 		case model.FormatCLAP:
-			return "CLAP", nil
+			return "CLAP/" + VendorFolder, nil
 		case model.FormatAU:
 			return "", fmt.Errorf("windows has no AU format")
 		}
@@ -166,10 +176,8 @@ func Destination(osID model.OS, format model.Format, scope model.Scope) (string,
 	if err != nil {
 		return "", err
 	}
-	// Windows user VST3 historically omits the tatsunari-sounds subfolder.
-	if osID == model.OSWindows && format == model.FormatVST3 && scope == model.ScopeUser {
-		sub = "VST3"
-	}
+	// No scope-dependent exception any more: §11.4 puts the vendor folder under
+	// both the system and the user root for VST3 and CLAP alike.
 	return ResolvePath(root, sub, "")
 }
 

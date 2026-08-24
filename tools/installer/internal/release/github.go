@@ -29,7 +29,7 @@ const (
 )
 
 // releaseTagRe matches a consolidated-release tag like "2026.2" (year.n), so we
-// ignore per-plugin git tags such as "dynamic-eq-v0.4.0".
+// ignore per-plugin git tags such as "tn-equalizer-v0.4.0".
 var releaseTagRe = regexp.MustCompile(`^(\d{4})\.(\d+)$`)
 
 // Client talks to the GitHub REST API for one repo. baseURL is overridable so
