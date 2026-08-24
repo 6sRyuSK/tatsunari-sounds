@@ -1,5 +1,8 @@
 # 4. 配置先の設計（スコープ 2 択 × `subpath`）
 
+> **製品 ID 移行後の正本**: bundle basename、vendor folder の例外、installer の
+> filename は [§11](11-product-identity-migration.md) を正とする。
+
 配置先は「**スコープが決めるルート**」×「**アセットが宣言する `subpath`**」で
 合成する。
 
@@ -16,12 +19,12 @@
 
 | OS | Format | subpath |
 |---|---|---|
-| macOS | VST3 | `VST3` |
+| macOS | VST3 | `VST3/tatsunari-sounds` |
 | macOS | AU | `Components` |
-| macOS | CLAP | `CLAP` |
+| macOS | CLAP | `CLAP/tatsunari-sounds` |
 | Windows | VST3 (system) | `VST3/tatsunari-sounds` |
-| Windows | VST3 (user) | `VST3` |
-| Windows | CLAP | `CLAP` |
+| Windows | VST3 (user) | `VST3/tatsunari-sounds` |
+| Windows | CLAP | `CLAP/tatsunari-sounds` |
 
 カスタムパス指定は仕様から落としたため（1.7）、**ルートはバイナリ内の enum
 2 通りだけ**。これにより `__apply` の許可リストが完全に閉じる（不変条件 5）。
@@ -63,8 +66,8 @@
 
 | スコープ | macOS | Windows |
 |---|---|---|
-| システム | `/Library/Application Support/tatsunari-sounds/bin/tatsunari` | `%ProgramFiles%\tatsunari-sounds\tatsunari.exe` |
-| ユーザー | `~/Library/Application Support/tatsunari-sounds/bin/tatsunari` | `%LOCALAPPDATA%\tatsunari-sounds\bin\tatsunari.exe` |
+| システム | `/Library/Application Support/tatsunari-sounds/bin/tatsunari-sounds-installer` | `%ProgramFiles%\tatsunari-sounds\tatsunari-sounds-installer.exe` |
+| ユーザー | `~/Library/Application Support/tatsunari-sounds/bin/tatsunari-sounds-installer` | `%LOCALAPPDATA%\tatsunari-sounds\bin\tatsunari-sounds-installer.exe` |
 
 **探索順: ユーザー → システム → フォールバック。** PATH には依存しない。
 
@@ -83,9 +86,9 @@
   （必須ではない）。
 - **システム配置の場合、配置先ディレクトリは root 所有・非 root 書き込み不可で
   あることを検証する。**
-- Windows のバイナリ名に `install` / `setup` / `update` / `patch` を含めない
-  （UAC のインストーラ検出ヒューリスティックが不要な昇格を強制するため。
-  `tatsunari.exe` は要件を満たす）。
+- Windows は指定 filename に `installer` を含むため、explicit application manifest
+  (`requestedExecutionLevel=asInvoker`) を埋め込み、UAC の Installer Detection による
+  暗黙昇格を防ぐ。system scope の昇格は `__apply` だけが明示的に要求する。
 
 #### フォールバック（必須）
 
