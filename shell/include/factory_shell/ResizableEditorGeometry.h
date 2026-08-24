@@ -3,7 +3,7 @@
 // factory_shell/ResizableEditorGeometry.h — the pure, framework-free geometry helpers
 // a resizable Visage CLAP editor uses: the aspect-lock + resize-limit SNAP and the
 // host-resize RELAY decision. Extracted (verbatim logic) from RsClapEditor.h so every
-// resizable clap-first editor — RS, dynamic-eq — shares one implementation, and so the
+// resizable clap-first editor — RS, tn-equalizer — shares one implementation, and so the
 // RS clap_shell_test's fixed-point oracle guards the shared code. Header-only, depends
 // only on <cstdint>/<cmath> (no CLAP, no Visage), so it links into factory_shell and
 // the pure shell test without a GUI build.

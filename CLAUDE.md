@@ -2,7 +2,7 @@
 
 ## What this is
 A factory that builds audio plugins with **CMake**. Active plugins are
-`resonance-suppressor`, `pitch-fix` and `dynamic-eq` (everything else is
+`tn-resonance-suppressor`, `tn-vocal-tuner` and `tn-equalizer` (everything else is
 archived under `archive/plugins/` — see `archive/README.md`). **All three ship
 CLAP-first** (clap-wrapper's `make_clapfirst` → CLAP + wrapper VST3, AUv2 on
 Apple) with JUCE-free **Visage** editors; no plugin ships a JUCE binary any
@@ -18,7 +18,7 @@ humans judge taste and authorize shipping. A cross-platform Go TUI installer
 - **Commit subjects**: English Conventional-Commits prefix (`feat: / fix: /
   docs: / refactor: / perf: / test: / chore: / ci: / build: / style:`, optional
   `(scope)`), then a Japanese description with identifiers and technical terms
-  kept in English — e.g. `fix(resonance-suppressor): STFTオーダーをサンプルレート
+  kept in English — e.g. `fix(tn-resonance-suppressor): STFTオーダーをサンプルレート
   連動にして192kHz対応`. Do **not** bump `plugin.toml` versions per commit: leave
   the version at baseline during branch work and bump **once, when opening the
   PR** (plugin PRs are squash-merged, so intermediate bumps are noise; a missing
@@ -55,7 +55,7 @@ skill builds on.
   regression checks.
 - `ui/include/factory_ui/` — the shared **header-only** JUCE "kawaii" warm-white
   design system. Nothing that ships links it any more: it survives only as the
-  look & feel of the RS/dynamic-eq oracle apps, behind `FACTORY_JUCE_ORACLES`.
+  look & feel of the RS/tn-equalizer oracle apps, behind `FACTORY_JUCE_ORACLES`.
   `ui/visage/` — `factory_ui_visage`, the
   **compiled Visage** design system every shipping editor is built from (widgets,
   `theme/factory-default.json`, fonts, own tests); it owns the pinned +
@@ -77,7 +77,7 @@ skill builds on.
   plus the clap-first trio every active plugin now has: `<X>Core.h` (the
   framework-free DSP core — `RsCore.h` / `PfCore.h` / `DeqCore.h`), `ui/` (the
   JUCE-free Visage editor), `shell/` (the CLAP Policy + entry). Where a `Source/`
-  JUCE `AudioProcessor` still exists (RS, dynamic-eq) it is **only** the
+  JUCE `AudioProcessor` still exists (RS, tn-equalizer) it is **only** the
   byte-equivalence test oracle — change it and its core in lockstep, never
   package it; its targets sit behind `FACTORY_JUCE_ORACLES` (default ON) and are
   the only reason a configure ever fetches JUCE. The scaffold emits that same
@@ -94,8 +94,12 @@ skill builds on.
   (kind is `clap` for every plugin; a shipping `juce_add_plugin` is a hard
   error); `tools/check_skill_refs.py` — gates skill drift (every repo path,
   `FACTORY_*` option and rate-swept CTest name a `.claude/skills/` file cites must
-  still exist; archived slugs must be marked); `tools/tests/` — stdlib unittests
-  for all three;
+  still exist; archived slugs must be marked);
+  `tools/check_plugin_ids.py` — stable/dev CLAP-ID + AU-subtype uniqueness;
+  `tools/check_legacy_identity.py` — gates RETIRED product identity (no old slug /
+  display name / AU subtype / installer filename may survive outside `docs/plans/`,
+  `archive/`, or a line marked `legacy-identity-ok`); `tools/tests/` — stdlib
+  unittests for all of them;
   `tools/scaffold_plugin.py` — clap-first new-plugin generator; `tools/installer/` — TUI
   installer; `tools/ui-dev/` — local WASM Visage UI dev harness (own README,
   not in CI); `tools/vst3-probe/` — dev-only Windows VST3 host probe;
@@ -110,7 +114,7 @@ skill builds on.
   clap-first shell, fetching the pinned CLAP/VST3/clap-wrapper + Visage SDKs
   (`FACTORY_RS_CLAP` is a legacy no-op). **Both** heavyweight fetches track the
   configured SET, not a global flag: the pinned JUCE `8.0.13` is fetched only
-  when a configured plugin declares a `juce_add_*` target (RS/dynamic-eq's
+  when a configured plugin declares a `juce_add_*` target (RS/tn-equalizer's
   oracles) and `FACTORY_JUCE_ORACLES` is ON, so a clap-only configure clones no
   JUCE and builds no juceaide.
 
@@ -126,7 +130,7 @@ shared `core`/`params`/`presets` model suites register from the root too).
 `-DFACTORY_PLUGINS=<slug>[,<slug>]` narrows the configure to a subset (CI uses
 it as well); any set with an active plugin in it also fetches the CLAP/VST3/
 clap-wrapper + Visage SDKs on first configure. `-DFACTORY_JUCE_ORACLES=OFF`
-drops the RS/dynamic-eq JUCE oracle targets **and the JUCE fetch with them** —
+drops the RS/tn-equalizer JUCE oracle targets **and the JUCE fetch with them** —
 use it for a shipping-path-only build (release.yml and clap.yml do); leave it ON
 whenever you run CTest, since the equivalence + preset gates live there.
 On Windows without `-G Ninja`, CMake defaults to the Visual Studio
@@ -212,8 +216,22 @@ The bug classes from issues #22–44 must not recur; gates are catalogued in
 ## Catalog & versioning
 - `plugins/<slug>/plugin.toml` is the **single source of truth**; CMake reads
   `version` from it, so catalog == binary == release.
-- Semver: P0/P1 fix → patch; new feature/param → minor; breaks state/preset
-  compatibility → major.
+- All three products are in the `0.y.z` phase, so the **0.x rules apply**
+  (`docs/plans/update-notification-and-distribution/11-product-identity-migration.md`
+  §11.2): compatible fix → patch; feature addition → minor; a break of the
+  state/preset/parameter contract → **minor too** (documented in the release
+  notes), because major `0` already says the public contract is unstable. Go to
+  `1.0.0` when that contract can be held. Major `0` is NOT a licence to skip a
+  quality gate or ship a known P0/P1 — the gates are identical to 1.x.
+- `stateCompatVersion` is tracked independently of the product SemVer: it starts
+  at `1.0.0`, holds across compatible state, and rises only when old state
+  becomes unreadable.
+- **Product identity is frozen.** The tn-* slug, display name, bundle basename,
+  CLAP id and AU subtype of a shipping plugin are its identity to every host,
+  the updater and the receipt (§11.1/§11.3). Changing one makes a NEW product
+  (new slug, new ids, starting at `0.1.0`) — never an in-place rename, and never
+  a reuse of a retired identifier. `tools/check_legacy_identity.py` gates the
+  residue; `tools/check_plugin_ids.py` gates uniqueness.
 
 ## Releasing (mechanics in the `release` skill)
 One consolidated GitHub Release per run (tag `<year>.<n>`, manual
@@ -229,7 +247,7 @@ installer support). `installer.yml` attaches the TUI installer + `catalog.json` 
   Windows builds (the clap-first assemblies included), CTest across the full rate
   matrix, and **pluginval strictness 5 headless** for every built format — the
   wrapper VST3 on both OS, AU on macOS. Linux is not a supported target. This is
-  the ONLY workflow that runs CTest, so it is where the RS/dynamic-eq JUCE
+  the ONLY workflow that runs CTest, so it is where the RS/tn-equalizer JUCE
   equivalence + preset oracles run — it keeps `FACTORY_JUCE_ORACLES` ON.
 - **CLAP** (`clap.yml`, scoped to shell/core/params/presets/ui-visage + each
   plugin's headers/shell/ui/CMakeLists via GLOBS): one Linux leg PER active
@@ -238,10 +256,13 @@ installer support). `installer.yml` attaches the TUI installer + `catalog.json` 
   doesn't produce. Adding a NEW PLUGIN means adding its slug to the matrix; the
   `paths` blocks are globs now, so a new shell-visible header no longer needs
   hand-registering — but the push and pull_request lists must stay identical.
-- **Factory tools** (`factory-tools-ci.yml`, scoped to tools/tomls/README/
-  `.claude/skills/**`): `gen_catalog.py --check` (README catalog freshness) +
-  `check_skill_refs.py` (skill-reference freshness) + the `tools/tests`
-  unittest suite.
+- **Factory tools** (`factory-tools-ci.yml`): `gen_catalog.py --check` (README
+  catalog freshness) + `check_skill_refs.py` (skill-reference freshness) +
+  `check_plugin_ids.py --check` (identifier uniqueness) +
+  `check_legacy_identity.py` (retired product identity) + the `tools/tests`
+  unittest suite. `pull_request` is deliberately UNSCOPED (no `paths`): the
+  retired-identity gate reads every tracked file, so narrowing it would let an
+  old identifier reappear unchecked. The `push` trigger keeps its path list.
 - **Installer** (`installer-ci.yml`, `tools/installer/**` only): `go test` / `go vet`.
 
 ## Debugging host-GUI bugs (not headless-reproducible)

@@ -76,7 +76,7 @@
 namespace factory_shell
 {
     // Detect an OPTIONAL Policy reset hook: `static void Policy::reset(Core&)`. A
-    // Policy that supplies it (e.g. pitch-fix, whose core carries long delay/OLA
+    // Policy that supplies it (e.g. tn-vocal-tuner, whose core carries long delay/OLA
     // state that must not bleed across a transport seek) gets its core reset in
     // clap.reset; a Policy without it (RS) resolves to false and clap.reset stays
     // the no-op it was — no behaviour change for existing plugins.
@@ -189,7 +189,7 @@ namespace factory_shell
         {
             // [audio-thread] — must not allocate. A Policy MAY supply a
             // non-reallocating `reset(Core&)` (detected at compile time) to clear
-            // its core's audio/tracking state on a transport discontinuity; pitch-fix
+            // its core's audio/tracking state on a transport discontinuity; tn-vocal-tuner
             // does (long dry delay + OLA accumulator + detector history would
             // otherwise bleed across a seek/loop). A Policy without it keeps the old
             // no-op. Latency does not change on reset, so nothing to re-latch.

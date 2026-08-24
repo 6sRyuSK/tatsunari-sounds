@@ -147,7 +147,7 @@ jobs:
 
       # Narrow the configure to just the plugin being built (FACTORY_PLUGINS), so a
       # job only pays for the SDKs its own plugin needs. FACTORY_JUCE_ORACLES=OFF on
-      # top of that: the RS/dynamic-eq byte-equivalence oracles are the last JUCE in
+      # top of that: the RS/tn-equalizer byte-equivalence oracles are the last JUCE in
       # the tree and they are a CI gate (ci.yml), not a release artefact — a release
       # build has no reason to clone JUCE and build juceaide to produce a test exe
       # it never runs.
@@ -245,7 +245,7 @@ jobs:
       # This job has no checkout, so `gh release download` (carry-over of unchanged
       # plugins from the previous release) can't infer the repo from git and fails
       # with "not a git repository". Pin it explicitly. Only surfaces once a run has
-      # an unchanged plugin to carry over (first exercised when dynamic-eq was the
+      # an unchanged plugin to carry over (first exercised when tn-equalizer was the
       # sole unchanged plugin in 2026.2).
       GH_REPO: ${{ github.repository }}
     steps:

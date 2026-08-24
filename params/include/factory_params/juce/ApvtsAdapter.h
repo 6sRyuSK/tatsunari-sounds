@@ -17,7 +17,7 @@
 // reproduces the previously hand-written juce::AudioParameter* objects EXACTLY and
 // in TABLE ORDER — the layout.add() order is the host-visible parameter order, so
 // it must not change. Bit-exact parity with the former hand-written layout is a
-// test gate (resonance-suppressor preset_test's "paramdesc parity").
+// test gate (tn-resonance-suppressor preset_test's "paramdesc parity").
 //
 //   Float  -> AudioParameterFloat(ParameterID{id,versionHint}, name,
 //               NormalisableRange<float>{min,max,interval} [+ setSkewForCentre],

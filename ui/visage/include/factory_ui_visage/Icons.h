@@ -7,7 +7,7 @@
 
 //
 // factory_ui_visage::icons — the small glyph set for the P2b chrome, transcribed
-// verbatim from rs::icons (plugins/resonance-suppressor/Source/RsWidgets.h): the
+// verbatim from rs::icons (plugins/tn-resonance-suppressor/Source/RsWidgets.h): the
 // same viewBox coordinates and stroke weights, rebuilt on a visage::Path instead
 // of a juce::Path. SVG "C x1 y1,x2 y2,x y" maps to path.bezierTo(x1,y1,x2,y2,x,y);
 // "M/L" map to moveTo/lineTo. Each glyph is expressed in its native viewBox and

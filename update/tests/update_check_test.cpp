@@ -78,7 +78,7 @@ void testParseLatest()
     expect (parseLatestDocument (body, doc, err), "parse minimal: " + err);
     expect (doc.schema == 1, "schema");
     expect (doc.plugins.size() == 1, "one plugin");
-    expect (doc.plugins[0].slug == "resonance-suppressor", "slug");
+    expect (doc.plugins[0].slug == "tn-resonance-suppressor", "slug");
     expect (doc.plugins[0].latest == "1.0.0", "latest");
 
     expect (! parseLatestDocument ("{", doc, err), "bad json");
@@ -87,7 +87,7 @@ void testParseLatest()
 
     const auto full = readFile (g_fixtures / "latest_full.json");
     expect (parseLatestDocument (full, doc, err), "parse full: " + err);
-    expect (findPlugin (doc, "resonance-suppressor") != nullptr, "find rs");
+    expect (findPlugin (doc, "tn-resonance-suppressor") != nullptr, "find rs");
 }
 
 void testPrefsRoundtrip()
@@ -230,7 +230,8 @@ void testInstallerPaths()
     const auto system = installerBinaryPath (InstallerScope::System);
     expect (! user.empty(), "user path");
     expect (! system.empty(), "system path");
-    expect (user.filename() == "tatsunari" || user.filename() == "tatsunari.exe", "name");
+    expect (user.filename() == "tatsunari-sounds-installer"
+                || user.filename() == "tatsunari-sounds-installer.exe", "name");
 }
 
 int main (int argc, char** argv)

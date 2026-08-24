@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Build (and optionally install) the resonance-suppressor CLAP coexistence
+  Build (and optionally install) the tn-resonance-suppressor CLAP coexistence
   shell from a normal PowerShell window.
 
 .DESCRIPTION
@@ -10,8 +10,8 @@
   gives you), then runs the exact CMake configure/build the CI uses:
 
       cmake -B build-clap -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DFACTORY_RS_CLAP=ON -DFACTORY_PLUGINS=resonance-suppressor
-      cmake --build build-clap --target resonance-suppressor_all
+            -DFACTORY_RS_CLAP=ON -DFACTORY_PLUGINS=tn-resonance-suppressor
+      cmake --build build-clap --target tn-resonance-suppressor_all
 
   So you no longer have to hunt for the Native Tools prompt. With -Install it
   also copies the built .clap / .vst3 into the system Common Files plugin
@@ -45,7 +45,7 @@
 [CmdletBinding()]
 param(
     # Plugin slug to build (defaults to the RS coexistence shell).
-    [string]$Slug = 'resonance-suppressor',
+    [string]$Slug = 'tn-resonance-suppressor',
     # CMake build directory (relative to the repo root).
     [string]$BuildDir = 'build-clap',
     # Remove the build directory before configuring (forces a clean rebuild).

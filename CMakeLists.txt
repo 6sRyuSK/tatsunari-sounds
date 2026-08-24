@@ -10,7 +10,7 @@ project(PluginFactory VERSION 0.1.0 LANGUAGES C CXX)
 # OBJC/OBJCXX inside its own subdirectory, which flips the GLOBAL extension
 # mapping: every .mm in the project now maps to the OBJCXX language, while
 # directories processed before that point (anything carrying JUCE's .mm module
-# unities — today the RS/dynamic-eq oracle test apps) never received the OBJCXX
+# unities — today the RS/tn-equalizer oracle test apps) never received the OBJCXX
 # compile rules → the mac generate step dies with "Missing variable:
 # CMAKE_OBJCXX_COMPILE_OBJECT" for ~every JUCE .mm. Enabling at the true root
 # gives every directory the rules regardless of processing order.
@@ -59,7 +59,7 @@ set(FACTORY_PLUGINS "" CACHE STRING "Plugin slugs to configure, comma/semicolon 
 string(REPLACE "," ";" _factory_plugins "${FACTORY_PLUGINS}")
 
 # 脱JUCE: no plugin SHIPS a JUCE binary any more. The only JUCE consumers left
-# in the active tree are resonance-suppressor's and dynamic-eq's byte-equivalence
+# in the active tree are tn-resonance-suppressor's and tn-equalizer's byte-equivalence
 # / preset oracle console apps, which compile their frozen JUCE AudioProcessor as
 # the oracle for the framework-free core. Turning this OFF skips those targets —
 # and with them the whole JUCE FetchContent — for a configure that only needs the
@@ -112,7 +112,7 @@ endif()
 
 # --- JUCE (pinned; fetched ONLY when a configured plugin declares a JUCE target)
 # Post-脱JUCE this is the oracle-test dependency, not a shipping one: a configure
-# whose plugin set is clap-only (e.g. -DFACTORY_PLUGINS=pitch-fix) or that passes
+# whose plugin set is clap-only (e.g. -DFACTORY_PLUGINS=tn-vocal-tuner) or that passes
 # -DFACTORY_JUCE_ORACLES=OFF never clones JUCE and never builds juceaide.
 if(_juce_slugs AND FACTORY_JUCE_ORACLES)
   message(STATUS "JUCE 8.0.13 fetch: required by the oracle tests of ${_juce_slugs}")
@@ -136,7 +136,7 @@ target_compile_features(factory_core INTERFACE cxx_std_20)
 # --- Shared JUCE design system (header-only; the factory's look & feel) ---
 # 脱JUCE: nothing that SHIPS links this any more — the shipping editors are built
 # from the compiled factory_ui_visage (ui/visage/). It survives as the look & feel
-# of the RS/dynamic-eq oracle apps, so it is only ever consumed behind
+# of the RS/tn-equalizer oracle apps, so it is only ever consumed behind
 # FACTORY_JUCE_ORACLES. Defined unconditionally (an INTERFACE library with no
 # JUCE link is free) so a JUCE-less configure still resolves the name.
 add_library(factory_ui INTERFACE)
@@ -183,7 +183,7 @@ foreach(_dir ${_configured_plugin_dirs})
 endforeach()
 
 # --- CLAP-FIRST SHIPPING BUILDS (every active plugin) ------------------------
-# Each active plugin (resonance-suppressor, pitch-fix, dynamic-eq) carries a
+# Each active plugin (tn-resonance-suppressor, tn-vocal-tuner, tn-equalizer) carries a
 # shell/CMakeLists.txt whose make_clapfirst shell produces the CLAP + wrapper
 # VST3 (+ AUv2 on Apple, with the Visage editor) — there is no juce_add_plugin
 # for these plugins (their main CMakeLists holds only headless tests / test

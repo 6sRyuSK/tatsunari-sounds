@@ -208,7 +208,7 @@ class KindResolutionTest(TmpRepoTest):
         self.assertIn("clap-first", msg)
 
     def test_juce_console_app_oracle_is_not_a_shipping_target(self):
-        # The surviving RS/dynamic-eq byte-equivalence oracles use
+        # The surviving RS/tn-equalizer byte-equivalence oracles use
         # juce_add_console_app. That must NOT trip the juce_add_plugin rejection,
         # and must not register a shipping target either — the plugin's real target
         # still comes from its factory_clap_plugin declaration.

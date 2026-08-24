@@ -56,11 +56,11 @@ WATCH_ROOTS = [
     os.path.join(HERE, "gallery"),
     os.path.join(HERE, "rs-editor"),
     os.path.join(HERE, "common"),
-    os.path.join(HERE, "pitch-fix"),
-    os.path.join(HERE, "dynamic-eq"),
-    os.path.join(REPO, "plugins", "resonance-suppressor", "ui"),
-    os.path.join(REPO, "plugins", "pitch-fix", "ui"),
-    os.path.join(REPO, "plugins", "dynamic-eq", "ui"),
+    os.path.join(HERE, "tn-vocal-tuner"),
+    os.path.join(HERE, "tn-equalizer"),
+    os.path.join(REPO, "plugins", "tn-resonance-suppressor", "ui"),
+    os.path.join(REPO, "plugins", "tn-vocal-tuner", "ui"),
+    os.path.join(REPO, "plugins", "tn-equalizer", "ui"),
     os.path.join(HERE, "shell.html"),
 ]
 WATCH_EXTS = (".h", ".hpp", ".cpp", ".cc", ".txt", ".cmake")

@@ -16,9 +16,9 @@ candidate typefaces (Quicksand / Nunito / M PLUS Rounded 1c).
 tools/ui-dev/
   gallery/            visage app: GalleryFrame + main + the JS<->WASM Bridge
   rs-editor/          Phase P3 app: main + RsBridge + SyntheticFeed + Mocks (the RS
-                      editor itself lives JUCE-free in plugins/resonance-suppressor/ui/)
-  pitch-fix/          real Pitch Fix editor + deterministic status feed + thin bridge
-  dynamic-eq/         real Dynamic EQ editor + deterministic analyser feed + thin bridge
+                      editor itself lives JUCE-free in plugins/tn-resonance-suppressor/ui/)
+  tn-vocal-tuner/          real Pitch Fix editor + deterministic status feed + thin bridge
+  tn-equalizer/         real Dynamic EQ editor + deterministic analyser feed + thin bridge
   common/             reusable PluginHarness bridge + PresetSession model adapter
   shell.html          emscripten shell page (baked into index.html at link)
   harness.js          page JS: window.ui (shared ABI) + rs/pf/deq extras, theme hot-reload, live reload
@@ -26,7 +26,7 @@ tools/ui-dev/
   dev_server.py       static server (+ /healthz, --watch rebuild, /events reload, --theme-file)
   playwright/         pinned npm project: verify/inspect runners + all four app tests
   artifacts/          ignored Playwright screenshots + machine-readable result/state JSON
-  CMakeLists.txt      STANDALONE project; targets: gallery, rs-editor, pitch-fix, dynamic-eq
+  CMakeLists.txt      STANDALONE project; targets: gallery, rs-editor, tn-vocal-tuner, tn-equalizer
   CMakePresets.json   `dev` (-O0 fast link) and `rel` (-O2) configs — both build all apps
   setup.sh / dev.sh   one-command bootstrap + daily loop (macOS/Linux); *.ps1 = Windows
 ```
@@ -47,8 +47,8 @@ with live rebuild + browser auto-reload:
 ```bash
 ./tools/ui-dev/dev.sh                   # rs-editor       -> http://127.0.0.1:8081
 ./tools/ui-dev/dev.sh --gallery         # widget gallery  -> http://127.0.0.1:8080
-./tools/ui-dev/dev.sh --app pitch-fix   # Pitch Fix       -> http://127.0.0.1:8082
-./tools/ui-dev/dev.sh --app dynamic-eq  # Dynamic EQ      -> http://127.0.0.1:8083
+./tools/ui-dev/dev.sh --app tn-vocal-tuner   # Pitch Fix       -> http://127.0.0.1:8082
+./tools/ui-dev/dev.sh --app tn-equalizer  # Dynamic EQ      -> http://127.0.0.1:8083
 ./tools/ui-dev/dev.sh --rel             # -O2 preset (small wasm, slower link)
 ./tools/ui-dev/dev.sh --no-serve        # configure + build only, no server
 ./tools/ui-dev/dev.sh --verify          # build + temporary server + RS Playwright suite
@@ -65,7 +65,7 @@ what these two scripts automate.
 
 **Windows:** `setup.ps1` / `dev.ps1` mirror the bash scripts (winget/choco hints,
 emsdk via `emsdk.bat`). The build + Playwright paths are exercised on Windows;
-use `-Verify`, `-Gallery`, `-App pitch-fix`, `-App dynamic-eq`, `-Rel`, and
+use `-Verify`, `-Gallery`, `-App tn-vocal-tuner`, `-App tn-equalizer`, `-Rel`, and
 `-NoServe` as the PowerShell equivalents.
 
 ## Autonomous UI iteration
@@ -79,15 +79,15 @@ stops the temporary server:
 ./tools/ui-dev/setup.sh --with-playwright # once: npm ci + managed Chromium
 ./tools/ui-dev/dev.sh --verify            # RS editor: 56 interaction/layout checks
 ./tools/ui-dev/dev.sh --gallery --verify  # widget gallery smoke/interaction checks
-./tools/ui-dev/dev.sh --app pitch-fix --verify
-./tools/ui-dev/dev.sh --app dynamic-eq --verify
+./tools/ui-dev/dev.sh --app tn-vocal-tuner --verify
+./tools/ui-dev/dev.sh --app tn-equalizer --verify
 
 # Windows
 .\tools\ui-dev\setup.ps1 -WithPlaywright
 .\tools\ui-dev\dev.ps1 -Verify
 .\tools\ui-dev\dev.ps1 -Gallery -Verify
-.\tools\ui-dev\dev.ps1 -App pitch-fix -Verify
-.\tools\ui-dev\dev.ps1 -App dynamic-eq -Verify
+.\tools\ui-dev\dev.ps1 -App tn-vocal-tuner -Verify
+.\tools\ui-dev\dev.ps1 -App tn-equalizer -Verify
 ```
 
 For a fast agent-readable observation instead of the full suite, build once and
@@ -100,8 +100,8 @@ cd tools/ui-dev/playwright
 npm run doctor
 npm run capture -- --app rs-editor --set depth=65 --size 940x657
 npm run capture -- --app gallery
-npm run capture -- --app pitch-fix --set amount=100
-npm run capture -- --app dynamic-eq --set b0_on=1 --set b0_freq=3000
+npm run capture -- --app tn-vocal-tuner --set amount=100
+npm run capture -- --app tn-equalizer --set b0_on=1 --set b0_freq=3000
 ```
 
 `capture` and `test:*` start their own temporary server from `../build/dev`;
@@ -119,8 +119,8 @@ surface (parameter discovery/read/write, theme/font reload, widget geometry,
 freeze, dropdown rows, presets), and `HarnessPresetModel.h` adapts the real
 `factory_presets::PresetSession` to the editor model.
 
-`window.ui` is the SAME ABI in all four apps — gallery, rs-editor, pitch-fix and
-dynamic-eq all export the one list defined as `FACTORY_UI_ABI_EXPORTS` in
+`window.ui` is the SAME ABI in all four apps — gallery, rs-editor, tn-vocal-tuner and
+tn-equalizer all export the one list defined as `FACTORY_UI_ABI_EXPORTS` in
 `CMakeLists.txt`. `window.rs` / `window.pf` / `window.deq` carry only genuinely
 plugin-specific state (RS undo + A-B, the PF status feed, the DEQ band/analyser
 feed); nothing that exists in `window.ui` is duplicated there. Dropdowns are opened
@@ -143,11 +143,11 @@ wrong thing. The reusable bridge removes the boilerplate; the feed and meaningfu
 assertions remain explicit product code.
 
 Pitch Fix and Dynamic EQ are the compact reference integrations:
-`tools/ui-dev/pitch-fix/` and `tools/ui-dev/dynamic-eq/`. Their tests exercise real
+`tools/ui-dev/tn-vocal-tuner/` and `tools/ui-dev/tn-equalizer/`. Their tests exercise real
 mouse gestures, dropdown rows, factory presets and exclusion rules—not only
 direct bridge writes.
 
-## rs-editor (Phase P3) — the resonance-suppressor editor
+## rs-editor (Phase P3) — the tn-resonance-suppressor editor
 
 The flagship visual port: the full RS editor, composed from `factory_ui_visage`
 widgets + the RS-specific views (`RsSuppressionCurveView`, `RsNodePanel`,
@@ -155,7 +155,7 @@ widgets + the RS-specific views (`RsSuppressionCurveView`, `RsNodePanel`,
 (the actual 64-param `buildRsParams()` table), a synthetic `RsFeed` (deterministic
 pre/post/reduction spectra; the reduction curtain deepens with the Depth param;
 freezable) and mock preset / A-B models. The editor + its RS theme overlay live in
-`plugins/resonance-suppressor/ui/`; only the app shell (`main` + `RsBridge` +
+`plugins/tn-resonance-suppressor/ui/`; only the app shell (`main` + `RsBridge` +
 `SyntheticFeed` + `Mocks`) is here.
 
 `./tools/ui-dev/dev.sh` performs exactly the build + serve below (rs-editor on
@@ -166,7 +166,7 @@ cmake --build --preset dev            # builds all four apps -> build/dev/web*
 # serve rs-editor; theme-rs.json is served at /theme.json so the shared harness.js
 # hot-reloads the RS chunky-knob overlay (the "rs" extras block is applied at load).
 python3 dev_server.py --web-dir build/dev/web-rs --port 8081 \
-        --theme-file ../../plugins/resonance-suppressor/ui/theme-rs.json \
+        --theme-file ../../plugins/tn-resonance-suppressor/ui/theme-rs.json \
         --watch --cmake-build-dir build/dev --target rs-editor
 # verify (temporary server + 56 checks + screenshots/result JSON):
 cd playwright && npm run test:rs
@@ -277,8 +277,8 @@ Then open `http://127.0.0.1:8080/index.html`.
 cd playwright
 npm run test:gallery            # temporary server + gallery regression suite
 npm run test:rs                 # temporary server + RS regression suite
-npm run test:pitch-fix          # real Pitch Fix editor suite
-npm run test:dynamic-eq         # real Dynamic EQ editor suite
+npm run test:tn-vocal-tuner          # real Pitch Fix editor suite
+npm run test:tn-equalizer         # real Dynamic EQ editor suite
 npm test                        # all four (all WASM targets must already be built)
 npm run capture -- --app rs-editor --set depth=65
 ```

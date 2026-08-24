@@ -4,7 +4,7 @@
 // glue every clap-first plugin needs, so a plugin's ClapEntry.cpp keeps ONLY its
 // Policy (descriptor + params/preset tables + the DSP hooks) and drops the identical
 // factory / entry-hook boilerplate that used to be copy-pasted per plugin (compare
-// the old resonance-suppressor / pitch-fix ClapEntry.cpp tails).
+// the old tn-resonance-suppressor / tn-vocal-tuner ClapEntry.cpp tails).
 //
 //   * SinglePluginClapFactory<Policy> — the clap_plugin_factory_t for a plugin that
 //     exposes exactly one descriptor (every factory plugin): count == 1, descriptor

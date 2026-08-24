@@ -24,7 +24,7 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
            COMMAND core_linear_ramp_test ${_fs})
 endforeach()
 
-# PitchDetector — MPM/NSDF monophonic f0 estimator (pitch-fix). Window lengths
+# PitchDetector — MPM/NSDF monophonic f0 estimator (tn-vocal-tuner). Window lengths
 # derive from the rate, so the whole matrix is load-bearing.
 add_executable(core_pitch_detector_test pitch_detector_test.cpp)
 target_link_libraries(core_pitch_detector_test PRIVATE factory_core)
@@ -35,7 +35,7 @@ foreach(_fs 44100 48000 88200 96000 176400 192000)
            COMMAND core_pitch_detector_test ${_fs})
 endforeach()
 
-# PsolaShifter — pitch-synchronous OLA shifter (pitch-fix). The identity path
+# PsolaShifter — pitch-synchronous OLA shifter (tn-vocal-tuner). The identity path
 # is an exact-delay contract, so every rate is asserted sample-exactly.
 add_executable(core_psola_shifter_test psola_shifter_test.cpp)
 target_link_libraries(core_psola_shifter_test PRIVATE factory_core)

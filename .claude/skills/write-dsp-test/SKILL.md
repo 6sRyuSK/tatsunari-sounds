@@ -16,9 +16,9 @@ description: Write or modify a plugin's headless DSP test (plugins/<slug>/tests/
 |---|---|---|---|
 | **プラグイン DSP**(本スキルの主題) | `<slug>_dsp_<fs>` | `plugins/<slug>/tests/dsp_test.cpp`、`factory_core` のみ | そのプラグインの DSP 仕様と回帰不変量。全レート |
 | core プリミティブ | `core_primitives_<fs>` / `core_linear_ramp_<fs>` / `core_pitch_detector_<fs>` / `core_psola_shifter_<fs>` | `core/tests/` | **共有プリミティブ**の仕様。新しい `core/` ヘッダのゲートはここ(`core-primitives` スキル) |
-| プリセット/テーブル配線 | `<slug>_preset` | `plugins/<slug>/tests/preset_test.cpp` | id 実在・レンジ・除外・Init。pitch-fix は headless、RS/deq は JUCE リンクのオラクル形(`add-preset` スキル) |
+| プリセット/テーブル配線 | `<slug>_preset` | `plugins/<slug>/tests/preset_test.cpp` | id 実在・レンジ・除外・Init。tn-vocal-tuner は headless、RS/deq は JUCE リンクのオラクル形(`add-preset` スキル) |
 | バイト等価オラクル | `resonance_suppressor_rscore_equiv` / `dynamic_eq_deqcore_equiv` | JUCE processor vs `<X>Core` | 脱 JUCE 移行のドリフト。**バイト一致**、全レート |
-| CLAP シェル層 | `resonance_suppressor_clap_shell` | `plugins/resonance-suppressor/tests/clap_shell_test.cpp`、`factory_shell` のみ | リサイズ数学の不動点等、シェルの純粋関数 |
+| CLAP シェル層 | `resonance_suppressor_clap_shell` | `plugins/tn-resonance-suppressor/tests/clap_shell_test.cpp`、`factory_shell` のみ | リサイズ数学の不動点等、シェルの純粋関数 |
 | 共有モデル | `params` / `presets` | `params/tests` / `presets/tests` | ParamStore・Range・StateCodec・PresetSession |
 | UI(visage 不要の部分) | `factory_ui_visage_theme` / `factory_ui_visage_spectrum_<fs>` / `factory_ui_visage_value_text` / `resonance_suppressor_theme_roundtrip` / `resonance_suppressor_ui_pure` | `ui/visage/tests/`、`plugins/*/ui/tests/` | テーマ JSON の往復、スペクトラム数理、値入力フロー(`visage-ui` スキル) |
 

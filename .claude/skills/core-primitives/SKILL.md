@@ -12,9 +12,9 @@ DSP は**既存プリミティブの合成**で作る。まずここから選び
 
 | プラグイン | 使用ヘッダ |
 |---|---|
-| resonance-suppressor | `ResonanceSuppressor` `MultiResSuppressor` `ReductionProfile` `StftResolution` `FFT` `LinkwitzRiley` `LinearRamp` |
-| pitch-fix | `PitchDetector` `PsolaShifter` `FFT` `Biquad` `Filters` `SmoothingCoeff` `LinearRamp` |
-| dynamic-eq | `DynamicEqBand` `Biquad` `Filters` `StftResolution` `LinearRamp` |
+| tn-resonance-suppressor | `ResonanceSuppressor` `MultiResSuppressor` `ReductionProfile` `StftResolution` `FFT` `LinkwitzRiley` `LinearRamp` |
+| tn-vocal-tuner | `PitchDetector` `PsolaShifter` `FFT` `Biquad` `Filters` `SmoothingCoeff` `LinearRamp` |
+| tn-equalizer | `DynamicEqBand` `Biquad` `Filters` `StftResolution` `LinearRamp` |
 
 **(archive)** 印のヘッダは archive 済みプラグイン専用のエンジン。`-DFACTORY_INCLUDE_ARCHIVED=ON`
 でしか構成されない(`archive/README.md`)。プリミティブとしては読めるが、live な
@@ -38,7 +38,7 @@ consumer がいないことを前提に扱う。
 | `EnvelopeFollower.h` | attack/release 独立の 1-pole ピークフォロワ |
 | `Compressor.h` | feed-forward log-domain comp(threshold/ratio/soft knee、ステレオリンク検出) |
 | `MultibandCompressor.h` | Crossover3 + Compressor×3 + dry/wet |
-| `DynamicEqBand.h` | パラメトリック EQ 1 バンド(帯域検出でゲイン変調可)。dynamic-eq の帯域 1 本 |
+| `DynamicEqBand.h` | パラメトリック EQ 1 バンド(帯域検出でゲイン変調可)。tn-equalizer の帯域 1 本 |
 
 ## 歪み / 倍音 / lo-fi
 
@@ -65,7 +65,7 @@ consumer がいないことを前提に扱う。
 | `Madoromi.h` | マイクロループ + アンビエントウォッシュエンジン(可変マスタークロックを 2 世界が共有)**(archive)** |
 | `MochiStretch.h` | 「タイムマシン」系タイムストレッチ(`HistoryBuffer` を常時録音テープとして使う、ホストレート駆動)**(archive)** |
 | `PitchShifter.h` | delay-line crossfade(rotating head)ピッチシフタ、FFT 不使用 |
-| `PsolaShifter.h` | **PSOLA(TD-PSOLA 系)ピッチシフタ** — モノフォニック用、WSOLA 相関アライメント。pitch-fix の補正エンジン |
+| `PsolaShifter.h` | **PSOLA(TD-PSOLA 系)ピッチシフタ** — モノフォニック用、WSOLA 相関アライメント。tn-vocal-tuner の補正エンジン |
 | `ShimmerReverb.h` | 8-line FDN + feedback 内ピッチシフト ×2 のシマーリバーブ完成エンジン **(archive)** |
 
 ## FFT / スペクトル / 検出
@@ -79,7 +79,7 @@ consumer がいないことを前提に扱う。
 | `ResonanceSuppressor.h` | soothe 系動的レゾナンス抑制(STFT、75% overlap、完全再構成) |
 | `MultiResSuppressor.h` | `ResonanceSuppressor` の**デュアル解像度**フロントエンド(LR4 で 2 帯域に分け、高域の時間分解能を 4 倍に) |
 | `ReductionProfile.h` | 抑制量の周波数プロファイル(オーディオフィルタではない) |
-| `PitchDetector.h` | **モノフォニック基本周波数推定**(McLeod Pitch Method / NSDF を FFT 自己相関で評価、key-maximum ピッキング)。pitch-fix の検出器 |
+| `PitchDetector.h` | **モノフォニック基本周波数推定**(McLeod Pitch Method / NSDF を FFT 自己相関で評価、key-maximum ピッキング)。tn-vocal-tuner の検出器 |
 
 ## リサンプリング / ルーティング / 制御
 

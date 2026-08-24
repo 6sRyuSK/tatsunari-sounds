@@ -2,7 +2,7 @@
 //
 // factory_ui_visage/ClapEditorHost.h — the shared Visage-backed factory_shell::
 // IClapEditor host that every clap-first plugin's editor derives from, so the
-// identical CLAP↔Visage boilerplate (the ~200 lines RS and pitch-fix used to copy)
+// identical CLAP↔Visage boilerplate (the ~200 lines RS and tn-vocal-tuner used to copy)
 // lives in ONE place. Three layers:
 //
 //   VisageClapEditorHost         — the truly-identical base: kNativeApi selection,
@@ -10,10 +10,10 @@
 //     clap.gui create/destroy/setParent skeletons, host-extension access
 //     (fetchHostExts / notifyHostEdited), the macOS-logical/native window-size split,
 //     and the inactive-edit param flush. Owns the visage::ApplicationWindow.
-//   FixedSizeVisageClapEditor    — a non-resizable editor (pitch-fix): the design-size
+//   FixedSizeVisageClapEditor    — a non-resizable editor (tn-vocal-tuner): the design-size
 //     resize surface + layoutEditorToWindow.
 //   ResizableVisageClapEditor    — a uniform-zoom, aspect-locked, resizable editor
-//     (resonance-suppressor, dynamic-eq): syncWindowScale + dynamicMaxWindowUnits + the
+//     (tn-resonance-suppressor, tn-equalizer): syncWindowScale + dynamicMaxWindowUnits + the
 //     Logic-AU resize-loop fix, parameterised by an EditorGeometry. EXACT code motion of
 //     RsClapEditor.cpp's proven logic — the runtime behaviour is preserved.
 //
@@ -100,7 +100,7 @@ namespace factory_ui_visage
         std::uint32_t curW_ = 0, curH_ = 0;
     };
 
-    // ── fixed-size editor (pitch-fix) ─────────────────────────────────────────
+    // ── fixed-size editor (tn-vocal-tuner) ─────────────────────────────────────────
     class FixedSizeVisageClapEditor : public VisageClapEditorHost
     {
     public:
@@ -126,7 +126,7 @@ namespace factory_ui_visage
         int designW_, designH_;
     };
 
-    // ── resizable, uniform-zoom, aspect-locked editor (RS, dynamic-eq) ─────────
+    // ── resizable, uniform-zoom, aspect-locked editor (RS, tn-equalizer) ─────────
     class ResizableVisageClapEditor : public VisageClapEditorHost
     {
     public:

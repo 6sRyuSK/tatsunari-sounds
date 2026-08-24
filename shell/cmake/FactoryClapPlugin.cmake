@@ -92,7 +92,7 @@ endif()
 # factory_clap_plugin(<slug>
 #     IMPL_TARGET   <target>          # static lib you defined (impl + entry hooks)
 #     ENTRY_SOURCE  <cpp>             # the tiny per-format clap_entry TU
-#     OUTPUT_NAME   "<Product Name>"  # e.g. "Resonance TatSuppressor"
+#     OUTPUT_NAME   "<bundle basename>" # e.g. "tn-resonance-suppressor"
 #     VERSION       <x.y.z>           # from plugin.toml (factory_read_version)
 #     AUV2_SUBTYPE_CODE <code>)       # 4-char AU subtype (manufacturer is fixed Ttsn)
 #
@@ -100,6 +100,17 @@ endif()
 #   bundle id  jp.tatsunari-sounds.<slug>
 #   AUv2 mfr   Ttsn (matches the shipping build's PLUGIN_MANUFACTURER_CODE)
 # Generated targets: <slug>_clap, <slug>_vst3, and the aggregate <slug>_all.
+#
+# OUTPUT_NAME is the BUNDLE BASENAME, not the display name: the product name the
+# host shows comes from the CLAP descriptor (ClapEntry.cpp). Per the product-ID
+# migration (docs/plans/update-notification-and-distribution/11-product-identity-migration.md
+# §11.1) the basename is the tn-* slug, so the artefacts are <slug>.clap /
+# <slug>.vst3 / <slug>.component.
+#
+# The VST3 class ID and the AUv2 identity are derived by clap-wrapper from the
+# CLAP plugin id / BUNDLE_IDENTIFIER + AUV2_SUBTYPE_CODE, so the tn-* ids give a
+# fresh, distinct identity per §11.3. Never reintroduce a retired id or subtype:
+# a host would then treat an old session as compatible with the new product.
 function(factory_clap_plugin slug)
   set(oneValueArgs IMPL_TARGET ENTRY_SOURCE OUTPUT_NAME VERSION AUV2_SUBTYPE_CODE)
   cmake_parse_arguments(FCP "" "${oneValueArgs}" "" ${ARGN})

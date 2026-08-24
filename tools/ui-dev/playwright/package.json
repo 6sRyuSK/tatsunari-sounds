@@ -12,8 +12,8 @@
     "test": "node verify.js --app all",
     "test:gallery": "node verify.js --app gallery",
     "test:rs": "node verify.js --app rs-editor",
-    "test:pitch-fix": "node verify.js --app pitch-fix",
-    "test:dynamic-eq": "node verify.js --app dynamic-eq"
+    "test:tn-vocal-tuner": "node verify.js --app tn-vocal-tuner",
+    "test:tn-equalizer": "node verify.js --app tn-equalizer"
   },
   "devDependencies": {
     "playwright": "1.61.0",

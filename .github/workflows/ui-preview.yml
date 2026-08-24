@@ -73,8 +73,8 @@ jobs:
           ./setup.sh --with-playwright
           ./dev.sh --rel --app gallery --verify
           ./dev.sh --rel --app rs-editor --verify
-          ./dev.sh --rel --app pitch-fix --verify
-          ./dev.sh --rel --app dynamic-eq --verify
+          ./dev.sh --rel --app tn-vocal-tuner --verify
+          ./dev.sh --rel --app tn-equalizer --verify
 
       - name: Upload screenshots
         if: always()

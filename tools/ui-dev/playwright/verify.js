@@ -14,7 +14,7 @@ function usage() {
   console.log(`Usage: node verify.js [options]
 
 Options:
-  --app gallery|rs-editor|pitch-fix|dynamic-eq|all
+  --app gallery|rs-editor|tn-vocal-tuner|tn-equalizer|all
                                 App to verify (default: rs-editor)
   --mode test|inspect          Run the regression test or capture UI state
   --build-dir <dir>            CMake build dir (default: ../build/dev)
@@ -57,7 +57,7 @@ function parseArgs(argv) {
       process.exit(0);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
-  if (!["gallery", "rs-editor", "pitch-fix", "dynamic-eq", "all"].includes(options.app)) throw new Error(`Invalid --app: ${options.app}`);
+  if (!["gallery", "rs-editor", "tn-vocal-tuner", "tn-equalizer", "all"].includes(options.app)) throw new Error(`Invalid --app: ${options.app}`);
   if (!["test", "inspect"].includes(options.mode)) throw new Error(`Invalid --mode: ${options.mode}`);
   if (options.url && options.app === "all") throw new Error("--url cannot be combined with --app all");
   if (options.mode === "test" && (options.sets.length || options.size)) throw new Error("--set/--size are only available with --mode inspect");
@@ -73,26 +73,26 @@ function appConfig(app, buildDir) {
       script: path.join(__dirname, "smoke.js"),
     };
   }
-  if (app === "pitch-fix") {
+  if (app === "tn-vocal-tuner") {
     return {
       app,
       webDir: path.join(buildDir, "web-pf"),
       themeFile: null,
-      script: path.join(__dirname, "pitch-fix.spec.js"),
+      script: path.join(__dirname, "tn-vocal-tuner.spec.js"),
     };
   }
-  if (app === "dynamic-eq") {
+  if (app === "tn-equalizer") {
     return {
       app,
       webDir: path.join(buildDir, "web-deq"),
       themeFile: null,
-      script: path.join(__dirname, "dynamic-eq.spec.js"),
+      script: path.join(__dirname, "tn-equalizer.spec.js"),
     };
   }
   return {
     app,
     webDir: path.join(buildDir, "web-rs"),
-    themeFile: path.join(REPO_DIR, "plugins", "resonance-suppressor", "ui", "theme-rs.json"),
+    themeFile: path.join(REPO_DIR, "plugins", "tn-resonance-suppressor", "ui", "theme-rs.json"),
     script: path.join(__dirname, "rs.spec.js"),
   };
 }
@@ -221,7 +221,7 @@ async function runApp(options, app) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const apps = options.app === "all"
-    ? ["gallery", "rs-editor", "pitch-fix", "dynamic-eq"]
+    ? ["gallery", "rs-editor", "tn-vocal-tuner", "tn-equalizer"]
     : [options.app];
   for (const app of apps) await runApp(options, app);
 }

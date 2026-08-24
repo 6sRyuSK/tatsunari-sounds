@@ -14,15 +14,15 @@ UI は JUCE 非依存の Visage 製です（JUCE 製のバイナリを出荷す�
 
 | Plugin | Category | Version | Formats | Reference |
 | --- | --- | --- | --- | --- |
-| Dynamic Tatsunari EQ | EQ | 2.0.0 | VST3, AU | Multiband dynamic EQ with per-band detection |
-| Resonance TatSuppressor | EQ | 3.1.1 | VST3, AU | Dynamic spectral resonance / harshness suppression |
+| TN Equalizer | EQ | 0.1.0 | VST3, AU | Multiband dynamic EQ with per-band detection |
+| TN Resonance Suppressor | EQ | 0.1.0 | VST3, AU | Dynamic spectral resonance / harshness suppression |
 
 
 ### In progress (1)
 
 | Plugin | Category | Reference |
 | --- | --- | --- |
-| Pitch TatFixer | Pitch Correction | Real-time monophonic pitch correction |
+| TN Vocal Tuner | Pitch Correction | Real-time monophonic pitch correction |
 
 
 ### Planned (0)
@@ -78,8 +78,8 @@ UI は日本語 / 英語のバイリンガルで、OS のロケールに従い�
 
 各プラグインのパラメータ解説・レイテンシ・使い方は `docs/manual/` にあります。
 
-- [Dynamic Tatsunari EQ](docs/manual/dynamic-tatsunari-eq.md)
-- [Resonance TatSuppressor](docs/manual/resonance-tatsuppressor.md)
+- [TN Equalizer](docs/manual/tn-equalizer.md)
+- [TN Resonance Suppressor](docs/manual/tn-resonance-suppressor.md)
 
 ## ソースからビルドする（開発者向け）
 
@@ -92,7 +92,7 @@ CLAP / VST3 SDK / clap-wrapper / Visage などの SDK 類は初回の CMake 構�
 Python 3、TUI インストーラーを開発する場合は Go も追加で入れてください。
 
 JUCE も同じ仕組みでフェッチされますが、**出荷バイナリはもう JUCE を使いません**。
-JUCE が必要なのは resonance-suppressor と dynamic-eq が残している
+JUCE が必要なのは tn-resonance-suppressor と tn-equalizer が残している
 byte 等価オラクルのテストだけで、その 2 つを含む構成でのみフェッチされます
 （`-DFACTORY_JUCE_ORACLES=OFF` を付ければ常にスキップできます）。
 
@@ -128,10 +128,10 @@ X11 / freetype / GL の各開発パッケージは Visage GUI と VST3 SDK の�
 必要に応じて以下の CMake 変数を設定してください:
 
 - `-DFACTORY_PLUGINS=<slug>[,<slug>]` — 指定したプラグインだけを構成・ビルド
-  します（例: `-DFACTORY_PLUGINS=dynamic-eq`）。省略すると全プラグインが対象です。
+  します（例: `-DFACTORY_PLUGINS=tn-equalizer`）。省略すると全プラグインが対象です。
   現行プラグインはすべて CLAP ファーストなので、いずれか 1 つでも含む構成が
   CLAP 系 SDK / Visage をフェッチします。
-- `-DFACTORY_JUCE_ORACLES=OFF` — resonance-suppressor / dynamic-eq の JUCE 製
+- `-DFACTORY_JUCE_ORACLES=OFF` — tn-resonance-suppressor / tn-equalizer の JUCE 製
   byte 等価オラクルのテストを構成から外し、**JUCE のフェッチごとスキップ**します。
   出荷バイナリ（CLAP / VST3 / AU）には一切影響しません。
 
@@ -165,7 +165,7 @@ Visual Studio ジェネレータはマルチコンフィグなので、`Release`
 
 ### 補足
 
-- resonance-suppressor の CLAP ビルドは CI と同じ Ninja 経路で検証されています。
+- tn-resonance-suppressor の CLAP ビルドは CI と同じ Ninja 経路で検証されています。
   Windows では [`tools/build-clap.ps1`](tools/build-clap.ps1) が VS ツールチェーン
   の準備からビルド（`-Install` でシステムへの配置まで）を自動化します。ビルド済み
   VST3 の一括インストールには [`tools/install.ps1`](tools/install.ps1) が使えます。

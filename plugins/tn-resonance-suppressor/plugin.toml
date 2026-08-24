@@ -1,0 +1,8 @@
+[plugin]
+name      = "TN Resonance Suppressor"
+slug      = "tn-resonance-suppressor"
+category  = "EQ"
+status    = "shipped"
+version   = "0.1.0"
+formats   = ["VST3", "AU"]
+reference = "Dynamic spectral resonance / harshness suppression"

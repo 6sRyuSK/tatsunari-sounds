@@ -77,7 +77,7 @@ class RepoScanTest(unittest.TestCase):
     def test_archived_slugs_are_discovered(self):
         slugs = csr.archived_slugs(csr.REPO_ROOT)
         self.assertIn("saturator", slugs)
-        self.assertNotIn("pitch-fix", slugs)
+        self.assertNotIn("tn-vocal-tuner", slugs)
 
 
 class CheckSkillTest(unittest.TestCase):

@@ -20,7 +20,7 @@ function parseArgs(argv) {
     else if (arg === "--size") options.size = argv[++i];
     else throw new Error(`Unknown argument: ${arg}`);
   }
-  if (!["gallery", "rs-editor", "pitch-fix", "dynamic-eq"].includes(options.app)) throw new Error(`Invalid --app: ${options.app}`);
+  if (!["gallery", "rs-editor", "tn-vocal-tuner", "tn-equalizer"].includes(options.app)) throw new Error(`Invalid --app: ${options.app}`);
   if (options.size && !/^\d+x\d+$/.test(options.size)) throw new Error(`Invalid --size: ${options.size}`);
   for (const assignment of options.sets) {
     if (!/^[^=]+=[-+]?\d+(?:\.\d+)?$/.test(assignment)) throw new Error(`Invalid --set: ${assignment}`);
@@ -34,8 +34,8 @@ async function main() {
   const viewports = {
     "gallery": { width: 1000, height: 820 },
     "rs-editor": { width: 1420, height: 1000 },
-    "pitch-fix": { width: 1040, height: 680 },
-    "dynamic-eq": { width: 900, height: 700 },
+    "tn-vocal-tuner": { width: 1040, height: 680 },
+    "tn-equalizer": { width: 900, height: 700 },
   };
   const viewport = viewports[options.app];
   const { browser, page } = await d.launch(viewport);
@@ -73,8 +73,8 @@ async function main() {
       const specialByApp = {
         "gallery": ["preset", "spectrum", "valueSetting"],
         "rs-editor": ["preset", "plot", "mode", "quality", "footerCard", "modeCard", "footerDiv1", "footerDiv2"],
-        "pitch-fix": ["preset", "status", "key", "scale", "buffer"],
-        "dynamic-eq": ["preset", "plot", "curve", "panel", "bypass", "b0_node"],
+        "tn-vocal-tuner": ["preset", "status", "key", "scale", "buffer"],
+        "tn-equalizer": ["preset", "plot", "curve", "panel", "bypass", "b0_node"],
       };
       const specialKeys = specialByApp[app];
       const rects = {};
@@ -89,9 +89,9 @@ async function main() {
         presetIndex: window.ui.presetIndex(),
         plotRect: window.rs.plotRect(),
       } : null;
-      const plugin = app === "pitch-fix" && window.pf ? {
+      const plugin = app === "tn-vocal-tuner" && window.pf ? {
         detected: window.pf.detected(), target: window.pf.target(), shift: window.pf.shift(), latency: window.pf.latency(),
-      } : app === "dynamic-eq" && window.deq ? {
+      } : app === "tn-equalizer" && window.deq ? {
         selectedBand: window.deq.selectedBand(), plotRect: window.deq.plotRect(),
       } : null;
       const canvas = document.getElementById("canvas");

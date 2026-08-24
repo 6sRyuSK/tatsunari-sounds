@@ -67,7 +67,7 @@ OSES = ["macOS", "Windows"]
 # declaration style ("kind"). Mirrors the workflow's original grep/sed: first call
 # of the macro, first identifier after the opening paren.
 # NOTE: the clap target name is the plugin SLUG (a make_clapfirst TARGET_NAME),
-# which contains hyphens (e.g. resonance-suppressor) — hence '-' in the class.
+# which contains hyphens (e.g. tn-resonance-suppressor) — hence '-' in the class.
 _TARGET_RES = {
     "clap": re.compile(r"factory_clap_plugin\(\s*([A-Za-z0-9_-]+)"),
 }
@@ -75,7 +75,7 @@ _TARGET_RES = {
 # A SHIPPING juce_add_plugin target. Not a recognised kind any more (脱JUCE: every
 # active plugin ships clap-first), so this pattern exists only to produce a clear
 # error instead of the generic "could not resolve target". Deliberately narrow:
-# juce_add_console_app — which is what the surviving RS/dynamic-eq byte-equivalence
+# juce_add_console_app — which is what the surviving RS/tn-equalizer byte-equivalence
 # ORACLES use — does not match, and must not, since those never ship.
 _JUCE_PLUGIN_RE = re.compile(r"juce_add_plugin\(\s*([A-Za-z0-9_]+)")
 

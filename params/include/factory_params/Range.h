@@ -18,7 +18,7 @@
 // lambda remaps.
 //
 // Bit-exact float parity with live JUCE parameter objects is a HARD TEST GATE
-// (params_test's Range checks + resonance-suppressor preset_test's "paramdesc
+// (params_test's Range checks + tn-resonance-suppressor preset_test's "paramdesc
 // parity", which compares via ==/memcmp with NO tolerance). DO NOT SIMPLIFY THE
 // MATH: every operation stays in float, in this order. Algebraic simplification
 // (e.g. pow(x, log(0.5)/log(P)) -> 0.5) changes the rounding and breaks parity.

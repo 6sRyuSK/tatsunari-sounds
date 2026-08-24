@@ -71,7 +71,7 @@ JUCE 固有の症状(leak detector、`setLookAndFeel`、attachment 寿命)はも
 | state save/restore テストで値が変わる | `StateCodec` の往復(実値の `to_chars`/`from_chars`)、`migrateState` フックの非対称、`PresetSession` の presetIndex 復元。ゲートは `presets` テストと `<slug>_preset` |
 | `Parameter thread safety` / random values でクラッシュ・NaN | GUI/audio 共有スカラーが non-atomic(コアの `uiXxx` は `std::atomic`)、パラメータ急変時の平滑化なし(`core/include/factory_core/LinearRamp.h`)、検出器の絶対フロア欠如 |
 | bus layout テスト失敗 | Policy の `kHasSidechain` とシェルのポート宣言の不一致。サイドチェインは**オプショナルなステレオ入力**として宣言される |
-| latency テスト / bypass で位相ズレ | `latencySamples(core)` の報告漏れ・遅れ。レイテンシがパラメータで変わるコアは `primeFrames()` を 0 以外にして activate() で落ち着かせる(pitch-fix は `1<<13`、RS は `1<<15`) |
+| latency テスト / bypass で位相ズレ | `latencySamples(core)` の報告漏れ・遅れ。レイテンシがパラメータで変わるコアは `primeFrames()` を 0 以外にして activate() で落ち着かせる(tn-vocal-tuner は `1<<13`、RS は `1<<15`) |
 | sample rate / buffer size 変更でクラッシュ・ノイズ | `Core::prepare` での状態リセット漏れ、worst-case バッファサイズ不足(黙ったクランプ)。`reset()` は再確保なしで状態だけ消す |
 | denormal 由来の CPU スパイク | FTZ/DAZ は**シェル境界**の責務(`factory_shell/DenormalGuard.h` が process を包む)。コア側で FP モードを仮定しない。テストは `noSubnormals` |
 | AU だけ落ちる(macOS) | AU キャッシュ(再検証で直ることがある — まず re-run)、または AUv2 サブタイプコード衝突(`factory_clap_plugin` の `AUV2_SUBTYPE_CODE`。manufacturer は `Ttsn` 固定、`AUV2_INSTRUMENT_TYPE aufx`) |

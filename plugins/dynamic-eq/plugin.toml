@@ -1,8 +1,0 @@
-[plugin]
-name      = "Dynamic Tatsunari EQ"
-slug      = "dynamic-eq"
-category  = "EQ"
-status    = "shipped"
-version   = "2.0.0"
-formats   = ["VST3", "AU"]
-reference = "Multiband dynamic EQ with per-band detection"

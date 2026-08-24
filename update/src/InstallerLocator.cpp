@@ -38,7 +38,7 @@ namespace factory_update
                 return std::filesystem::path (pf) / "tatsunari-sounds";
             return std::filesystem::path ("C:/Program Files") / "tatsunari-sounds";
         }
-        const char* binaryName() { return "tatsunari.exe"; }
+        const char* binaryName() { return "tatsunari-sounds-installer.exe"; }
 #elif defined(__APPLE__)
         std::filesystem::path userInstallerRoot()
         {
@@ -51,7 +51,7 @@ namespace factory_update
         {
             return "/Library/Application Support/tatsunari-sounds/bin";
         }
-        const char* binaryName() { return "tatsunari"; }
+        const char* binaryName() { return "tatsunari-sounds-installer"; }
 #else
         std::filesystem::path userInstallerRoot()
         {
@@ -65,7 +65,7 @@ namespace factory_update
         {
             return "/usr/local/lib/tatsunari-sounds/bin";
         }
-        const char* binaryName() { return "tatsunari"; }
+        const char* binaryName() { return "tatsunari-sounds-installer"; }
 #endif
     } // namespace
 

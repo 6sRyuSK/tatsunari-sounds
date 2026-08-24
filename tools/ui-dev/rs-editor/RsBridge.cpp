@@ -26,7 +26,7 @@
 // RsBridge — the RS-specific half of the C surface the page JS / Playwright driver
 // calls via Module.ccall. The generic window.ui ABI (params, theme, fonts, widget
 // rects, dropdown rows, presets) comes from the shared ui_dev_harness::Target, the
-// SAME one pitch-fix and dynamic-eq attach — this bridge must never re-declare a
+// SAME one tn-vocal-tuner and tn-equalizer attach — this bridge must never re-declare a
 // ui_* export. What stays here is genuinely RS-only: node select/positions, A-B,
 // undo, a deterministic UI-edit + clock for the undo tests, and the mini-knob /
 // profile geometry the screenshot oracles read. Returned strings live in

@@ -556,7 +556,7 @@ void testCrossover5 (double Fs)
 // 7. Denormal flush — a decaying feedback tail must not pin the state subnormal
 // ==========================================================================
 //
-// Root cause of the P0 "two resonance-suppressor instances in series go
+// Root cause of the P0 "two tn-resonance-suppressor instances in series go
 // catastrophically heavy" report (regression-policy class V): a stable IIR fed a tail
 // that decays into digital silence lets its feedback state (z1/z2) drift into the
 // subnormal range and get STUCK there — hundreds of thousands of samples where

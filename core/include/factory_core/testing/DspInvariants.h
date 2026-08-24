@@ -79,7 +79,7 @@ namespace factory_core::testing
     // True iff NO element is subnormal (denormalized). A stable feedback node fed
     // a decaying tail into silence must not get pinned in the subnormal range,
     // where every op is microcoded and costs ~80x a normal one — two such nodes in
-    // series (e.g. two resonance-suppressor instances, stage 1's tail underflowing
+    // series (e.g. two tn-resonance-suppressor instances, stage 1's tail underflowing
     // into stage 2) then run catastrophically over the real-time budget on any
     // host that does not force FTZ/DAZ around the callback. The DSP cores are
     // FP-mode-agnostic, so this must hold from pure arithmetic, independent of the

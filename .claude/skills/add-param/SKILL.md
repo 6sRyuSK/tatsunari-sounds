@@ -15,12 +15,12 @@ APVTS レイアウトがすべて派生する。**`createParameterLayout` を手
 
 | プラグイン | テーブル | Policy | エディタ |
 |---|---|---|---|
-| resonance-suppressor | `plugins/resonance-suppressor/Source/Params.h`(`resonance_suppressor_params::buildRsParams`) | `plugins/resonance-suppressor/shell/ClapEntry.cpp` | `plugins/resonance-suppressor/ui/RsEditor.h` |
-| pitch-fix | `plugins/pitch-fix/PfParams.h`(`pitch_fix_params::buildPfParams`) | `plugins/pitch-fix/shell/ClapEntry.cpp` | `plugins/pitch-fix/ui/PfEditor.h` |
-| dynamic-eq | `plugins/dynamic-eq/DeqParams.h`(`dynamic_eq_params::buildDeqParams`) | `plugins/dynamic-eq/shell/ClapEntry.cpp` | `plugins/dynamic-eq/ui/DeqEditor.h` |
+| tn-resonance-suppressor | `plugins/tn-resonance-suppressor/Source/Params.h`(`resonance_suppressor_params::buildRsParams`) | `plugins/tn-resonance-suppressor/shell/ClapEntry.cpp` | `plugins/tn-resonance-suppressor/ui/RsEditor.h` |
+| tn-vocal-tuner | `plugins/tn-vocal-tuner/PfParams.h`(`pitch_fix_params::buildPfParams`) | `plugins/tn-vocal-tuner/shell/ClapEntry.cpp` | `plugins/tn-vocal-tuner/ui/PfEditor.h` |
+| tn-equalizer | `plugins/tn-equalizer/DeqParams.h`(`dynamic_eq_params::buildDeqParams`) | `plugins/tn-equalizer/shell/ClapEntry.cpp` | `plugins/tn-equalizer/ui/DeqEditor.h` |
 
 RS のテーブルだけ `Source/` の下にあるが、**出荷シェルがそれを include している**
-(`plugins/resonance-suppressor/shell/ClapEntry.cpp:34`)。「`Source/` はオラクル専用」
+(`plugins/tn-resonance-suppressor/shell/ClapEntry.cpp:34`)。「`Source/` はオラクル専用」
 という一般規則の例外なので、「オラクルだから出荷に影響しない」と誤読しないこと。
 
 ## 1. ParamDesc テーブルに 1 エントリ
@@ -112,7 +112,7 @@ UI を付けない param は「バインドしないだけ」で良い。
 `tools/ui-dev` ハーネスでその機種のエディタを開いて確認する(`visage-ui` スキルの
 開発ループ)。
 
-## 5. RS / dynamic-eq のときだけ: JUCE オラクルと同時に直す
+## 5. RS / tn-equalizer のときだけ: JUCE オラクルと同時に直す
 
 この 2 機種は `Source/` に JUCE `AudioProcessor` をオラクルとして残しており、
 `FACTORY_JUCE_ORACLES=ON`(既定)で 2 つのゲートが走る:
@@ -123,7 +123,7 @@ UI を付けない param は「バインドしないだけ」で良い。
   コアの出力が**バイト一致**であることを全レートで照合。
 
 つまり **テーブルだけ直してコア/processor の片側を放置すると必ず赤**。DSP に効く
-パラメータは processor 側とコア側を同じ意味で同時に実装する。pitch-fix には
+パラメータは processor 側とコア側を同じ意味で同時に実装する。tn-vocal-tuner には
 オラクルが無いので、この節は不要。
 
 ## 6. テスト
@@ -137,7 +137,7 @@ UI を付けない param は「バインドしないだけ」で良い。
 
 `preset_test`(headless)はテーブル健全性 — id/uid 一意、レンジ非空、default が
 レンジ内 — を自動で拾うので、パラメータ数を数えているアサート
-(`plugins/pitch-fix/tests/preset_test.cpp:41`)がある機種は期待値を更新する。
+(`plugins/tn-vocal-tuner/tests/preset_test.cpp:41`)がある機種は期待値を更新する。
 
 ## 7. 仕上げ
 
@@ -148,7 +148,7 @@ UI を付けない param は「バインドしないだけ」で良い。
 3. ビルド + 対象プラグインの ctest 全レート緑(core/ を触ったら全プラグイン)。
    CTest を回すときは `FACTORY_JUCE_ORACLES` を **ON のまま**(等価・プリセットゲートが
    そこに居る)。
-4. **出荷済み機種なら `docs/manual/<name>.md` も更新**(現在 RS と dynamic-eq の 2 本。
+4. **出荷済み機種なら `docs/manual/<name>.md` も更新**(現在 RS と tn-equalizer の 2 本。
    `docs/manual/README.md` が「パラメータ定義から転記され出荷バイナリに追従する」と
    宣言している)。
 5. コミット: `feat(<slug>): Attackパラメータを追加` の形式。

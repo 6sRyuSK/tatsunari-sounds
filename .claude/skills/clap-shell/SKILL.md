@@ -61,7 +61,7 @@ makeEditor (Core&, factory_params::ParamStore&, factory_presets::PresetSession&,
 
 ### 3 機種の実値(迷ったらここを見る)
 
-| | RS | pitch-fix | dynamic-eq |
+| | RS | tn-vocal-tuner | tn-equalizer |
 |---|---|---|---|
 | `kHasSidechain` | `true` | `false` | `false` |
 | `isClapExposed` | `kFlagLegacyJuceOnly` を除外 | 常に true | 常に true |

@@ -79,7 +79,7 @@ namespace factory_params
 
         // Binary search over the uid-sorted (uid -> index) table built in the
         // constructor. Callers build "name -> index" caches by calling this once per
-        // parameter, so a linear scan made that O(n^2): dynamic-eq's 361 parameters
+        // parameter, so a linear scan made that O(n^2): tn-equalizer's 361 parameters
         // cost ~130k string compares per cache (shell + curve view + every band
         // switch). Hashing first makes each lookup O(log n) with ONE string compare
         // on the hit (uid collisions fall back to comparing the remaining run).

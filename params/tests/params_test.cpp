@@ -12,7 +12,7 @@
 // normalised values, hand-computed FNV goldens, and formula-independent Range
 // invariants (unity at the ends, 0.5 at a setSkewForCentre range's centre, strict
 // monotonicity). Range's BIT-EXACT parity with live juce objects is additionally
-// gated in resonance-suppressor's preset_test ("paramdesc parity").
+// gated in tn-resonance-suppressor's preset_test ("paramdesc parity").
 //
 #include "factory_params/ParamDesc.h"
 #include "factory_params/Range.h"
@@ -92,7 +92,7 @@ void checkFnv()
     // Empty string hashes to the offset basis.
     check (fnv1a32 ("") == 0x811c9dc5u, "fnv1a32(\"\") == offset basis");
 
-    // Uniqueness across a sample of resonance-suppressor ids (the real table is
+    // Uniqueness across a sample of tn-resonance-suppressor ids (the real table is
     // checked exhaustively in preset_test; this is a self-contained sample).
     const std::vector<std::string> ids = {
         "depth", "sharpness", "attack", "release", "mix", "delta", "link", "bypass",
@@ -316,7 +316,7 @@ void checkParamStore()
         check (store.indexOf ("Depth") == -1, "indexOf is case-sensitive");
     }
 
-    // A wide table (dynamic-eq is 361 params) exercises the search over more than
+    // A wide table (tn-equalizer is 361 params) exercises the search over more than
     // one level of bisection, including ids that share a prefix.
     {
         std::vector<ParamDesc> wide;

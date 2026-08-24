@@ -1207,7 +1207,7 @@ int main()
     }
 
     // TODO(scaffold): add the plugin's own structural preset gates here (e.g.
-    // "every sound preset pins the quality mode"), the way pitch-fix gates its
+    // "every sound preset pins the quality mode"), the way tn-vocal-tuner gates its
     // two-family bank.
 
     if (g_failures > 0)

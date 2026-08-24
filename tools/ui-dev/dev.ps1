@@ -5,12 +5,12 @@
 # Default: the rs-editor app on http://127.0.0.1:8081.
 #
 # Usage:
-#   .\tools\ui-dev\dev.ps1 [-App rs-editor|gallery|pitch-fix|dynamic-eq] [-Rel] [-NoServe | -Verify]
+#   .\tools\ui-dev\dev.ps1 [-App rs-editor|gallery|tn-vocal-tuner|tn-equalizer] [-Rel] [-NoServe | -Verify]
 #
 # Sandbox overrides (env vars) are honoured when set:
 #   FACTORY_FREETYPE_MIRROR_DIR, FETCHCONTENT_SOURCE_DIR_VISAGE
 param(
-    [ValidateSet("gallery", "rs-editor", "pitch-fix", "dynamic-eq")]
+    [ValidateSet("gallery", "rs-editor", "tn-vocal-tuner", "tn-equalizer")]
     [string]$App = "rs-editor",
     [switch]$Gallery,
     [switch]$Rel,
@@ -84,12 +84,12 @@ switch ($App) {
     }
     "rs-editor" {
         $WebDir = Join-Path $BuildDir "web-rs"; $Port = 8081
-        $ThemeArgs = @("--theme-file", (Join-Path $Repo "plugins\resonance-suppressor\ui\theme-rs.json"))
+        $ThemeArgs = @("--theme-file", (Join-Path $Repo "plugins\tn-resonance-suppressor\ui\theme-rs.json"))
     }
-    "pitch-fix" {
+    "tn-vocal-tuner" {
         $WebDir = Join-Path $BuildDir "web-pf"; $Port = 8082; $ThemeArgs = @()
     }
-    "dynamic-eq" {
+    "tn-equalizer" {
         $WebDir = Join-Path $BuildDir "web-deq"; $Port = 8083; $ThemeArgs = @()
     }
 }
