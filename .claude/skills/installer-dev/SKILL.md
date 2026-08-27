@@ -57,10 +57,18 @@ go run . --no-tui --dry-run        --os Windows --plugins tn-resonance-suppresso
   `__apply` は宛先を install-root **allowlist** で、ソースを staging dir で
   再検証してから move する(改竄された plan が任意特権書き込みにならないため)。
   この検証を弱めない。
-- **receipt**: schema 2 keys are `(slug, variant, scope)`. User receipts stay
-  user-owned (non-privileged parent). System receipts live under
-  `/Library/Application Support/…` / `%ProgramData%\…` and are written by
-  `__apply` (plan §5.5). Legacy v1 slug-keyed files migrate on read.
+- **receipt**: schema 2 keys are `(slug, variant, scope)`。**書き手はスコープで
+  分かれる**: user 受領書は非特権の親（`app.WriteReceipt`）が
+  `ReceiptPathFor(os, user)` + `SaveForScope` で書き、**system 受領書は
+  `install.ApplyPlan` が特権 apply の内側で書く**。system 側の受領書ディレクトリは
+  root 所有で親から書けず、内容は move を試した後にしか確定しないため、親で書くと
+  2 回目の昇格プロンプトが必要になる。そのため plan が運ぶ:
+  `InstallPlan.ReceiptPath`（system のときだけセット）と `Move.Receipt`
+  （`slug` / `variant` / `version` / `format` / `scope`）。applier は**成功した
+  move だけ**を既存受領書へマージし、0755/0644 で保存する（他ユーザーが
+  reconcile できるよう world-readable）。`ValidatePlan` は ReceiptPath を宛先と
+  同じ allowlist で検証し、さらにファイル名が `receipt.json` であることも要求する
+  — この 2 つを緩めない。legacy v1 の slug キーは読み込み時に移行される。 Legacy v1 slug-keyed files migrate on read.
 - **配置先の vendor folder**(plan §11.4): VST3 と CLAP は **両スコープとも**
   標準 root 直下の `tatsunari-sounds/` に入れる(`install.VendorFolder`)。
   **AU だけは例外**で `Components` 直下 — 全対象 DAW が `Components` を再帰探索

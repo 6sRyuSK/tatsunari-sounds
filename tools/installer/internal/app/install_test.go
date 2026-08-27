@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/install"
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/model"
 	"github.com/6sRyuSK/tatsunari-sounds/tools/installer/internal/release"
 )
@@ -100,7 +101,7 @@ func TestInstallerRunUserScope(t *testing.T) {
 	}
 
 	// Receipt written with the plugin's version.
-	if err := WriteReceipt(installed); err != nil {
+	if err := WriteReceipt(model.OSWindows, installed); err != nil {
 		t.Fatalf("WriteReceipt: %v", err)
 	}
 	// The version came from BuildPlanItems in production; here assert receipt round-trips.
@@ -287,5 +288,105 @@ func TestInstallerKeepsOtherScopeWhenOneElevationFails(t *testing.T) {
 	}
 	if len(res.Installed) != 1 {
 		t.Errorf("result should report the one applied bundle, got %v", res.Installed)
+	}
+}
+
+// TestSystemScopeReceiptGoesThroughTheApplier pins the split: the system plan
+// carries a ReceiptPath (so the privileged apply records it while it still
+// holds elevation), and WriteReceipt — which runs unprivileged — leaves those
+// rows alone rather than filing them in the user's receipt.
+func TestSystemScopeReceiptGoesThroughTheApplier(t *testing.T) {
+	zipBytes := makeZipBytes(t, "Saturator.vst3")
+	sum := sha256.Sum256(zipBytes)
+	assetName := "saturator-v0_1_3-Windows.zip"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(zipBytes)
+	}))
+	defer srv.Close()
+	client := release.NewClient("o", "r", "")
+	client.HTTP = srv.Client()
+
+	cfg := t.TempDir()
+	t.Setenv("APPDATA", cfg)
+	t.Setenv("HOME", cfg)
+	t.Setenv("ProgramData", filepath.Join(cfg, "ProgramData"))
+
+	userDest, sysDest := t.TempDir(), t.TempDir()
+	mk := func(slug string, scope model.Scope, dest string) model.PlanItem {
+		return model.PlanItem{
+			Slug: slug, Variant: model.VariantStable, Format: model.FormatVST3,
+			Scope: scope, Version: "0.1.3",
+			Asset:       model.Asset{Name: assetName, DownloadURL: srv.URL + "/" + assetName},
+			Destination: dest,
+		}
+	}
+	items := []model.PlanItem{
+		mk("useronly", model.ScopeUser, userDest),
+		mk("systemwide", model.ScopeSystem, sysDest),
+	}
+
+	plansByScope := map[model.Scope]model.InstallPlan{}
+	orig := applyFn
+	t.Cleanup(func() { applyFn = orig })
+	applyFn = func(scope model.Scope, plan model.InstallPlan, stagingDir string) (model.ApplyResult, error) {
+		plansByScope[scope] = plan
+		var res model.ApplyResult
+		for _, mv := range plan.Moves {
+			res.Installed = append(res.Installed, mv.Dst)
+		}
+		return res, nil
+	}
+
+	installer := &Installer{
+		Client:    client,
+		Checksums: release.Checksums{assetName: hex.EncodeToString(sum[:])},
+		OS:        model.OSWindows,
+	}
+	_, installed, err := installer.Run(context.Background(), items, model.ScopeUser, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The system plan carries a receipt path; the user plan must not.
+	sysPlan := plansByScope[model.ScopeSystem]
+	if sysPlan.ReceiptPath == "" {
+		t.Error("the system plan must carry a ReceiptPath for the privileged write")
+	}
+	if got := filepath.Base(sysPlan.ReceiptPath); got != "receipt.json" {
+		t.Errorf("system ReceiptPath basename = %q", got)
+	}
+	if p := plansByScope[model.ScopeUser].ReceiptPath; p != "" {
+		t.Errorf("the user plan must not carry a ReceiptPath, got %q", p)
+	}
+
+	// Every bundle move carries its receipt identity, so the applier can record
+	// exactly what landed.
+	for _, mv := range sysPlan.Moves {
+		if mv.Receipt == nil {
+			t.Fatalf("move %q carries no receipt identity", mv.Dst)
+		}
+		if mv.Receipt.Scope != model.ScopeSystem || mv.Receipt.Slug != "systemwide" {
+			t.Errorf("receipt ref = %+v", *mv.Receipt)
+		}
+	}
+
+	// WriteReceipt files ONLY the user row.
+	if err := WriteReceipt(model.OSWindows, installed); err != nil {
+		t.Fatalf("WriteReceipt: %v", err)
+	}
+	userPath, err := install.ReceiptPathFor(model.OSWindows, model.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := install.LoadReceiptAt(userPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.Entries[install.EntryKey("useronly", model.VariantStable, model.ScopeUser)]; !ok {
+		t.Errorf("user row missing from the user receipt; have %v", r.Entries)
+	}
+	if _, ok := r.Entries[install.EntryKey("systemwide", model.VariantStable, model.ScopeSystem)]; ok {
+		t.Error("a system row must NOT be filed in the user receipt")
 	}
 }

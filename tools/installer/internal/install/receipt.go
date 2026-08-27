@@ -116,6 +116,13 @@ func LoadReceipt() (*Receipt, error) {
 	return loadReceiptFile(path)
 }
 
+// LoadReceiptAt reads one receipt file by path (missing file = empty receipt).
+// Callers that already resolved a scope's path with ReceiptPathFor use this
+// instead of LoadReceipt, which is hard-wired to the per-user location.
+func LoadReceiptAt(path string) (*Receipt, error) {
+	return loadReceiptFile(path)
+}
+
 // LoadAllReceipts reads user + system receipts and merges by compound key
 // (not by slug). Missing files yield empty contributions.
 func LoadAllReceipts(osID model.OS) (*Receipt, error) {

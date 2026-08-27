@@ -219,7 +219,7 @@ func headlessInstall(ctx context.Context, opts options, client *release.Client, 
 	// elevation was cancelled: an unrecorded install is invisible to the next
 	// run, which would then reinstall over it.
 	if len(installed) > 0 {
-		if werr := app.WriteReceipt(installed); werr != nil {
+		if werr := app.WriteReceipt(opts.targetOS, installed); werr != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", werr)
 		}
 	}

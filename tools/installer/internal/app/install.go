@@ -142,8 +142,28 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 
 		dst := filepath.Join(it.Destination, filepath.Base(bundleDir))
 		staged = append(staged, stagedItem{item: it, bundleDir: bundleDir, dst: dst})
+		itemScope := it.Scope
+		if itemScope == "" {
+			itemScope = scope
+		}
+		variant := it.Variant
+		if variant == "" {
+			variant = model.VariantStable
+		}
 		g := groupFor(it.Scope)
-		g.moves = append(g.moves, model.Move{Src: bundleDir, Dst: dst})
+		g.moves = append(g.moves, model.Move{
+			Src: bundleDir,
+			Dst: dst,
+			// Carried into the plan so a system-scope apply can record what it
+			// installed while it still holds elevation (see InstallPlan.ReceiptPath).
+			Receipt: &model.ReceiptRef{
+				Slug:    it.Slug,
+				Variant: variant,
+				Version: it.Version,
+				Format:  it.Format,
+				Scope:   itemScope,
+			},
+		})
 		if in.OS == model.OSMacOS {
 			g.quarantine = append(g.quarantine, dst)
 			if it.Format == model.FormatAU {
@@ -191,6 +211,17 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 			continue
 		}
 		plan := model.InstallPlan{Moves: g.moves, Quarantine: g.quarantine, RefreshAU: g.refreshAU}
+		if s == model.ScopeSystem {
+			// The system receipt is root-owned, so only the privileged apply can
+			// write it — and only while it still holds elevation. The user
+			// receipt stays with the unprivileged parent (WriteReceipt).
+			rp, rerr := install.ReceiptPathFor(in.OS, model.ScopeSystem)
+			if rerr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("system receipt path: %v", rerr))
+			} else {
+				plan.ReceiptPath = rp
+			}
+		}
 		applyRes, err := applyFn(s, plan, stagingRoot)
 		if err != nil {
 			// Elevation cancelled/failed for this scope: record it, but keep
@@ -232,13 +263,34 @@ func (in *Installer) verify(zipPath, assetName string) error {
 	return release.Verify(zipPath, want)
 }
 
-// WriteReceipt records the installed items into the receipt for their
-// (slug, variant, scope), using PlanItem.Version as the installed version.
-func WriteReceipt(installed []InstalledItem) error {
-	if len(installed) == 0 {
+// WriteReceipt records the USER-scope installed items into the per-user receipt,
+// keyed by (slug, variant, scope) and using PlanItem.Version as the installed
+// version.
+//
+// System-scope items are deliberately skipped: their receipt lives in a
+// root-owned directory this (unprivileged) process cannot write, so it is
+// merged by the privileged applier instead, from the same run's plan
+// (InstallPlan.ReceiptPath). Recording them here as well would put a
+// system-scope row in the user's receipt, where a second account would never
+// see it — the exact split-brain the compound key exists to prevent.
+func WriteReceipt(osID model.OS, installed []InstalledItem) error {
+	var userItems []InstalledItem
+	for _, ii := range installed {
+		if ii.Item.Scope == model.ScopeSystem {
+			continue
+		}
+		userItems = append(userItems, ii)
+	}
+	if len(userItems) == 0 {
 		return nil
 	}
-	r, err := install.LoadReceipt()
+	installed = userItems
+
+	path, err := install.ReceiptPathFor(osID, model.ScopeUser)
+	if err != nil {
+		return err
+	}
+	r, err := install.LoadReceiptAt(path)
 	if err != nil {
 		return err
 	}
@@ -274,7 +326,7 @@ func WriteReceipt(installed []InstalledItem) error {
 		}
 		r.Record(slug, variant, a.version, scope, a.formats, a.paths)
 	}
-	return r.Save()
+	return r.SaveForScope(osID, model.ScopeUser)
 }
 
 func copyFileSimple(src, dst string) error {

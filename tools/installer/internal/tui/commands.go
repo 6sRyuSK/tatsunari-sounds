@@ -55,7 +55,7 @@ func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanI
 			// succeeded, the other's elevation was cancelled), and an
 			// unrecorded install is invisible to the next run.
 			if len(installed) > 0 {
-				_ = app.WriteReceipt(installed)
+				_ = app.WriteReceipt(installer.OS, installed)
 			}
 			ch <- installDoneMsg{result: res, err: err}
 			close(ch)
