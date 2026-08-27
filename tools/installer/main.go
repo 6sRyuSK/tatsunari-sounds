@@ -215,13 +215,17 @@ func headlessInstall(ctx context.Context, opts options, client *release.Client, 
 			}
 		}
 	})
+	// Record whatever reached its destination FIRST, even when a later scope's
+	// elevation was cancelled: an unrecorded install is invisible to the next
+	// run, which would then reinstall over it.
+	if len(installed) > 0 {
+		if werr := app.WriteReceipt(installed); werr != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", werr)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "install failed:", err)
 		return 1
-	}
-
-	if err := app.WriteReceipt(installed); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
 	}
 
 	if opts.jsonOut {

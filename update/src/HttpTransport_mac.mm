@@ -6,16 +6,39 @@
 #include "factory_update/HttpTransport.h"
 #include "factory_update/Urls.h"
 
+#include <memory>
 #include <mutex>
 
 namespace factory_update
 {
     namespace
     {
+        // Everything the completion handler touches lives here, behind a
+        // shared_ptr the block OWNS a reference to.
+        //
+        // The block must never capture the transport itself. NSURLSession runs a
+        // completion handler asynchronously on its own queue, and [task cancel]
+        // does not wait for it: cancelling from ~MacHttpTransport() (which is what
+        // the editor's destructor does) returns immediately, the object is freed,
+        // and the handler still runs afterwards with NSURLErrorCancelled. A raw
+        // `self` capture would then dereference freed memory just to read the
+        // mutex and generation it uses to decide it has been superseded — a
+        // use-after-free that takes the DAW down. Holding the state in a
+        // shared_ptr keeps exactly that state alive for as long as any in-flight
+        // handler can still reach it, and no longer.
+        struct SharedState
+        {
+            std::mutex mu;
+            int generation = 0;
+            std::function<void (HttpResult)> callback;
+            NSURLSessionDataTask* task = nil;
+        };
+
         class MacHttpTransport final : public HttpTransport
         {
         public:
             MacHttpTransport()
+                : state_ (std::make_shared<SharedState>())
             {
                 session_ = [NSURLSession sessionWithConfiguration:
                     [NSURLSessionConfiguration ephemeralSessionConfiguration]];
@@ -24,6 +47,11 @@ namespace factory_update
             ~MacHttpTransport() override
             {
                 cancel();
+                // Release the session's own resources and guarantee no further
+                // task starts. Outstanding handlers may still fire; they only
+                // touch state_, which outlives this object via the block.
+                [session_ invalidateAndCancel];
+                session_ = nil;
             }
 
             void get (const std::string& url,
@@ -48,14 +76,21 @@ namespace factory_update
                     [req setValue:etag forHTTPHeaderField:@"If-None-Match"];
                 }
 
-                std::lock_guard<std::mutex> lock (mu_);
-                generation_++;
-                const int gen = generation_;
-                callback_ = std::move (cb);
+                // Captured BY VALUE into the block, so the block holds its own
+                // reference to the state (see the comment on SharedState).
+                std::shared_ptr<SharedState> state = state_;
 
-                __block MacHttpTransport* self = this;
-                task_ = [session_ dataTaskWithRequest:req
-                                    completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err)
+                int gen = 0;
+                {
+                    std::lock_guard<std::mutex> lock (state->mu);
+                    state->generation++;
+                    gen = state->generation;
+                    state->callback = std::move (cb);
+                }
+
+                NSURLSessionDataTask* task =
+                    [session_ dataTaskWithRequest:req
+                                completionHandler:^(NSData* data, NSURLResponse* resp, NSError* err)
                 {
                     HttpResult r;
                     if (err != nil)
@@ -86,37 +121,47 @@ namespace factory_update
                     }
                     std::function<void (HttpResult)> cbCopy;
                     {
-                        std::lock_guard<std::mutex> g (self->mu_);
-                        if (gen != self->generation_)
+                        std::lock_guard<std::mutex> g (state->mu);
+                        if (gen != state->generation)
                             return; // superseded / cancelled
-                        cbCopy = std::move (self->callback_);
-                        self->callback_ = nullptr;
-                        self->task_ = nil;
+                        cbCopy = std::move (state->callback);
+                        state->callback = nullptr;
+                        state->task = nil;
                     }
                     if (cbCopy)
                         cbCopy (std::move (r));
                 }];
-                [task_ resume];
+
+                {
+                    std::lock_guard<std::mutex> lock (state->mu);
+                    // A cancel() between building the request and here already
+                    // bumped the generation; don't start a task nobody will read.
+                    if (gen != state->generation)
+                        return;
+                    state->task = task;
+                }
+                [task resume];
             }
 
             void cancel() override
             {
-                std::lock_guard<std::mutex> lock (mu_);
-                generation_++;
-                if (task_ != nil)
+                NSURLSessionDataTask* task = nil;
                 {
-                    [task_ cancel];
-                    task_ = nil;
+                    std::lock_guard<std::mutex> lock (state_->mu);
+                    state_->generation++;
+                    task = state_->task;
+                    state_->task = nil;
+                    state_->callback = nullptr;
                 }
-                callback_ = nullptr;
+                // Cancelled outside the lock: -cancel is asynchronous, and the
+                // handler it eventually schedules takes the same mutex.
+                if (task != nil)
+                    [task cancel];
             }
 
         private:
             NSURLSession* session_ = nil;
-            NSURLSessionDataTask* task_ = nil;
-            std::function<void (HttpResult)> callback_;
-            std::mutex mu_;
-            int generation_ = 0;
+            std::shared_ptr<SharedState> state_;
         };
     } // namespace
 

@@ -49,6 +49,12 @@ type Installer struct {
 	SelfInstall bool // copy this executable into the scope's installer bin (plan §5.4)
 }
 
+// applyFn is the elevation-aware apply entry point. It is a package variable
+// purely as a test seam (same idiom as installRootsFn in apply.go): the real
+// elevate.Apply shells out to osascript / RunAs for system scope, which no
+// headless test can exercise. Production behaviour is unchanged.
+var applyFn = elevate.Apply
+
 type stagedItem struct {
 	item      model.PlanItem
 	bundleDir string // extracted source
@@ -57,8 +63,17 @@ type stagedItem struct {
 
 // Run downloads, verifies, extracts and installs the given items. Per-item
 // failures (bad download, checksum mismatch, extract error) are recorded and
-// skipped; the rest still install. All staging happens before the single
-// apply/elevation so the user is prompted at most once.
+// skipped; the rest still install. All staging happens before the apply step so
+// the user is prompted at most once.
+//
+// scope is the scope the user picked for NEW installs; it is also where this
+// executable self-installs. It is NOT necessarily where every item goes: an
+// UPDATE keeps the scope of the row it updates (PlanItem.Scope), so one run can
+// legitimately mix a user-scope install with a system-scope update. Elevation
+// therefore follows each item's own scope, not the picked one — applying a
+// system destination unelevated would just fail with a permission error.
+// The moves are grouped by scope and applied user-first: only the system group
+// crosses the elevation boundary, so there is still at most one prompt.
 func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope model.Scope, progress ProgressFunc) (model.ApplyResult, []InstalledItem, error) {
 	emit := func(it model.PlanItem, phase string, err error) {
 		if progress != nil {
@@ -76,13 +91,28 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 	dlDir := filepath.Join(stagingRoot, "dl")
 	stageDir := filepath.Join(stagingRoot, "stage")
 
-	var (
-		staged     []stagedItem
-		result     model.ApplyResult
+	// One group per destination scope (see the note on Run above).
+	type scopeGroup struct {
 		moves      []model.Move
 		quarantine []string
 		refreshAU  bool
+	}
+	var (
+		staged []stagedItem
+		result model.ApplyResult
+		groups = map[model.Scope]*scopeGroup{}
 	)
+	groupFor := func(s model.Scope) *scopeGroup {
+		if s == "" {
+			s = scope
+		}
+		g := groups[s]
+		if g == nil {
+			g = &scopeGroup{}
+			groups[s] = g
+		}
+		return g
+	}
 
 	for i, it := range items {
 		zipPath := filepath.Join(dlDir, it.Asset.Name)
@@ -112,11 +142,12 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 
 		dst := filepath.Join(it.Destination, filepath.Base(bundleDir))
 		staged = append(staged, stagedItem{item: it, bundleDir: bundleDir, dst: dst})
-		moves = append(moves, model.Move{Src: bundleDir, Dst: dst})
+		g := groupFor(it.Scope)
+		g.moves = append(g.moves, model.Move{Src: bundleDir, Dst: dst})
 		if in.OS == model.OSMacOS {
-			quarantine = append(quarantine, dst)
+			g.quarantine = append(g.quarantine, dst)
 			if it.Format == model.FormatAU {
-				refreshAU = true
+				g.refreshAU = true
 			}
 		}
 	}
@@ -134,35 +165,50 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 				if err := copyFileSimple(exe, stagedBin); err != nil {
 					result.Errors = append(result.Errors, fmt.Sprintf("self-install: stage binary: %v", err))
 				} else {
+					// Self-install always follows the PICKED scope: it is a new
+					// install of this binary, not an update of an existing row.
 					mv, err := install.SelfInstallMove(in.OS, scope, stagedBin)
 					if err != nil {
 						result.Errors = append(result.Errors, fmt.Sprintf("self-install: %v", err))
 					} else {
-						moves = append(moves, mv)
+						g := groupFor(scope)
+						g.moves = append(g.moves, mv)
 					}
 				}
 			}
 		}
 	}
 
-	if len(moves) == 0 {
+	// Apply user scope before system scope. The user group is applied in-process
+	// and writes no plan.json, so the two groups cannot collide over the staging
+	// dir's plan/result files, and the single elevation prompt (if any) comes
+	// last — after the unprivileged work is already done.
+	var applyErr error
+	installedSet := map[string]bool{}
+	for _, s := range []model.Scope{model.ScopeUser, model.ScopeSystem} {
+		g := groups[s]
+		if g == nil || len(g.moves) == 0 {
+			continue
+		}
+		plan := model.InstallPlan{Moves: g.moves, Quarantine: g.quarantine, RefreshAU: g.refreshAU}
+		applyRes, err := applyFn(s, plan, stagingRoot)
+		if err != nil {
+			// Elevation cancelled/failed for this scope: record it, but keep
+			// whatever the other scope already installed.
+			result.Errors = append(result.Errors, err.Error())
+			if applyErr == nil {
+				applyErr = err
+			}
+			continue
+		}
+		result.Installed = append(result.Installed, applyRes.Installed...)
+		result.Errors = append(result.Errors, applyRes.Errors...)
+		for _, d := range applyRes.Installed {
+			installedSet[d] = true
+		}
+	}
+	if len(installedSet) == 0 && applyErr == nil && len(staged) == 0 {
 		return result, nil, nil // nothing staged; only errors (if any)
-	}
-
-	plan := model.InstallPlan{Moves: moves, Quarantine: quarantine, RefreshAU: refreshAU}
-	applyRes, err := elevate.Apply(scope, plan, stagingRoot)
-	if err != nil {
-		// Elevation cancelled/failed: report as a whole-batch error alongside
-		// any per-item staging errors already collected.
-		result.Errors = append(result.Errors, err.Error())
-		return result, nil, err
-	}
-	result.Installed = append(result.Installed, applyRes.Installed...)
-	result.Errors = append(result.Errors, applyRes.Errors...)
-
-	installedSet := make(map[string]bool, len(applyRes.Installed))
-	for _, d := range applyRes.Installed {
-		installedSet[d] = true
 	}
 	var installed []InstalledItem
 	for _, s := range staged {
@@ -171,7 +217,9 @@ func (in *Installer) Run(ctx context.Context, items []model.PlanItem, scope mode
 			emit(s.item, PhaseDone, nil)
 		}
 	}
-	return result, installed, nil
+	// installed is returned even alongside applyErr: a partially-applied run
+	// must still be recorded in the receipt, or the next run reinstalls over it.
+	return result, installed, applyErr
 }
 
 // verify checks the downloaded zip against the release checksums. A missing

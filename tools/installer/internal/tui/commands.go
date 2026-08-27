@@ -51,7 +51,10 @@ func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanI
 			res, installed, err := installer.Run(context.Background(), items, scope, func(ev app.ProgressEvent) {
 				ch <- progressMsg(ev)
 			})
-			if err == nil && len(installed) > 0 {
+			// Recorded even when err != nil: Run can partially apply (one scope
+			// succeeded, the other's elevation was cancelled), and an
+			// unrecorded install is invisible to the next run.
+			if len(installed) > 0 {
 				_ = app.WriteReceipt(installed)
 			}
 			ch <- installDoneMsg{result: res, err: err}

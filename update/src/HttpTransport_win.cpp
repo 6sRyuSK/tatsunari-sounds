@@ -42,6 +42,18 @@ namespace factory_update
                 });
             }
 
+            // cancel() is called from the UI thread (the editor's destructor runs
+            // it), so it must not wait on the network. The worker cannot be
+            // detached — its lambda captures `this` — so the join has to stay,
+            // which makes the WORKER's worst-case duration the UI's worst-case
+            // stall. Two things bound it:
+            //   * kTimeoutMs below caps every blocking WinHTTP call, so a slow,
+            //     offline or black-holed host can no longer wedge the worker
+            //     indefinitely (this was the actual hang: WinHttpSendRequest /
+            //     WinHttpReceiveResponse have NO default deadline we can rely on);
+            //   * the read loop polls cancelled_ between chunks, so once the
+            //     response has started the cancel is immediate.
+            // Worst case is therefore one timeout, not forever.
             void cancel() override
             {
                 cancelled_ = true;
@@ -77,6 +89,12 @@ namespace factory_update
                                                  WINHTTP_NO_PROXY_NAME,
                                                  WINHTTP_NO_PROXY_BYPASS, 0);
                 if (! session) { r.error = "WinHttpOpen failed"; return r; }
+
+                // Bound every blocking call. Without this a host that accepts the
+                // connection and then never answers keeps the worker — and the UI
+                // thread joining it in cancel() — parked forever. Session timeouts
+                // are inherited by the request handles derived from it.
+                WinHttpSetTimeouts (session, kTimeoutMs, kTimeoutMs, kTimeoutMs, kTimeoutMs);
 
                 HINTERNET conn = WinHttpConnect (session, host.c_str(),
                                                  uc.nPort ? uc.nPort : INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -170,6 +188,11 @@ namespace factory_update
                 WinHttpCloseHandle (session);
                 return r;
             }
+
+            // Per-phase deadline (resolve / connect / send / receive) for the
+            // update check, which is one small JSON GET. It doubles as the upper
+            // bound on how long cancel() can hold the UI thread.
+            static constexpr int kTimeoutMs = 10000;
 
             std::thread worker_;
             std::atomic<bool> cancelled_ { false };

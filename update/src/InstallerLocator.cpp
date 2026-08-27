@@ -1,8 +1,10 @@
 #include "factory_update/InstallerLocator.h"
 #include "factory_update/Urls.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #if ! defined(_WIN32)
@@ -136,9 +138,20 @@ namespace factory_update
 #elif defined(__APPLE__)
         const std::string openCmd = "open \"" + std::string (kHumanUpdatesURL) + "\"";
         std::system (openCmd.c_str());
-        const std::string pb =
-            "printf %s " + std::string (kBootstrapOneLinerMac) + " | pbcopy";
-        std::system (pb.c_str());
+
+        // The one-liner CONTAINS a pipe ("… | bash"). Interpolating it into a
+        // shell command would make that pipe part of the outer pipeline (and
+        // `printf %s a b c` would drop the spaces between the arguments), so the
+        // clipboard would end up holding a mangled fragment while a stray `bash`
+        // ran whatever was left. Write the bytes straight to pbcopy's stdin
+        // instead: the only command handed to the shell is the fixed literal
+        // "pbcopy", with nothing interpolated into it.
+        if (FILE* pb = popen ("pbcopy", "w"))
+        {
+            const std::string_view line = kBootstrapOneLinerMac;
+            std::fwrite (line.data(), 1, line.size(), pb);
+            pclose (pb);
+        }
         return true;
 #else
         return false;
