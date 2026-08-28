@@ -1,0 +1,8 @@
+[plugin]
+name      = "TN Equalizer"
+slug      = "tn-equalizer"
+category  = "EQ"
+status    = "shipped"
+version   = "0.1.0"
+formats   = ["VST3", "AU"]
+reference = "Multiband dynamic EQ with per-band detection"

@@ -44,7 +44,7 @@ namespace factory_ui_visage
         // like the JUCE ComboBox. Text is a light regular weight (same as the plain
         // slope/channel combos) so it does not shout next to the knobs; dimmed when
         // disabled. LABELLED mode (non-empty caption): icon + caption + value (the RS /
-        // pitch-fix row look).
+        // tn-vocal-tuner row look).
         if (caption_.empty())
         {
             const float caret = 10.0f;

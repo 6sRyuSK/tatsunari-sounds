@@ -1,0 +1,210 @@
+{
+  "schema": 1,
+  "generated": "2026-07-30T00:00:00Z",
+  "channels": [
+    {
+      "id": "stable",
+      "name": {
+        "en": "Stable"
+      }
+    },
+    {
+      "id": "dev",
+      "name": {
+        "en": "Dev"
+      },
+      "requiresOptIn": true,
+      "retention": 5
+    }
+  ],
+  "plugins": [
+    {
+      "slug": "tn-resonance-suppressor",
+      "variant": "stable",
+      "name": {
+        "en": "TN Resonance Suppressor"
+      },
+      "category": "EQ",
+      "vendor": "Tatsunari Sounds",
+      "pluginIds": {
+        "clapId": "com.tatsunari-sounds.tn-resonance-suppressor",
+        "vst3Uid": "ABCDEF0123456789ABCDEF0123456789",
+        "auSubtype": "RsSp",
+        "auManufacturer": "Ttsu"
+      },
+      "latest": "1.0.0",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "channel": "stable",
+          "releasedAt": "2026-07-01T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            },
+            {
+              "format": "clap",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.clap.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "CLAP",
+              "bundleName": "TN Resonance Suppressor.clap"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "tn-resonance-suppressor",
+      "variant": "dev",
+      "name": {
+        "en": "TN Resonance Suppressor"
+      },
+      "displayNameSuffix": " (Dev)",
+      "category": "EQ",
+      "vendor": "Tatsunari Sounds",
+      "pluginIds": {
+        "clapId": "com.tatsunari-sounds.tn-resonance-suppressor.dev",
+        "vst3Uid": "DEADBEEF0123456789ABCDEF01234567",
+        "auSubtype": "RsSD",
+        "auManufacturer": "Ttsu"
+      },
+      "latest": "1.2.0-dev.3",
+      "versions": [
+        {
+          "version": "1.2.0-dev.1",
+          "channel": "dev",
+          "releasedAt": "2026-07-11T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        },
+        {
+          "version": "1.2.0-dev.2",
+          "channel": "dev",
+          "releasedAt": "2026-07-12T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        },
+        {
+          "version": "1.2.0-dev.3",
+          "channel": "dev",
+          "releasedAt": "2026-07-13T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        },
+        {
+          "version": "1.2.0-dev.4",
+          "channel": "dev",
+          "releasedAt": "2026-07-14T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        },
+        {
+          "version": "1.2.0-dev.5",
+          "channel": "dev",
+          "releasedAt": "2026-07-15T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "generator": "factory-catalog/0.1.0",
+  "ttlHint": 60,
+  "client": {
+    "latest": "0.3.0",
+    "minSupported": "0.1.0",
+    "changelogUrl": "https://6sryusk.com/tatsunarisounds/notes/installer/0.3.0.md",
+    "assets": [
+      {
+        "os": "macos",
+        "arch": "arm64",
+        "url": "https://6sryusk.com/tatsunarisounds/artifacts/installer/0.3.0/tatsunari-macos-arm64",
+        "size": 10,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "os": "macos",
+        "arch": "amd64",
+        "url": "https://6sryusk.com/tatsunarisounds/artifacts/installer/0.3.0/tatsunari-macos-amd64",
+        "size": 10,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "os": "windows",
+        "arch": "amd64",
+        "url": "https://6sryusk.com/tatsunarisounds/artifacts/installer/0.3.0/tatsunari-sounds-installer-windows-amd64.exe",
+        "size": 10,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "unknownTop": {
+    "ok": true
+  }
+}

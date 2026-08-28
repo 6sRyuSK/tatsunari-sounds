@@ -30,7 +30,7 @@
     feedSpectrum:function (phase) { cc('ui_feed_spectrum', null, ['number'], [phase]); },
     // Dropdowns are addressed by NAME, not a per-plugin magic index:
     //   gallery "preset"/"valueSetting"; rs-editor "quality"/"channel"/"preset";
-    //   pitch-fix "key"/"preset"; dynamic-eq "type"/"slope"/"chan"/"preset".
+    //   tn-vocal-tuner "key"/"preset"; tn-equalizer "type"/"slope"/"chan"/"preset".
     openDropdown:function (name)  { return cc('ui_open_dropdown', 'number', ['string'], [name]) === 1; },
     dropdownOpen:function ()      { return cc('ui_dropdown_open', 'number', [], []) === 1; },
     dropdownCount:function ()     { return cc('ui_dropdown_item_count', 'number', [], []); },

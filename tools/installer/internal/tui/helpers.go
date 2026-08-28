@@ -13,7 +13,7 @@ import (
 // this order. Everything else keeps the catalog's slug order below them. This is
 // a presentation choice, so it lives in the TUI — the release-layer Reconcile
 // stays a deterministic slug sort.
-var featuredOrder = []string{"resonance-suppressor", "dynamic-eq", "saturator"}
+var featuredOrder = []string{"tn-resonance-suppressor", "tn-equalizer", "saturator"}
 
 // featuredRank returns a slug's position in featuredOrder, or len(featuredOrder)
 // for anything not featured (sorted after the flagships).
@@ -34,9 +34,9 @@ func keyMatches(msg tea.KeyMsg, b key.Binding) bool {
 // osFormats returns the formats available on the target OS (AU only on macOS).
 func (m Model) osFormats() []model.Format {
 	if m.targetOS == model.OSMacOS {
-		return []model.Format{model.FormatVST3, model.FormatAU}
+		return []model.Format{model.FormatVST3, model.FormatAU, model.FormatCLAP}
 	}
-	return []model.Format{model.FormatVST3}
+	return []model.Format{model.FormatVST3, model.FormatCLAP}
 }
 
 // pluginInstallable reports whether a plugin has any asset for this OS.
@@ -63,6 +63,15 @@ func (m Model) installablePlugins() []model.Plugin {
 		return featuredRank(out[i].Slug) < featuredRank(out[j].Slug)
 	})
 	return out
+}
+
+// RowKey is the TUI selection identity for one Plugin row.
+func RowKey(p model.Plugin) string {
+	v := p.Variant
+	if v == "" {
+		v = model.VariantStable
+	}
+	return model.EntryKey(p.Slug, v, p.Scope)
 }
 
 func (m Model) anySelected() bool {

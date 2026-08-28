@@ -115,12 +115,16 @@ func TestParseOS(t *testing.T) {
 }
 
 func TestParseFormats(t *testing.T) {
-	got, err := parseFormats("vst3,au", model.OSMacOS)
-	if err != nil || len(got) != 2 || got[0] != model.FormatVST3 || got[1] != model.FormatAU {
+	got, err := parseFormats("vst3,au,clap", model.OSMacOS)
+	if err != nil || len(got) != 3 || got[0] != model.FormatVST3 || got[1] != model.FormatAU || got[2] != model.FormatCLAP {
 		t.Fatalf("parseFormats macOS = %v, %v", got, err)
 	}
 	if _, err := parseFormats("au", model.OSWindows); err == nil {
 		t.Error("AU on Windows should error")
+	}
+	win, err := parseFormats("vst3,clap", model.OSWindows)
+	if err != nil || len(win) != 2 {
+		t.Fatalf("parseFormats windows = %v, %v", win, err)
 	}
 	if _, err := parseFormats("aax", model.OSMacOS); err == nil {
 		t.Error("unknown format should error")

@@ -8,7 +8,7 @@
 //
 // factory_params::ParamDesc — the JUCE-free declarative description of one plugin
 // parameter. A plugin declares its whole surface as a std::vector<ParamDesc> (see
-// e.g. resonance-suppressor's Source/Params.h); the JUCE APVTS layout is then
+// e.g. tn-resonance-suppressor's Source/Params.h); the JUCE APVTS layout is then
 // GENERATED from that table by the JUCE-side ApvtsAdapter.h.
 //
 // Header-only and deliberately JUCE-free (that is the point of this module): the

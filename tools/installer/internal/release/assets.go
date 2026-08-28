@@ -9,13 +9,13 @@ import (
 
 // pluginAssetRe parses a per-plugin zip name:
 //
-//	{slug}-v{maj}_{min}_{pat}-{macOS-AU|macOS-VST3|Windows}.zip
+//	{slug}-v{maj}_{min}_{pat}-{macOS-AU|macOS-VST3|macOS-CLAP|Windows|Windows-CLAP}.zip
 //
 // The slug group is greedy but the trailing "-v\d+_\d+_\d+-<suffix>.zip" anchor
 // makes the split unambiguous even for hyphenated slugs like
-// "resonance-suppressor". The overall bundle assets
+// "tn-resonance-suppressor". The overall bundle assets
 // ("tatsunari-sounds-v..._...-*.zip") are excluded by name below.
-var pluginAssetRe = regexp.MustCompile(`^(?P<slug>.+)-v(\d+)_(\d+)_(\d+)-(macOS-AU|macOS-VST3|Windows)\.zip$`)
+var pluginAssetRe = regexp.MustCompile(`^(?P<slug>.+)-v(\d+)_(\d+)_(\d+)-(macOS-AU|macOS-VST3|macOS-CLAP|Windows-CLAP|Windows)\.zip$`)
 
 // bundlePrefix marks the "everything" bundle assets, which are not per-plugin.
 const bundlePrefix = "tatsunari-sounds-"
@@ -29,9 +29,11 @@ type PluginAssets struct {
 
 // suffixToKey maps the asset-name suffix to an (os, format) key.
 var suffixToKey = map[string]model.AssetKey{
-	"macOS-AU":   {OS: model.OSMacOS, Format: model.FormatAU},
-	"macOS-VST3": {OS: model.OSMacOS, Format: model.FormatVST3},
-	"Windows":    {OS: model.OSWindows, Format: model.FormatVST3},
+	"macOS-AU":     {OS: model.OSMacOS, Format: model.FormatAU},
+	"macOS-VST3":   {OS: model.OSMacOS, Format: model.FormatVST3},
+	"macOS-CLAP":   {OS: model.OSMacOS, Format: model.FormatCLAP},
+	"Windows":      {OS: model.OSWindows, Format: model.FormatVST3},
+	"Windows-CLAP": {OS: model.OSWindows, Format: model.FormatCLAP},
 }
 
 // ParsePluginAssets builds the per-slug asset matrix from a release's asset
@@ -62,12 +64,18 @@ func ParsePluginAssets(rel *Release) map[string]*PluginAssets {
 	return out
 }
 
-// TitleCaseSlug turns "resonance-suppressor" into "Resonance Suppressor" for a
-// display name when catalog.json is unavailable.
+// TitleCaseSlug turns "tn-resonance-suppressor" into "TN Resonance Suppressor"
+// for a display name when catalog.json is unavailable. The "tn" product prefix
+// is a brand initialism, so it is upper-cased whole rather than title-cased
+// (plan §11.1 spells the display names "TN <Product>").
 func TitleCaseSlug(slug string) string {
 	words := strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' })
 	for i, w := range words {
 		if w == "" {
+			continue
+		}
+		if strings.EqualFold(w, "tn") {
+			words[i] = "TN"
 			continue
 		}
 		words[i] = strings.ToUpper(w[:1]) + w[1:]

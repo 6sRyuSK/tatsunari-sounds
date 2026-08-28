@@ -60,17 +60,23 @@ func (m Model) viewDiscover() string {
 func (m Model) viewPlugins() string {
 	list := m.installablePlugins()
 	intro := m.st.Subtitle.Render(m.tr.T(
-		"インストールするプラグインを選択（space で選択、a で更新可を全選択）",
-		"choose plugins to install (space to toggle, a to select updatable)"))
+		"インストールするプラグインを選択（space 選択 / v 版一覧 / c チャンネル）",
+		"choose plugins (space toggle / v versions / c channel)"))
+
+	chanLabel := m.st.Dim.Render(m.tr.T("チャンネル: ", "channel: ") + m.channel)
+	if m.channel == "dev" {
+		chanLabel = m.st.Err.Render(m.tr.T("チャンネル: dev（警告: 開発版）", "channel: dev (warning: development builds)"))
+	}
 
 	var rows []string
+	rows = append(rows, chanLabel)
 	for i, p := range list {
 		cursor := "  "
 		if i == m.cursor {
 			cursor = m.st.Cursor.Render("▸ ")
 		}
 		check := m.st.Dim.Render("☐")
-		if m.selected[p.Slug] {
+		if m.selected[RowKey(p)] {
 			check = m.st.Check.Render("☑")
 		}
 		nameStyle := m.st.Item
@@ -83,20 +89,27 @@ func (m Model) viewPlugins() string {
 		// left on selection).
 		name := nameStyle.Width(26).Render(p.Name)
 		cat := m.st.Dim.Width(10).Render(p.Category)
-		ver := m.st.Dim.Width(7).Render(p.Version)
+		verStr := p.Version
+		if pv := m.pickedVersion[p.Slug]; pv != "" {
+			verStr = pv
+		}
+		ver := m.st.Dim.Width(10).Render(verStr)
 		row := fmt.Sprintf("%s%s %s %s %s %s", cursor, check, name, cat, ver, m.stateBadge(p))
 		if tag := m.referenceTag(p); tag != "" {
 			row += "  " + tag
 		}
 		rows = append(rows, row)
+		if m.expandedSlug == p.Slug {
+			rows = append(rows, m.st.Dim.Render("    └ "+m.tr.T(
+				"版選択は catalog v1 接続後に展開（現状は latest のみ）",
+				"version picker expands after catalog v1 wiring (latest only today)")))
+		}
 	}
 	return intro + "\n\n" + strings.Join(rows, "\n")
 }
 
-// referenceTag renders the plugin's reference/inspiration as a dim
-// "◯◯ ライク" / "like ◯◯" tagline (e.g. dynamic-eq → "FabFilter Pro-Q 4",
-// resonance-suppressor → "oeksound soothe2"). Empty when the catalog carries no
-// reference; long references are trimmed so the row stays on one line.
+// referenceTag renders a short functional blurb from catalog reference metadata.
+// Empty when the catalog carries no reference; long values are trimmed.
 func (m Model) referenceTag(p model.Plugin) string {
 	ref := p.Reference
 	if ref == "" {
@@ -106,7 +119,7 @@ func (m Model) referenceTag(p model.Plugin) string {
 	if r := []rune(ref); len(r) > maxRef {
 		ref = strings.TrimRight(string(r[:maxRef]), " ") + "…"
 	}
-	return m.st.Dim.Render(m.tr.T(ref+" ライク", "like "+ref))
+	return m.st.Dim.Render(ref)
 }
 
 func (m Model) stateBadge(p model.Plugin) string {

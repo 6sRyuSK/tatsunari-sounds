@@ -1,0 +1,45 @@
+# Staging promote skeleton (plan §5 / Phase B).
+# Default is --dry-run: no R2 credentials required. Real upload stays behind
+# Ask-a-human (secrets + Environment approvers + minisign production keys).
+name: promote-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifacts_artifact_name:
+        description: "GitHub Actions artifact name to download (optional; empty = empty dry-run)"
+        required: false
+        default: ""
+      channel:
+        description: "Release channel"
+        required: false
+        default: "stable"
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare artifacts dir
+        run: |
+          mkdir -p /tmp/promote-artifacts /tmp/promote-out
+          if [ -n "${{ inputs.artifacts_artifact_name }}" ]; then
+            echo "Artifact download reserved for when release.yml publishes named artifacts."
+          fi
+
+      - name: Dry-run promote plan
+        run: |
+          python3 tools/promote/promote.py --dry-run \
+            --artifacts-dir /tmp/promote-artifacts \
+            --out-dir /tmp/promote-out \
+            --channel "${{ inputs.channel }}"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: promote-staging-plan
+          path: /tmp/promote-out

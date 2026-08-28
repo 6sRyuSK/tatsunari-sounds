@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "generated": "2026-07-30T00:00:00Z",
+  "channels": [
+    {
+      "id": "stable",
+      "name": {
+        "en": "Stable"
+      }
+    }
+  ],
+  "plugins": [
+    {
+      "slug": "tn-resonance-suppressor",
+      "variant": "stable",
+      "name": {
+        "en": "TN Resonance Suppressor"
+      },
+      "category": "EQ",
+      "vendor": "Tatsunari Sounds",
+      "pluginIds": {
+        "clapId": "com.tatsunari-sounds.tn-resonance-suppressor",
+        "vst3Uid": "ABCDEF0123456789ABCDEF0123456789",
+        "auSubtype": "RsSp",
+        "auManufacturer": "Ttsu"
+      },
+      "latest": "1.0.0",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "channel": "stable",
+          "releasedAt": "2026-07-01T00:00:00Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/1.0.0/TN Resonance Suppressor.vst3.zip",
+              "size": 1234,
+              "sha256": "deadbeef",
+              "subpath": "VST3",
+              "bundleName": "TN Resonance Suppressor.vst3"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -29,12 +29,12 @@ target_include_directories(gallery PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
 )
 
-# --- rs-editor: the Phase P3 resonance-suppressor editor, JUCE-free, bound to the
+# --- rs-editor: the Phase P3 tn-resonance-suppressor editor, JUCE-free, bound to the
 #     shared design system + a synthetic feed + preset/A-B mocks (same harness
 #     pattern as the gallery). It composes the RS-specific UI in
-#     plugins/resonance-suppressor/ui/ (JUCE-free) with the REAL 64-param table
+#     plugins/tn-resonance-suppressor/ui/ (JUCE-free) with the REAL 64-param table
 #     from that plugin's Source/Params.h.
-set(RS_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/resonance-suppressor)
+set(RS_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/tn-resonance-suppressor)
 
 add_executable(rs-editor
   rs-editor/main.cpp
@@ -56,17 +56,17 @@ target_include_directories(rs-editor PRIVATE
 
 # Real plugin editors using the reusable PluginHarness bridge. Adding another
 # JUCE-free Visage editor follows this same small target + adapter pattern.
-set(PF_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/pitch-fix)
-add_executable(pitch-fix
-  pitch-fix/main.cpp
-  pitch-fix/PitchFixBridge.cpp
+set(PF_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/tn-vocal-tuner)
+add_executable(tn-vocal-tuner
+  tn-vocal-tuner/main.cpp
+  tn-vocal-tuner/PitchFixBridge.cpp
   common/PluginHarness.cpp
   ${PF_PLUGIN_DIR}/ui/PfEditor.cpp
 )
-target_link_libraries(pitch-fix PRIVATE factory_ui_visage)
-target_include_directories(pitch-fix PRIVATE
+target_link_libraries(tn-vocal-tuner PRIVATE factory_ui_visage)
+target_include_directories(tn-vocal-tuner PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/common
-  ${CMAKE_CURRENT_SOURCE_DIR}/pitch-fix
+  ${CMAKE_CURRENT_SOURCE_DIR}/tn-vocal-tuner
   ${PF_PLUGIN_DIR}
   ${PF_PLUGIN_DIR}/ui
   ${CMAKE_CURRENT_SOURCE_DIR}/../../params/include
@@ -74,19 +74,19 @@ target_include_directories(pitch-fix PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../presets/include
 )
 
-set(DEQ_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/dynamic-eq)
-add_executable(dynamic-eq
-  dynamic-eq/main.cpp
-  dynamic-eq/DynamicEqBridge.cpp
+set(DEQ_PLUGIN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/tn-equalizer)
+add_executable(tn-equalizer
+  tn-equalizer/main.cpp
+  tn-equalizer/DynamicEqBridge.cpp
   common/PluginHarness.cpp
   ${DEQ_PLUGIN_DIR}/ui/DeqEditor.cpp
   ${DEQ_PLUGIN_DIR}/ui/DeqCurveView.cpp
   ${DEQ_PLUGIN_DIR}/ui/DeqBandPanel.cpp
 )
-target_link_libraries(dynamic-eq PRIVATE factory_ui_visage)
-target_include_directories(dynamic-eq PRIVATE
+target_link_libraries(tn-equalizer PRIVATE factory_ui_visage)
+target_include_directories(tn-equalizer PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/common
-  ${CMAKE_CURRENT_SOURCE_DIR}/dynamic-eq
+  ${CMAKE_CURRENT_SOURCE_DIR}/tn-equalizer
   ${DEQ_PLUGIN_DIR}
   ${DEQ_PLUGIN_DIR}/ui
   ${DEQ_PLUGIN_DIR}/Source
@@ -144,7 +144,7 @@ if(EMSCRIPTEN)
   set(PLUGIN_HARNESS_EXPORTS
     "['_main','_pasteCallback','_ui_list_params','_ui_get_param','_ui_set_param','_ui_freeze','_ui_reload_theme','_ui_last_error','_ui_get_accent','_ui_widget_x','_ui_widget_y','_ui_widget_rect','_ui_set_font','_ui_font','_ui_feed_spectrum','_ui_open_dropdown','_ui_dropdown_open','_ui_dropdown_item_count','_ui_dropdown_x','_ui_dropdown_row_y','_ui_preset_index']")
 
-  target_link_options(pitch-fix PRIVATE
+  target_link_options(tn-vocal-tuner PRIVATE
     --shell-file ${FACTORY_UI_DEV_SHELL}
     -sGL_ENABLE_GET_PROC_ADDRESS
     -sALLOW_MEMORY_GROWTH
@@ -153,14 +153,14 @@ if(EMSCRIPTEN)
     "-sEXPORTED_FUNCTIONS+=['_pf_set_feed','_pf_detected','_pf_target','_pf_shift','_pf_latency']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
   )
-  set_target_properties(pitch-fix PROPERTIES
+  set_target_properties(tn-vocal-tuner PROPERTIES
     LINK_DEPENDS ${FACTORY_UI_DEV_SHELL}
     SUFFIX ".html"
     OUTPUT_NAME "index"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web-pf"
   )
 
-  target_link_options(dynamic-eq PRIVATE
+  target_link_options(tn-equalizer PRIVATE
     --shell-file ${FACTORY_UI_DEV_SHELL}
     -sGL_ENABLE_GET_PROC_ADDRESS
     -sALLOW_MEMORY_GROWTH
@@ -169,7 +169,7 @@ if(EMSCRIPTEN)
     "-sEXPORTED_FUNCTIONS+=['_deq_select_band','_deq_selected_band','_deq_node_x','_deq_node_y','_deq_set_phase','_deq_live_gain','_deq_plot_rect']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
   )
-  set_target_properties(dynamic-eq PROPERTIES
+  set_target_properties(tn-equalizer PROPERTIES
     LINK_DEPENDS ${FACTORY_UI_DEV_SHELL}
     SUFFIX ".html"
     OUTPUT_NAME "index"

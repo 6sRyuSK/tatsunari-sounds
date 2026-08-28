@@ -1,12 +1,12 @@
 ---
 name: factory-ui
-description: Legacy JUCE look-and-feel (factory_ui — FactoryLookAndFeel / FactoryChrome) used ONLY by the FACTORY_JUCE_ORACLES oracle targets and archived plugins. For any shipping or new editor use the visage-ui skill instead. Use this only when editing the JUCE PluginEditor sources that the RS / dynamic-eq equivalence oracles compile, or when reviving an archived plugin.
+description: Legacy JUCE look-and-feel (factory_ui — FactoryLookAndFeel / FactoryChrome) used ONLY by the FACTORY_JUCE_ORACLES oracle targets and archived plugins. For any shipping or new editor use the visage-ui skill instead. Use this only when editing the JUCE PluginEditor sources that the RS / tn-equalizer equivalence oracles compile, or when reviving an archived plugin.
 ---
 
 # factory_ui(レガシー JUCE ルック&フィール)
 
 > **出荷 UI と新規 UI は `visage-ui` スキル。** このスキルは JUCE エディタ
-> (`plugins/{resonance-suppressor,dynamic-eq}/Source/PluginEditor.*`、および
+> (`plugins/{tn-resonance-suppressor,tn-equalizer}/Source/PluginEditor.*`、および
 > `archive/plugins/*/Source/`)を触るときだけ読む。
 
 ## 位置づけ(先に読む)
@@ -15,10 +15,10 @@ description: Legacy JUCE look-and-feel (factory_ui — FactoryLookAndFeel / Fact
 **出荷物はゼロ**。現在の消費者は 2 種類だけ:
 
 1. **JUCE オラクルターゲット** — `FACTORY_JUCE_ORACLES=ON`(既定)のとき構成される
-   RS / dynamic-eq の `preset_test` / `*core_equiv_test`。これらは
+   RS / tn-equalizer の `preset_test` / `*core_equiv_test`。これらは
    `juce_add_console_app` で、ソースに `Source/PluginEditor.cpp` を含むため
    `factory_ui` を link する(例:
-   `plugins/resonance-suppressor/CMakeLists.txt:53-72`)。**画面には出ない** —
+   `plugins/tn-resonance-suppressor/CMakeLists.txt:53-72`)。**画面には出ない** —
    コンパイルが通り、processor がオラクルとして動くことだけが要件。
 2. **archive 済みプラグイン** — `-DFACTORY_INCLUDE_ARCHIVED=ON` でしか構成されない
    (`archive/README.md`)。
@@ -29,7 +29,7 @@ description: Legacy JUCE look-and-feel (factory_ui — FactoryLookAndFeel / Fact
 - **新しいエディタをこのスキルで書いてはいけない**(JUCE エディタは出荷経路に存在
   しない)。
 - ここを触る動機は「オラクルのビルドを通し続ける」か「archive 機種の復活」だけ。
-  RS / dynamic-eq のオラクルは **processor と `Source/` をコアと lockstep で保つ**ため
+  RS / tn-equalizer のオラクルは **processor と `Source/` をコアと lockstep で保つ**ため
   に生きている(`add-param` スキル §5)。
 
 ## Editor の骨格(オラクル JUCE エディタの既存パターン)

@@ -27,7 +27,7 @@ Standard commands live in `README.md` / `CLAUDE.md`. Summary of what is verified
 to work on this VM:
 - Configure + build: `cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release` then
   `cmake --build build`. The first configure fetches the CLAP/VST3/clap-wrapper +
-  Visage SDKs (and JUCE 8.0.13 for the RS/dynamic-eq oracles, since
+  Visage SDKs (and JUCE 8.0.13 for the RS/tn-equalizer oracles, since
   `FACTORY_JUCE_ORACLES` defaults ON) — it takes a few minutes and needs network.
 - Headless DSP + model tests: `ctest --test-dir build --output-on-failure`
   (full 44.1–192 kHz matrix; keep `FACTORY_JUCE_ORACLES=ON` — the equivalence +
@@ -42,12 +42,12 @@ There is no GUI DAW here; Linux is local-verification only and not a shipping
 target. The end-to-end "run" for a built plugin is **clap-validator** on the
 native `.clap` (this is exactly the unique signal `clap.yml` runs in CI). The
 built plugins land at `build/<slug>_assets/<Name>.clap` (e.g.
-`build/resonance-suppressor_assets/Resonance TatSuppressor.clap`). Download the
+`build/tn-resonance-suppressor_assets/TN Resonance Suppressor.clap`). Download the
 prebuilt validator and run it:
 ```
 gh release download 0.3.2 --repo free-audio/clap-validator --pattern '*ubuntu*'
 # extract, then:
-clap-validator validate "build/resonance-suppressor_assets/Resonance TatSuppressor.clap"
+clap-validator validate "build/tn-resonance-suppressor_assets/TN Resonance Suppressor.clap"
 ```
 The 5 skipped checks (no preset-discovery-factory / no note-ports) are expected
 for an audio effect and are not failures — require exit 0.

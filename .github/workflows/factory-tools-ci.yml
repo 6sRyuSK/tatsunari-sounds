@@ -20,15 +20,11 @@ on:
       - "README.md"
       - ".claude/skills/**"
       - ".github/workflows/factory-tools-ci.yml"
+  # No `paths` on pull_request: the retired-identity gate below reads EVERY
+  # tracked file, so scoping this job to tools/** would let an old slug or
+  # display name reappear in a workflow, a plugin source or the installer
+  # without the gate ever running. The whole job is seconds long on ubuntu.
   pull_request:
-    paths:
-      - "tools/**"
-      - "plugins/*/plugin.toml"
-      - "archive/plugins/*/plugin.toml"
-      - "roadmap.toml"
-      - "README.md"
-      - ".claude/skills/**"
-      - ".github/workflows/factory-tools-ci.yml"
   workflow_dispatch:
 
 permissions:
@@ -54,6 +50,16 @@ jobs:
       # Mechanical only — prose accuracy stays a human/agent review job.
       - name: Skill reference freshness
         run: python tools/check_skill_refs.py
+
+      # Gate stable/dev CLAP ID + AU subtype uniqueness (plan §1.6).
+      - name: Plugin identity uniqueness
+        run: python tools/check_plugin_ids.py --check
+
+      # Gate retired product identity (plan §11.6.7): no old slug / display name
+      # / AU subtype / installer filename may survive outside migration material
+      # (docs/plans, archive/) or a line marked `legacy-identity-ok`.
+      - name: Retired product identity
+        run: python tools/check_legacy_identity.py
 
       # Stdlib-only unit tests for gen_catalog.py, release_plan.py and
       # check_skill_refs.py.

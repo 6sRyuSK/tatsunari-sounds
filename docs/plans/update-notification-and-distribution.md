@@ -23,6 +23,7 @@
 | 8 | [依存関係・展開順](update-notification-and-distribution/08-dependencies-and-rollout.md) | フェーズ、移行・ロールバック判定 |
 | 9 | [費用](update-notification-and-distribution/09-cost-estimate.md) | 予算確認、上限アラート |
 | 10 | [参考資料](update-notification-and-distribution/10-references.md) | 実装判断の根拠と再検証項目 |
+| 11 | [製品 ID・名称・配置の移行](update-notification-and-distribution/11-product-identity-migration.md) | `tn-*` への再識別、0.x version、vendor folder、installer 名 |
 
 ## 横断 Definition of Done
 

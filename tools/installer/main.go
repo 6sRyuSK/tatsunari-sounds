@@ -93,6 +93,15 @@ func parseFlags(args []string) (options, error) {
 			opts.plugins = v
 		case strings.HasPrefix(a, "--plugins="):
 			opts.plugins = strings.TrimPrefix(a, "--plugins=")
+		case a == "--plugin":
+			// Singular form used by the editor "Update" dialog (plan §4.3).
+			v, err := next()
+			if err != nil {
+				return opts, err
+			}
+			opts.plugins = v
+		case strings.HasPrefix(a, "--plugin="):
+			opts.plugins = strings.TrimPrefix(a, "--plugin=")
 		case a == "--formats":
 			v, err := next()
 			if err != nil {
@@ -148,7 +157,9 @@ func runHeadless(opts options) int {
 
 	// installed versions from the receipt drive update detection.
 	var installedVersions map[string]string
-	if rec, err := install.LoadReceipt(); err == nil {
+	if rec, err := install.LoadAllReceipts(opts.targetOS); err == nil {
+		installedVersions = rec.InstalledVersions()
+	} else if rec, err := install.LoadReceipt(); err == nil {
 		installedVersions = rec.InstalledVersions()
 	}
 
@@ -174,8 +185,12 @@ func runHeadless(opts options) int {
 		return printCatalog(opts, cat)
 	}
 
+	rows := make([]app.SelectedRow, 0, len(slugs))
+	for _, slug := range slugs {
+		rows = append(rows, app.SelectedRow{Slug: slug, Variant: model.VariantStable})
+	}
 	items, err := app.BuildPlanItems(cat, app.Selection{
-		OS: opts.targetOS, Slugs: slugs, Formats: formats, Scope: opts.scope,
+		OS: opts.targetOS, Rows: rows, Formats: formats, Scope: opts.scope, Channel: "stable",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "plan failed:", err)
@@ -190,7 +205,7 @@ func runHeadless(opts options) int {
 
 // headlessInstall runs the actual (non-dry) install for --no-tui.
 func headlessInstall(ctx context.Context, opts options, client *release.Client, cat release.Catalog, items []model.PlanItem) int {
-	installer := &app.Installer{Client: client, Checksums: cat.Checksums, OS: opts.targetOS}
+	installer := &app.Installer{Client: client, Checksums: cat.Checksums, OS: opts.targetOS, SelfInstall: true}
 	res, installed, err := installer.Run(ctx, items, opts.scope, func(ev app.ProgressEvent) {
 		if !opts.jsonOut {
 			if ev.Err != nil {
@@ -200,17 +215,17 @@ func headlessInstall(ctx context.Context, opts options, client *release.Client, 
 			}
 		}
 	})
+	// Record whatever reached its destination FIRST, even when a later scope's
+	// elevation was cancelled: an unrecorded install is invisible to the next
+	// run, which would then reinstall over it.
+	if len(installed) > 0 {
+		if werr := app.WriteReceipt(opts.targetOS, installed); werr != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", werr)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "install failed:", err)
 		return 1
-	}
-
-	versionOf := map[string]string{}
-	for _, p := range cat.Plugins {
-		versionOf[p.Slug] = p.Version
-	}
-	if err := app.WriteReceipt(installed, versionOf); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
 	}
 
 	if opts.jsonOut {
@@ -233,7 +248,7 @@ func printCatalog(opts options, cat release.Catalog) int {
 	fmt.Printf("release %s — %d plugins (target %s)\n", cat.Tag, len(cat.Plugins), opts.targetOS)
 	for _, p := range cat.Plugins {
 		var fmts []string
-		for _, f := range []model.Format{model.FormatVST3, model.FormatAU} {
+		for _, f := range []model.Format{model.FormatVST3, model.FormatAU, model.FormatCLAP} {
 			if p.HasFormat(opts.targetOS, f) {
 				fmts = append(fmts, string(f))
 			}
@@ -272,7 +287,9 @@ func resolveSlugs(spec string, cat release.Catalog, osID model.OS) []string {
 		return nil
 	}
 	hasAsset := func(p model.Plugin) bool {
-		return p.HasFormat(osID, model.FormatVST3) || p.HasFormat(osID, model.FormatAU)
+		return p.HasFormat(osID, model.FormatVST3) ||
+			p.HasFormat(osID, model.FormatAU) ||
+			p.HasFormat(osID, model.FormatCLAP)
 	}
 	if spec == "all" {
 		var out []string
@@ -301,8 +318,10 @@ func parseFormats(spec string, osID model.OS) ([]model.Format, error) {
 				return nil, fmt.Errorf("AU is not available on Windows")
 			}
 			out = append(out, model.FormatAU)
+		case "clap":
+			out = append(out, model.FormatCLAP)
 		default:
-			return nil, fmt.Errorf("unknown format %q (want vst3 or au)", tok)
+			return nil, fmt.Errorf("unknown format %q (want vst3, au, or clap)", tok)
 		}
 	}
 	return out, nil
@@ -364,6 +383,7 @@ Flags:
   --dry-run           show the plan; download nothing, install nothing
   --json              machine-readable output
   --plugins <list>    comma-separated slugs, or "all"
+  --plugin <slug>     alias for a single-plugin preselection (editor dialog)
   --formats <list>    comma-separated: vst3, au (au is macOS-only)
   --scope <s>         system (default, needs OS password) or user (no password)
   --os <os>           override target OS: macOS or Windows

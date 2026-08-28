@@ -83,7 +83,7 @@ static std::vector<float> makeMissingFundamental (int n, double fs, double f, do
 static void detectorTests (double Fs)
 {
     factory_core::PitchDetector det;
-    det.prepare (Fs, 25.0, 3.5);   // worst case the pitch-fix core uses
+    det.prepare (Fs, 25.0, 3.5);   // worst case the tn-vocal-tuner core uses
 
     const double kThresh = 0.80;
 

@@ -10,7 +10,7 @@
 #
 # A default configure builds a plugin clap-first whenever it is in the plugin
 # set (here -DFACTORY_PLUGINS=<slug> per matrix leg). These legs additionally pass
-# -DFACTORY_JUCE_ORACLES=OFF: RS and dynamic-eq still carry JUCE-linked byte-
+# -DFACTORY_JUCE_ORACLES=OFF: RS and tn-equalizer still carry JUCE-linked byte-
 # equivalence oracle apps, but this workflow only ever builds the ${SLUG}_all
 # CLAP target and never runs CTest, so those targets were configured, cloned JUCE
 # for, and then ignored. Turning them off skips the JUCE fetch + juceaide build
@@ -34,6 +34,7 @@ on:
       - 'presets/**'
       - 'params/**'
       - 'ui/visage/**'
+      - 'update/**'          # factory_update: linked into every GUI-enabled shell
       - 'plugins/*/*.h'            # <X>Core.h / <X>Params.h / <X>Presets.h / …
       - 'plugins/*/Source/*.h'     # RS's frozen shell-visible headers
       - 'plugins/*/shell/**'
@@ -49,6 +50,7 @@ on:
       - 'presets/**'
       - 'params/**'
       - 'ui/visage/**'
+      - 'update/**'          # factory_update: linked into every GUI-enabled shell
       - 'plugins/*/*.h'            # <X>Core.h / <X>Params.h / <X>Presets.h / …
       - 'plugins/*/Source/*.h'     # RS's frozen shell-visible headers
       - 'plugins/*/shell/**'
@@ -66,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slug: [resonance-suppressor, pitch-fix, dynamic-eq]
+        slug: [tn-resonance-suppressor, tn-vocal-tuner, tn-equalizer]
     env:
       GH_TOKEN: ${{ github.token }}   # for `gh release download`
       SLUG: ${{ matrix.slug }}

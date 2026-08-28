@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "generated": "2026-07-30T00:00:00Z",
+  "plugins": [
+    {
+      "slug": "tn-resonance-suppressor",
+      "latest": "1.2.0",
+      "highlights": [
+        "Faster STFT",
+        "Better defaults",
+        "CLAP packaging"
+      ],
+      "changelogUrl": "https://6sryusk.com/tatsunarisounds/notes/tn-resonance-suppressor/1.2.0.md",
+      "futureField": "ignored"
+    }
+  ],
+  "extraTop": true
+}

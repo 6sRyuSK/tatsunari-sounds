@@ -144,5 +144,5 @@ echo
 echo "start the daily loop with:"
 echo "    ./tools/ui-dev/dev.sh            # rs-editor on http://127.0.0.1:8081"
 echo "    ./tools/ui-dev/dev.sh --gallery  # widget gallery on http://127.0.0.1:8080"
-echo "    ./tools/ui-dev/dev.sh --app pitch-fix  # Pitch Fix on http://127.0.0.1:8082"
-echo "    ./tools/ui-dev/dev.sh --app dynamic-eq # Dynamic EQ on http://127.0.0.1:8083"
+echo "    ./tools/ui-dev/dev.sh --app tn-vocal-tuner  # Pitch Fix on http://127.0.0.1:8082"
+echo "    ./tools/ui-dev/dev.sh --app tn-equalizer # Dynamic EQ on http://127.0.0.1:8083"

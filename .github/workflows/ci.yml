@@ -6,7 +6,7 @@ name: CI
 #
 # Every active plugin SHIPS clap-first, so every bundle pluginval sees here comes
 # out of a make_clapfirst shell (wrapper VST3 + AUv2), never juce_add_plugin. JUCE
-# survives in this gate for ONE reason: resonance-suppressor and dynamic-eq keep a
+# survives in this gate for ONE reason: tn-resonance-suppressor and tn-equalizer keep a
 # frozen JUCE AudioProcessor as the byte-equivalence oracle their headless
 # equivalence/preset tests run against. Those tests run HERE (this is the workflow
 # with CTest), so this workflow leaves FACTORY_JUCE_ORACLES at its default ON and
@@ -22,7 +22,7 @@ name: CI
 # when a build-affecting source changes. core/ ui/ presets/ params/ shell/ cmake/ and
 # the root CMakeLists.txt are included (not just plugins/**) because a change there
 # affects every plugin — CLAUDE.md requires the full suite to run for any core/ change.
-# (shell/ is the CLAP glue the clap-first resonance-suppressor builds on, so a shell/
+# (shell/ is the CLAP glue the clap-first tn-resonance-suppressor builds on, so a shell/
 # change must rebuild + revalidate RS here.)
 # Installer- or docs-only PRs skip it. main is unprotected, so a skipped run does
 # not block merges. Keep the two `paths` lists identical (push == pull_request).
@@ -40,6 +40,7 @@ on:
       - 'presets/**'
       - 'params/**'
       - 'shell/**'
+      - 'update/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'
@@ -51,6 +52,7 @@ on:
       - 'presets/**'
       - 'params/**'
       - 'shell/**'
+      - 'update/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - '.github/workflows/ci.yml'

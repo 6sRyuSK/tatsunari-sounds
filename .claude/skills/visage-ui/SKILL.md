@@ -15,8 +15,8 @@ description: Build or edit the JUCE-free Visage UI layer in this repo — the fa
 | アプリシェル | `tools/ui-dev/` (WASM harness) / `plugins/<slug>/shell/<X>ClapEditor.cpp` (出荷 CLAP) | エディタを窓に載せる。CLAP 側は GUI を link する唯一の TU |
 
 機種ごとの読みどころ: **RS が最も濃い実例**(リサイズ/undo/A-B/アナライザ/ノードパネル)、
-**pitch-fix は fixed-size の最小形**(共有ウィジェットのみ)、**dynamic-eq は帯域系の実例**
-(`plugins/dynamic-eq/ui/` の `DeqBandPanel` / `DeqCurveView` / `DeqIcons.h`)。
+**tn-vocal-tuner は fixed-size の最小形**(共有ウィジェットのみ)、**tn-equalizer は帯域系の実例**
+(`plugins/tn-equalizer/ui/` の `DeqBandPanel` / `DeqCurveView` / `DeqIcons.h`)。
 
 **visage コア API (Frame/Canvas/イベント/レイアウト/ApplicationWindow) を書く・読むときは
 まず `references/visage-core-api.md` を読む** — VitalAudio/visage の examples 全読から
@@ -58,6 +58,9 @@ draw 毎に `store.value()` を読む(setter 呼び出し不要)。
 | `ValueText.h` | — | 値直接入力の **visage-free 側**の契約: `ValueEntryRequest`(rect は **window px** + `prefill` + `fontPx` + `commit`)/ `ValueEntryOpener` / prefill 生成 / 共有 commit(parse → 不正なら**書かず revert** → gestured write)。ホストコンパイラで通るので `value_text_test.cpp` が headless 検証する |
 | `SpectrumView` | `(theme, model, sampleRate)` | アナライザ描画。`onTick`(フレーム毎のフィード注入), `setFrozen` |
 | `SpectrumModel` | — | JUCE-free/visage-free の数理。`setOrderForSampleRate`(固定 order 禁止), `writeSamples`, `update`, `smoothedDb/peakDb`; `LogFreqAxis`(20Hz–20kHz log), `VerticalAxis` |
+| `UpdateBadge` | `(theme)` | 更新ありのときだけ出す受動 pill。`onClick` |
+| `UpdateDialog` | `(theme)` | opt-in / 更新詳細のフルカバスクリプトモーダル。`openOptIn` / `openUpdate` |
+| `UpdateUiHost.h` | `(theme, slug, version)` | `factory_update::UpdateCheck` と Badge/Dialog の配線。**clap GUI シェルだけ**が include + `factory_update` を link（WASM gallery は触らない） |
 
 補助: `Chrome.h` の `paintBackground` / `paintCard`(warm-white 背景とカード)、
 `Fonts.h` の `regularFont(px)` / `boldFont(px)`(常にこれ経由; 書体切替は
@@ -86,17 +89,17 @@ viewBox24) + `paintGlyph(canvas, glyph, x,y,w,h)`(現在のブラシで描く)�
   失敗で false + `error` 充填)は現在値をシードに部分上書き(全キー任意)。トップ
   レベル `"rs"` オブジェクトは共有スキーマから**無視**され、
   プラグイン側 (`rs_ui::RsTheme` の `RsExtras`) が消費する。RS は
-  `plugins/resonance-suppressor/ui/theme-rs.json` を `RsTheme::load` でマージ。
+  `plugins/tn-resonance-suppressor/ui/theme-rs.json` を `RsTheme::load` でマージ。
 - **スキーマにキーを足すとき**: `Theme.h` の struct + `Theme.cpp` のパーサ/`toJson`/
   `operator==` + `factory-default.json` + roundtrip テスト
   (`ui/visage/tests/theme_roundtrip_test.cpp`, RS 側は
-  `plugins/resonance-suppressor/ui/tests/rs_theme_roundtrip_test.cpp`) を揃って更新。
+  `plugins/tn-resonance-suppressor/ui/tests/rs_theme_roundtrip_test.cpp`) を揃って更新。
   RS 固有値なら共有スキーマでなく `RsExtras` + `"rs"` ブロックへ。
 
 ## エディタ構成パターン(RsEditor が家の型)
 
-`plugins/resonance-suppressor/ui/RsEditor.{h,cpp}` が最も濃い実例で規範(最小形は
-`plugins/pitch-fix/ui/PfEditor.{h,cpp}`、帯域系は `plugins/dynamic-eq/ui/DeqEditor.{h,cpp}`)。
+`plugins/tn-resonance-suppressor/ui/RsEditor.{h,cpp}` が最も濃い実例で規範(最小形は
+`plugins/tn-vocal-tuner/ui/PfEditor.{h,cpp}`、帯域系は `plugins/tn-equalizer/ui/DeqEditor.{h,cpp}`)。
 要点:
 
 - **所有**: 子 widget は `std::unique_ptr` メンバ + `addChild(ptr.get())`。追加順 =
@@ -113,7 +116,7 @@ viewBox24) + `paintGlyph(canvas, glyph, x,y,w,h)`(現在のブラシで描く)�
   (JUCE の clamp-to-min からの意図的逸脱 — ユーザ要望)。
 - **レイアウト**: `resized()` で手動配置。一様スケール `k() = height()/設計高` と
   `S(v) = round(v * k())` を使う(RS は 1069×747 設計 / 471×329..1320×922、開くのは
-  706×493。dynamic-eq は 740×520 設計 / 620×440..1280×900。pitch-fix は 920×560 固定。
+  706×493。tn-equalizer は 740×520 設計 / 620×440..1280×900。tn-vocal-tuner は 920×560 固定。
   いずれも固定アスペクト)。flex layout はエディタ本体では使っていない。
 - **draw()**: 背景グラデ + 静的クロームのみ。アナライザ等の動く view は自分で
   `redraw()` 自走し、`curve().onTick` にホスト側の毎フレーム処理(gesture pump 等)を
@@ -148,8 +151,8 @@ CLAP↔Visage のボイラープレート(以前は機種ごとに ~200 行コ�
 | 層 | 使う機種 | 中身 |
 |---|---|---|
 | `VisageClapEditorHost` | (基底) | `ApplicationWindow` 所有、`kNativeApi` 選択、`is_api_supported`/`get_preferred_api`/`set_scale`、create/destroy/setParent、show/hide、posix-fd、**macOS logical/native 分岐**、ホスト拡張取得、inactive-edit フラッシュ |
-| `FixedSizeVisageClapEditor` | pitch-fix | 非リサイズ。`(host, store, designW, designH)` |
-| `ResizableVisageClapEditor` | RS / dynamic-eq | 一様ズーム + アスペクト固定 + 上下限 + **Logic-AU リサイズループ修正**。`(host, store, EditorGeometry, defaultW, defaultH)` |
+| `FixedSizeVisageClapEditor` | tn-vocal-tuner | 非リサイズ。`(host, store, designW, designH)` |
+| `ResizableVisageClapEditor` | RS / tn-equalizer | 一様ズーム + アスペクト固定 + 上下限 + **Logic-AU リサイズループ修正**。`(host, store, EditorGeometry, defaultW, defaultH)` |
 
 **プラットフォーム分岐・リサイズ数学・`request_resize` の再実装は禁止。** バグを見つけ
 たら共有ホスト側で直す(= 3 機種同時に効く)。`factory_ui_visage_clap_host` ターゲットが
@@ -158,8 +161,8 @@ CLAP↔Visage のボイラープレート(以前は機種ごとに ~200 行コ�
 
 ### プラグイン側が書くのはこれだけ
 
-派生して 3〜4 個のフックを埋める(見本: `plugins/pitch-fix/shell/PfClapEditor.cpp` が
-最小形、`plugins/dynamic-eq/shell/DeqClapEditor.cpp` が resizable の最小形):
+派生して 3〜4 個のフックを埋める(見本: `plugins/tn-vocal-tuner/shell/PfClapEditor.cpp` が
+最小形、`plugins/tn-equalizer/shell/DeqClapEditor.cpp` が resizable の最小形):
 
 ```cpp
 class PfClapEditorImpl final : public factory_ui_visage::FixedSizeVisageClapEditor
@@ -188,7 +191,7 @@ class PfClapEditorImpl final : public factory_ui_visage::FixedSizeVisageClapEdit
   スナップ済み)が唯一のリサイズ経路 — **Logic の AU 窓には OS のリサイズ端が無い**
   (ハーネスでは `onResizeRequest` 未設定 = grip 非表示)。
 - **ジオメトリ**は定数で渡す: `rs_shell::kRsGeometry`(1069×747、471×329..1320×922)/
-  `kDeqGeometry`(740×520、620×440..1280×900)。pitch-fix は `PfEditor::kDesignW/H`
+  `kDeqGeometry`(740×520、620×440..1280×900)。tn-vocal-tuner は `PfEditor::kDesignW/H`
   (920×560)。
 - **編集の見せ方**: 個別ノブ = シェルの GUI-edit→CLAP output-event 中継(オートメーション
   記録)、バルク(プリセット/A-B) = `notifyHostEdited()` = `rescan(VALUES|TEXT)` +
@@ -217,10 +220,10 @@ class PfClapEditorImpl final : public factory_ui_visage::FixedSizeVisageClapEdit
 ```bash
 ./tools/ui-dev/dev.sh              # rs-editor  → http://127.0.0.1:8081 (watch+reload)
 ./tools/ui-dev/dev.sh --gallery    # widget gallery → :8080
-./tools/ui-dev/dev.sh --app pitch-fix  # Pitch Fix → :8082
-./tools/ui-dev/dev.sh --app dynamic-eq # Dynamic EQ → :8083
-./tools/ui-dev/dev.sh --app pitch-fix --verify
-./tools/ui-dev/dev.sh --app dynamic-eq --verify
+./tools/ui-dev/dev.sh --app tn-vocal-tuner  # Pitch Fix → :8082
+./tools/ui-dev/dev.sh --app tn-equalizer # Dynamic EQ → :8083
+./tools/ui-dev/dev.sh --app tn-vocal-tuner --verify
+./tools/ui-dev/dev.sh --app tn-equalizer --verify
 cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
   node rs.spec.js http://127.0.0.1:8081/index.html .   # 30 asserts + screenshots
 ```
@@ -246,7 +249,7 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
   `ui/visage/CMakeLists.txt:210`)/ RS の `resonance_suppressor_theme_roundtrip`
   (theme-rs.json 同期検査)/ `resonance_suppressor_ui_pure`(FREQ 入力パーサ +
   抽出済みレイアウト計算。これらのヘッダが visage-free であることの証明も兼ねる、
-  `plugins/resonance-suppressor/CMakeLists.txt:145`)— すべて `ctest` で走る。
+  `plugins/tn-resonance-suppressor/CMakeLists.txt:145`)— すべて `ctest` で走る。
   手動実行は各ソース冒頭のコンパイル行(theme 系は JSON パスを引数で渡す —
   既定の相対パスは cwd 依存)。widget の**見た目**の検証はハーネスの Playwright 側で、
   gallery に載せる widget は `tools/ui-dev/gallery/GalleryFrame.{h,cpp}` に追加する。
@@ -255,7 +258,7 @@ cd tools/ui-dev/playwright && PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
 
 - `tools/ui-dev/common/PluginHarness.{h,cpp}` が `window.ui` の標準 ABI
   (ParamStore、Theme、widget rect、Dropdown、preset)を実装する。新しい bridge で
-  同じ C export を複製しない — rs-editor / pitch-fix / dynamic-eq は全て
+  同じ C export を複製しない — rs-editor / tn-vocal-tuner / tn-equalizer は全て
   `ui_dev_harness::Target` を `attach` するだけで、`rs_*` / `pf_*` / `deq_*` には
   **そのプラグイン固有の状態しか置かない**(RS の undo・A-B、PF の status feed、
   DEQ の band/analyser feed)。gallery だけは plugin editor ではないので自前 bridge

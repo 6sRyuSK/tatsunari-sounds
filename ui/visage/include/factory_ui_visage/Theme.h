@@ -191,7 +191,7 @@ namespace factory_ui_visage
         // the shared theme, "shared theme + plugin overlay merged at load". A
         // top-level "rs" object is reserved for plugin-specific extras and is
         // IGNORED here (the plugin's own theme model consumes it, e.g.
-        // plugins/resonance-suppressor/ui/RsTheme). Strict within every recognized
+        // plugins/tn-resonance-suppressor/ui/RsTheme). Strict within every recognized
         // block; returns false + fills `error` on malformed input (no exceptions).
         bool applyOverlay (const std::string& jsonText, std::string& error);
 

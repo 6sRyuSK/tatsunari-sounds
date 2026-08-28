@@ -6,9 +6,9 @@
 # browser auto-reload. Default: the rs-editor app on http://127.0.0.1:8081.
 #
 # Usage:
-#   ./tools/ui-dev/dev.sh [--app rs-editor|gallery|pitch-fix|dynamic-eq] [--rel] [--no-serve|--verify]
+#   ./tools/ui-dev/dev.sh [--app rs-editor|gallery|tn-vocal-tuner|tn-equalizer] [--rel] [--no-serve|--verify]
 #
-#   --app NAME   select rs-editor (:8081), gallery (:8080), pitch-fix (:8082), or dynamic-eq (:8083)
+#   --app NAME   select rs-editor (:8081), gallery (:8080), tn-vocal-tuner (:8082), or tn-equalizer (:8083)
 #   --gallery    backwards-compatible shorthand for --app gallery
 #   --rel        use the `rel` preset (-O2, small wasm) instead of `dev` (-O0, fast link)
 #   --no-serve   configure + build only, then exit (no dev server)
@@ -46,7 +46,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$APP" in
-  gallery|rs-editor|pitch-fix|dynamic-eq) ;;
+  gallery|rs-editor|tn-vocal-tuner|tn-equalizer) ;;
   *) echo "dev.sh: invalid --app: $APP" >&2; exit 2 ;;
 esac
 
@@ -89,9 +89,9 @@ cmake --build "$BUILD_DIR" --target "$APP"
 # --- app -> served dir / port / theme ----------------------------------------
 case "$APP" in
   gallery)    WEB_DIR="$BUILD_DIR/web";     PORT=8080; THEME_ARGS=() ;;
-  rs-editor)  WEB_DIR="$BUILD_DIR/web-rs";  PORT=8081; THEME_ARGS=(--theme-file "$REPO/plugins/resonance-suppressor/ui/theme-rs.json") ;;
-  pitch-fix)  WEB_DIR="$BUILD_DIR/web-pf";  PORT=8082; THEME_ARGS=() ;;
-  dynamic-eq) WEB_DIR="$BUILD_DIR/web-deq"; PORT=8083; THEME_ARGS=() ;;
+  rs-editor)  WEB_DIR="$BUILD_DIR/web-rs";  PORT=8081; THEME_ARGS=(--theme-file "$REPO/plugins/tn-resonance-suppressor/ui/theme-rs.json") ;;
+  tn-vocal-tuner)  WEB_DIR="$BUILD_DIR/web-pf";  PORT=8082; THEME_ARGS=() ;;
+  tn-equalizer) WEB_DIR="$BUILD_DIR/web-deq"; PORT=8083; THEME_ARGS=() ;;
 esac
 URL="http://127.0.0.1:$PORT/index.html"
 

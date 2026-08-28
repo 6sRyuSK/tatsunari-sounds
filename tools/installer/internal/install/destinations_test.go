@@ -16,9 +16,12 @@ func TestDestinationMacOS(t *testing.T) {
 		scope  model.Scope
 		want   string
 	}{
-		{model.FormatVST3, model.ScopeSystem, "/Library/Audio/Plug-Ins/VST3"},
+		// §11.4: VST3/CLAP get the vendor folder in BOTH scopes; AU never does.
+		{model.FormatVST3, model.ScopeSystem, "/Library/Audio/Plug-Ins/VST3/tatsunari-sounds"},
+		{model.FormatCLAP, model.ScopeSystem, "/Library/Audio/Plug-Ins/CLAP/tatsunari-sounds"},
 		{model.FormatAU, model.ScopeSystem, "/Library/Audio/Plug-Ins/Components"},
-		{model.FormatVST3, model.ScopeUser, "/Users/tester/Library/Audio/Plug-Ins/VST3"},
+		{model.FormatVST3, model.ScopeUser, "/Users/tester/Library/Audio/Plug-Ins/VST3/tatsunari-sounds"},
+		{model.FormatCLAP, model.ScopeUser, "/Users/tester/Library/Audio/Plug-Ins/CLAP/tatsunari-sounds"},
 		{model.FormatAU, model.ScopeUser, "/Users/tester/Library/Audio/Plug-Ins/Components"},
 	}
 	for _, c := range cases {
@@ -52,8 +55,16 @@ func TestDestinationWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(norm(usr), "AppData/Local/Programs/Common/VST3") {
+	// §11.4 removed the old user-scope exception: the vendor folder is used here too.
+	if !strings.HasSuffix(norm(usr), "AppData/Local/Programs/Common/VST3/tatsunari-sounds") {
 		t.Errorf("windows user dest = %q", usr)
+	}
+	winClap, err := Destination(model.OSWindows, model.FormatCLAP, model.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(norm(winClap), "AppData/Local/Programs/Common/CLAP/tatsunari-sounds") {
+		t.Errorf("windows user clap dest = %q", winClap)
 	}
 	if _, err := Destination(model.OSWindows, model.FormatAU, model.ScopeSystem); err == nil {
 		t.Error("windows AU should be rejected")
@@ -62,12 +73,58 @@ func TestDestinationWindows(t *testing.T) {
 
 func TestInstallRoots(t *testing.T) {
 	t.Setenv("HOME", "/Users/tester")
+	t.Setenv("APPDATA", "/Users/tester/AppData/Roaming")
+	t.Setenv("ProgramData", `C:\ProgramData`)
+	t.Setenv("ProgramFiles", `C:\Program Files`)
+	t.Setenv("CommonProgramFiles", `C:\Program Files\Common Files`)
+	t.Setenv("LOCALAPPDATA", `C:\Users\tester\AppData\Local`)
+
 	roots := InstallRoots(model.OSMacOS)
-	if len(roots) != 4 {
-		t.Fatalf("macOS should have 4 install roots, got %d: %v", len(roots), roots)
+	// plugin×2 + installer×2 + receipt×2
+	if len(roots) != 6 {
+		t.Fatalf("macOS should have 6 install roots, got %d: %v", len(roots), roots)
 	}
 	win := InstallRoots(model.OSWindows)
-	if len(win) != 2 {
-		t.Fatalf("windows should have 2 install roots (VST3 only), got %d: %v", len(win), win)
+	if len(win) != 6 {
+		t.Fatalf("windows should have 6 install roots, got %d: %v", len(win), win)
+	}
+}
+
+func TestDestinationCLAP(t *testing.T) {
+	t.Setenv("HOME", "/Users/tester")
+	got, err := Destination(model.OSMacOS, model.FormatCLAP, model.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.ToSlash(got) != "/Users/tester/Library/Audio/Plug-Ins/CLAP/tatsunari-sounds" {
+		t.Errorf("clap dest = %q", got)
+	}
+}
+
+// AU is the one format that must NOT gain a vendor folder (§11.4): Audio
+// Components are only guaranteed to be discovered directly under Components/.
+func TestAUNeverUsesVendorFolder(t *testing.T) {
+	for _, scope := range []model.Scope{model.ScopeSystem, model.ScopeUser} {
+		t.Setenv("HOME", "/Users/tester")
+		sub, err := DefaultSubpath(model.OSMacOS, model.FormatAU)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sub != "Components" {
+			t.Fatalf("AU subpath = %q, want %q", sub, "Components")
+		}
+		got, err := Destination(model.OSMacOS, model.FormatAU, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(filepath.ToSlash(got), VendorFolder) {
+			t.Errorf("AU dest (%s) must not contain the vendor folder: %q", scope, got)
+		}
+	}
+}
+
+func TestResolvePathRejectsTraversal(t *testing.T) {
+	if _, err := ResolvePath("/Library/Audio/Plug-Ins", "../etc", "x.vst3"); err == nil {
+		t.Fatal("expected traversal rejection")
 	}
 }

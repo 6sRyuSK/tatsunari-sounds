@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://6sryusk.com/tatsunarisounds/schemas/updates/v1/catalog.schema.json",
+  "title": "tatsunarisounds/updates/v1 catalog.json",
+  "type": "object",
+  "required": ["schema", "generated", "channels", "plugins"],
+  "additionalProperties": true,
+  "not": {
+    "anyOf": [
+      { "required": ["postInstallScript"] },
+      { "required": ["preInstallCommand"] },
+      { "required": ["telemetryUrl"] },
+      { "required": ["remoteConfig"] }
+    ]
+  },
+  "properties": {
+    "schema": { "const": 1 },
+    "generated": { "type": "string", "format": "date-time" },
+    "generator": { "type": "string" },
+    "minClientVersion": { "type": "string" },
+    "ttlHint": { "type": "integer", "minimum": 0 },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string", "enum": ["stable", "beta", "dev"] },
+          "name": {
+            "type": "object",
+            "required": ["en"],
+            "additionalProperties": { "type": "string" }
+          },
+          "requiresOptIn": { "type": "boolean" },
+          "retention": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "client": {
+      "type": "object",
+      "required": ["latest", "assets"],
+      "properties": {
+        "latest": { "type": "string" },
+        "minSupported": { "type": "string" },
+        "changelogUrl": { "type": "string", "format": "uri" },
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["os", "arch", "url", "size", "sha256"],
+            "properties": {
+              "os": { "type": "string", "enum": ["macos", "windows"] },
+              "arch": { "type": "string", "enum": ["arm64", "amd64"] },
+              "url": { "type": "string", "format": "uri" },
+              "size": { "type": "integer", "minimum": 0 },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slug", "variant", "name", "category", "vendor", "pluginIds", "latest", "versions"],
+        "additionalProperties": true,
+        "not": {
+          "anyOf": [
+            { "required": ["postInstallScript"] },
+            { "required": ["preInstallCommand"] },
+            { "required": ["absolutePath"] },
+            { "required": ["installRoot"] },
+            { "required": ["reference"] }
+          ]
+        },
+        "properties": {
+          "slug": { "type": "string", "minLength": 1 },
+          "variant": { "type": "string", "enum": ["stable", "dev"] },
+          "name": {
+            "type": "object",
+            "required": ["en"],
+            "additionalProperties": { "type": "string" }
+          },
+          "category": { "type": "string" },
+          "vendor": { "type": "string" },
+          "pluginIds": {
+            "type": "object",
+            "required": ["clapId"],
+            "properties": {
+              "clapId": { "type": "string" },
+              "vst3Uid": { "type": "string" },
+              "auSubtype": { "type": "string" },
+              "auManufacturer": { "type": "string" }
+            }
+          },
+          "latest": { "type": "string" },
+          "minClientVersion": { "type": "string" },
+          "versions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["version", "channel", "releasedAt", "stateCompatVersion", "assets"],
+              "properties": {
+                "version": { "type": "string" },
+                "channel": { "type": "string" },
+                "releasedAt": { "type": "string", "format": "date-time" },
+                "stateCompatVersion": { "type": "string" },
+                "yanked": { "type": "boolean" },
+                "assets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["format", "os", "arch", "url", "size", "sha256", "subpath", "bundleName"],
+                    "properties": {
+                      "format": { "type": "string" },
+                      "os": { "type": "string", "enum": ["macos", "windows"] },
+                      "arch": { "type": "string", "enum": ["universal", "x86_64", "arm64"] },
+                      "url": { "type": "string", "format": "uri" },
+                      "size": { "type": "integer", "minimum": 0 },
+                      "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "subpath": { "type": "string", "minLength": 1 },
+                      "bundleName": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

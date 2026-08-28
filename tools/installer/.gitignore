@@ -2,7 +2,10 @@
 /dist/
 
 # Local build artifacts.
-/tatsunari
-/tatsunari.exe
+/tatsunari-sounds-installer
+/tatsunari-sounds-installer.exe
 *.exe
-*.syso
+
+# NOTE: rsrc_windows_amd64.syso is NOT ignored — it is the committed Windows
+# application manifest resource (see winres/README.md). It must ship in the
+# repository so a plain `GOOS=windows go build` produces a manifested binary.

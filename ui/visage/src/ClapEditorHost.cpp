@@ -2,7 +2,7 @@
 // ClapEditorHost.cpp — the Visage-backed IClapEditor host base implementations (see
 // ClapEditorHost.h). The resizable layer is EXACT code motion of RsClapEditor.cpp's
 // syncWindowScale / dynamicMaxWindowUnits / setSize loop-fix; the fixed layer is
-// pitch-fix's layoutEditorToWindow path. The single visage-linked home of the shared
+// tn-vocal-tuner's layoutEditorToWindow path. The single visage-linked home of the shared
 // host logic — a plugin's concrete editor derives it and links this via
 // factory_ui_visage_clap_host.
 //

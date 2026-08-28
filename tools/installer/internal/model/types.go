@@ -1,6 +1,3 @@
-// Package model holds the installer's plain data types plus a few pure helpers
-// (semver comparison, install-plan construction). It deliberately depends on
-// nothing else so it can be unit-tested headless and imported everywhere.
 package model
 
 // OS identifies a target operating system for plugin assets.
@@ -17,6 +14,7 @@ type Format string
 const (
 	FormatVST3 Format = "VST3"
 	FormatAU   Format = "AU"
+	FormatCLAP Format = "CLAP"
 )
 
 // Scope selects a system-wide (all users, needs OS elevation) or per-user
@@ -26,6 +24,24 @@ type Scope string
 const (
 	ScopeSystem Scope = "system"
 	ScopeUser   Scope = "user"
+)
+
+// Variant identifies a coinstallable plugin identity (stable vs Dev).
+type Variant string
+
+const (
+	VariantStable Variant = "stable"
+	VariantDev    Variant = "dev"
+)
+
+// DestinationRootID is the binary-internal enum for install roots (invariant 5).
+// Manifest JSON never supplies a root path — only a DestinationRootID + subpath.
+type DestinationRootID string
+
+const (
+	RootPlugin    DestinationRootID = "plugin"    // Audio Plug-Ins / Common Files
+	RootInstaller DestinationRootID = "installer" // tatsunari binary placement
+	RootReceipt   DestinationRootID = "receipt"   // receipt.json directory
 )
 
 // InstallState describes a plugin relative to what is already installed.
@@ -51,15 +67,19 @@ type AssetKey struct {
 
 // Asset is one downloadable release asset (a per-plugin zip).
 type Asset struct {
-	Name        string // e.g. "resonance-suppressor-v0_2_1-macOS-VST3.zip"
+	Name        string // e.g. "tn-resonance-suppressor-v0_2_1-macOS-VST3.zip"
 	DownloadURL string // https browser_download_url
 	Size        int64
+	SHA256      string // optional; populated from catalog when available
+	Subpath     string // relative to DestinationRoot(plugin); empty → default
+	BundleName  string // leaf bundle dir; empty → basename after extract
 }
 
 // Plugin is the reconciled view of one plugin: release metadata joined with
 // local install state.
 type Plugin struct {
 	Slug      string
+	Variant   Variant
 	Name      string // display name (catalog.json or title-cased slug)
 	Category  string
 	Reference string
@@ -71,6 +91,7 @@ type Plugin struct {
 	Available map[AssetKey]Asset
 
 	Installed string // installed version, "" if none / unknown
+	Scope     Scope  // scope of the installed row when known
 	State     InstallState
 }
 

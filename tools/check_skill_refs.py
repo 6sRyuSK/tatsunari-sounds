@@ -48,6 +48,7 @@ PATH_ROOTS = (
     "shell/",
     "tools/",
     "ui/",
+    "update/",
 )
 
 # Placeholders (<slug>, <Camel>Params.h), globs, and ellipses are not real paths.

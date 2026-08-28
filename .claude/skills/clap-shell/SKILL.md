@@ -22,6 +22,7 @@ description: Work on the CLAP shell layer of this repo — shell/include/factory
 | `ClapParamBridge.h` / `.cpp` | ParamDesc テーブル → `clap.params` サーフェス。plugin 非依存の**コンパイル済みユニット** |
 | `ClapStateBridge.h` / `.cpp` | `clap.state` の save/load を `factory_presets::StateCodec` の上に表現 |
 | `ClapEditor.h` | `IClapEditor` の seam(GUI は opt-in)。実装は `factory_ui_visage::ClapEditorHost`(`visage-ui` スキル) |
+| `update/` (`factory_update`) | エディタ内更新バッジの状態機械 / HTTP / prefs。各 `*ClapEditor.cpp` が `UpdateUiHost` 経由で配線し、GUI ON のときだけ `factory_update` を link |
 | `DenormalGuard.h` | process を包む scoped FTZ/DAZ。**コアは FP モード非依存**なので、denormal 対策はこの境界の責務 |
 | `ResizableEditorGeometry.h` | アスペクト/上下限スナップの純粋関数(RS の `clap_shell_test` がオラクル付きで検証) |
 
@@ -60,7 +61,7 @@ makeEditor (Core&, factory_params::ParamStore&, factory_presets::PresetSession&,
 
 ### 3 機種の実値(迷ったらここを見る)
 
-| | RS | pitch-fix | dynamic-eq |
+| | RS | tn-vocal-tuner | tn-equalizer |
 |---|---|---|---|
 | `kHasSidechain` | `true` | `false` | `false` |
 | `isClapExposed` | `kFlagLegacyJuceOnly` を除外 | 常に true | 常に true |

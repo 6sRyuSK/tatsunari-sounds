@@ -26,11 +26,14 @@ type installDoneMsg struct {
 	err    error
 }
 
-// discoverCmd fetches the latest release and reconciles with the local receipt.
-func discoverCmd(c *release.Client) tea.Cmd {
+// discoverCmd fetches the latest release and reconciles with local receipts
+// (user + system projected to slug→version for the legacy reconcile path).
+func discoverCmd(c *release.Client, osID model.OS) tea.Cmd {
 	return func() tea.Msg {
 		var installed map[string]string
-		if rec, err := install.LoadReceipt(); err == nil {
+		if rec, err := install.LoadAllReceipts(osID); err == nil {
+			installed = rec.InstalledVersions()
+		} else if rec, err := install.LoadReceipt(); err == nil {
 			installed = rec.InstalledVersions()
 		}
 		cat, err := app.Discover(context.Background(), c, installed)
@@ -40,15 +43,19 @@ func discoverCmd(c *release.Client) tea.Cmd {
 
 // startInstall launches the install worker, streaming progress into ch and a
 // final installDoneMsg. The elevation prompt (if system scope) happens inside
-// the worker, off the UI goroutine.
-func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanItem, scope model.Scope, versionOf map[string]string) tea.Cmd {
+// the worker, off the UI goroutine. PlanItem.Version/Variant/Scope drive the
+// receipt; versionOf maps are no longer required.
+func startInstall(ch chan tea.Msg, installer *app.Installer, items []model.PlanItem, scope model.Scope) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			res, installed, err := installer.Run(context.Background(), items, scope, func(ev app.ProgressEvent) {
 				ch <- progressMsg(ev)
 			})
-			if err == nil && len(installed) > 0 {
-				_ = app.WriteReceipt(installed, versionOf)
+			// Recorded even when err != nil: Run can partially apply (one scope
+			// succeeded, the other's elevation was cancelled), and an
+			// unrecorded install is invisible to the next run.
+			if len(installed) > 0 {
+				_ = app.WriteReceipt(installer.OS, installed)
 			}
 			ch <- installDoneMsg{result: res, err: err}
 			close(ch)

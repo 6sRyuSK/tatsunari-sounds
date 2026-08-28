@@ -40,7 +40,7 @@ int runRsEditor()
     editor.curve().onTick = [&] { editor.pumpGestures(); feed.advance(); };
     rs_harness::setBridgeTarget (&editor, &feed, &app);
 
-    app.setTitle ("Resonance TatSuppressor · Visage");
+    app.setTitle ("TN Resonance Suppressor · Visage");
     app.show (kCanvasW, kCanvasH);
     app.runEventLoop();
     return 0;

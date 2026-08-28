@@ -22,11 +22,11 @@ plugins published by this repo. Built with Go + [Charm](https://charm.sh)
 
 macOS:
 
-    curl -fsSL https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.sh | bash
+    curl -fsSL https://6sryusk.com/tatsunarisounds/install.sh | bash
 
 Windows (PowerShell):
 
-    irm https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.ps1 | iex
+    irm https://6sryusk.com/tatsunarisounds/install.ps1 | iex
 
 ## Layout
 

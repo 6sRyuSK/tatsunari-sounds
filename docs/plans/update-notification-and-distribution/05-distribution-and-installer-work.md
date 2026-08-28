@@ -28,7 +28,7 @@ Cloudflare 配信**になる。
 | `latest.json` / `catalog.json` | `/tatsunarisounds/updates/v1/` | 短 TTL 60s + ETag |
 | **ブートストラップスクリプト** | 例 `/tatsunarisounds/install.sh` / `/tatsunarisounds/install.ps1` | **短 TTL + ETag** |
 
-インストーラバイナリの発見は `catalog.json` の `client.url`（3.3）で既に表現できる。
+インストーラバイナリの発見は `catalog.json` の `client.assets[]`（3.3）で既に表現できる。
 
 #### 利点: GitHub API のレート制限から解放される
 
@@ -83,6 +83,10 @@ GUI を見送り、公証も行わないため、**インストーラの CI は�
 
 `installer.yml` に手が入るのは 5.1（GitHub Releases 廃止に伴う配信先の変更）と
 5.4（自己インストール）の都合のみ。
+
+> **訂正（実装レビュー）**: 自己配置の差分は「mktemp を正規パスに変える」ではない。
+> ブートストラップは引き続き一時ディレクトリへ落として起動し、**配置は apply の一部**
+> （§5.4）として行う。下記「配置を行う主体」が正本。
 
 ### 5.4 インストーラの自己インストール（新規）
 

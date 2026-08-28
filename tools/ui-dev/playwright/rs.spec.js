@@ -1,4 +1,4 @@
-// Resonance TatSuppressor · Visage editor — headless verification (plain node).
+// TN Resonance Suppressor · Visage editor — headless verification (plain node).
 //
 //   node rs.spec.js [url] [outDir]
 //

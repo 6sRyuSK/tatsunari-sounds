@@ -16,9 +16,9 @@ func mkRelease(names ...string) *Release {
 
 func TestParsePluginAssets(t *testing.T) {
 	rel := mkRelease(
-		"resonance-suppressor-v0_2_1-macOS-AU.zip",
-		"resonance-suppressor-v0_2_1-macOS-VST3.zip",
-		"resonance-suppressor-v0_2_1-Windows.zip",
+		"tn-resonance-suppressor-v0_2_1-macOS-AU.zip",
+		"tn-resonance-suppressor-v0_2_1-macOS-VST3.zip",
+		"tn-resonance-suppressor-v0_2_1-Windows.zip",
 		"nam-player-v0_1_0-macOS-VST3.zip",
 		"nam-player-v0_1_0-Windows.zip",
 		// noise that must be ignored:
@@ -33,9 +33,9 @@ func TestParsePluginAssets(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 plugins, got %d: %v", len(got), keys(got))
 	}
-	rs := got["resonance-suppressor"]
+	rs := got["tn-resonance-suppressor"]
 	if rs == nil {
-		t.Fatal("resonance-suppressor missing")
+		t.Fatal("tn-resonance-suppressor missing")
 	}
 	if rs.Version != "0.2.1" {
 		t.Errorf("version = %q, want 0.2.1", rs.Version)
@@ -46,7 +46,7 @@ func TestParsePluginAssets(t *testing.T) {
 		{OS: model.OSWindows, Format: model.FormatVST3},
 	} {
 		if _, ok := rs.Assets[k]; !ok {
-			t.Errorf("resonance-suppressor missing asset %+v", k)
+			t.Errorf("tn-resonance-suppressor missing asset %+v", k)
 		}
 	}
 	// nam-player: no AU
@@ -61,10 +61,12 @@ func TestParsePluginAssets(t *testing.T) {
 
 func TestTitleCaseSlug(t *testing.T) {
 	cases := map[string]string{
-		"resonance-suppressor": "Resonance Suppressor",
-		"nam-player":           "Nam Player",
-		"single-band-eq":       "Single Band Eq",
-		"saturator":            "Saturator",
+		"tn-resonance-suppressor": "TN Resonance Suppressor",
+		"tn-equalizer":            "TN Equalizer",
+		"tn-vocal-tuner":          "TN Vocal Tuner",
+		"nam-player":              "Nam Player",
+		"single-band-eq":          "Single Band Eq",
+		"saturator":               "Saturator",
 	}
 	for in, want := range cases {
 		if got := TitleCaseSlug(in); got != want {

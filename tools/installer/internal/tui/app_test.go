@@ -10,13 +10,15 @@ import (
 )
 
 func fakeCatalog() release.Catalog {
-	manifest := map[string]string{"resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
+	manifest := map[string]string{"tn-resonance-suppressor": "0.2.1", "nam-player": "0.1.0"}
 	assets := release.ParsePluginAssets(&release.Release{Tag: "2026.2", Assets: []model.Asset{
-		{Name: "resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs"},
-		{Name: "resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rsau"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-VST3.zip", DownloadURL: "https://x/rs"},
+		{Name: "tn-resonance-suppressor-v0_2_1-macOS-AU.zip", DownloadURL: "https://x/rsau"},
 		{Name: "nam-player-v0_1_0-macOS-VST3.zip", DownloadURL: "https://x/nam"},
 	}})
-	installed := map[string]string{"resonance-suppressor": "0.2.0"} // update available
+	installed := map[string]string{
+		model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser): "0.2.0",
+	}
 	return release.Reconcile("2026.2", manifest, assets, nil, installed, nil)
 }
 
@@ -46,11 +48,13 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 	if m.screen != screenPlugins {
 		t.Fatalf("after discovery, screen = %v, want plugins", m.screen)
 	}
-	// resonance-suppressor has an update -> pre-selected; nam-player not.
-	if !m.selected["resonance-suppressor"] {
+	// tn-resonance-suppressor has an update -> pre-selected; nam-player not.
+	rsKey := model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser)
+	namKey := model.EntryKey("nam-player", model.VariantStable, "")
+	if !m.selected[rsKey] {
 		t.Error("update-available plugin should be pre-selected")
 	}
-	if m.selected["nam-player"] {
+	if m.selected[namKey] {
 		t.Error("fresh plugin should not be pre-selected")
 	}
 
@@ -59,8 +63,8 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 	if m.screen != screenFormats {
 		t.Fatalf("screen = %v, want formats", m.screen)
 	}
-	if len(m.formatOpts) != 2 {
-		t.Errorf("macOS should offer VST3+AU, got %v", m.formatOpts)
+	if len(m.formatOpts) != 3 {
+		t.Errorf("macOS should offer VST3+AU+CLAP, got %v", m.formatOpts)
 	}
 
 	// enter -> scope
@@ -78,7 +82,7 @@ func TestFlowDiscoverToConfirm(t *testing.T) {
 		t.Fatal("confirm screen should have plan items")
 	}
 	for _, it := range m.items {
-		if it.Slug != "resonance-suppressor" {
+		if it.Slug != "tn-resonance-suppressor" {
 			t.Errorf("unexpected item slug %q", it.Slug)
 		}
 		if it.Action != "update" {
@@ -97,9 +101,10 @@ func TestSelectAllUpdatable(t *testing.T) {
 	m = step(t, m, discoveredMsg{cat: fakeCatalog()})
 
 	// Deselect everything by toggling the pre-selected one off, then 'a'.
-	m.selected["resonance-suppressor"] = false
+	rsKey := model.EntryKey("tn-resonance-suppressor", model.VariantStable, model.ScopeUser)
+	m.selected[rsKey] = false
 	m = step(t, m, keyPress("a"))
-	if !m.selected["resonance-suppressor"] {
+	if !m.selected[rsKey] {
 		t.Error("'a' should select all updatable plugins")
 	}
 }

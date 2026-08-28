@@ -22,7 +22,7 @@ func atPlugins(t *testing.T) Model {
 	return m
 }
 
-// atConfirm walks the flow to the confirm screen with resonance-suppressor
+// atConfirm walks the flow to the confirm screen with tn-resonance-suppressor
 // selected (pre-selected because it has an update) and both formats on.
 func atConfirm(t *testing.T) Model {
 	t.Helper()
@@ -103,11 +103,11 @@ func TestPluginCursorAndToggle(t *testing.T) {
 		t.Errorf("cursor = %d, want clamped to %d", m.cursor, len(list)-1)
 	}
 	// Toggle flips the plugin under the cursor.
-	slug := list[m.cursor].Slug
-	before := m.selected[slug]
+	key := RowKey(list[m.cursor])
+	before := m.selected[key]
 	m = step(t, m, keyPress("space"))
-	if m.selected[slug] == before {
-		t.Errorf("toggle did not flip %q", slug)
+	if m.selected[key] == before {
+		t.Errorf("toggle did not flip %q", key)
 	}
 }
 
@@ -297,9 +297,10 @@ func TestViewsRenderAcrossScreens(t *testing.T) {
 	}
 }
 
-func TestWindowsOffersOnlyVST3(t *testing.T) {
+func TestWindowsOffersVST3AndCLAP(t *testing.T) {
 	m := New(nil, model.OSWindows)
-	if got := m.osFormats(); len(got) != 1 || got[0] != model.FormatVST3 {
-		t.Errorf("Windows osFormats = %v, want [VST3]", got)
+	got := m.osFormats()
+	if len(got) != 2 || got[0] != model.FormatVST3 || got[1] != model.FormatCLAP {
+		t.Errorf("Windows osFormats = %v, want [VST3 CLAP]", got)
 	}
 }

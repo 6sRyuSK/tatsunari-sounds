@@ -22,13 +22,13 @@ description: Add or change factory presets on an existing plugin in this repo (P
 
 | プラグイン | テーブル | 備考 |
 |---|---|---|
-| pitch-fix | `plugins/pitch-fix/PfPresets.h`(`pitch_fix_presets`) | clap-first 生まれ。現行形の見本 |
-| resonance-suppressor | `plugins/resonance-suppressor/Source/FactoryPresets.h` | ↓ |
-| dynamic-eq | `plugins/dynamic-eq/Source/FactoryPresets.h` | ↓ |
+| tn-vocal-tuner | `plugins/tn-vocal-tuner/PfPresets.h`(`pitch_fix_presets`) | clap-first 生まれ。現行形の見本 |
+| tn-resonance-suppressor | `plugins/tn-resonance-suppressor/Source/FactoryPresets.h` | ↓ |
+| tn-equalizer | `plugins/tn-equalizer/Source/FactoryPresets.h` | ↓ |
 
-**RS と dynamic-eq のバンクは `Source/` の下にあるが出荷シェルが include している**
-(`plugins/dynamic-eq/shell/ClapEntry.cpp:30`、
-`plugins/resonance-suppressor/shell/ClapEntry.cpp:34-36`)。「`Source/` はオラクル専用」
+**RS と tn-equalizer のバンクは `Source/` の下にあるが出荷シェルが include している**
+(`plugins/tn-equalizer/shell/ClapEntry.cpp:30`、
+`plugins/tn-resonance-suppressor/shell/ClapEntry.cpp:34-36`)。「`Source/` はオラクル専用」
 という一般規則の**例外**で、ここを「触っても出荷に影響しない」と誤読すると出荷
 バイナリを壊す。
 
@@ -96,12 +96,12 @@ namespace <slug>_presets
 ### 除外リスト(hard rule, D4)— プリセットが触ってはいけない id
 
 - `bypass` は**全機種で除外**(プリセットで音を止めない)。
-- モニタ系(RS の `delta` / `scListen`、dynamic-eq の帯域 `b<N>_lsn` listen)。
+- モニタ系(RS の `delta` / `scListen`、tn-equalizer の帯域 `b<N>_lsn` listen)。
   除外は**完全一致**なので、帯域ループで生成する id は**全帯域分を明示列挙**する。
 - **レイテンシ/CPU トレードオフ、および外部ルーティングの有効化**(RS の `quality`、
   `scEnable`)。プリセット切替がホストの PDC を勝手に再ネゴシエートしたり、ユーザーが
   配線したサイドチェインを勝手に有効化してはいけない。
-- **ユーザーの音楽的コンテキスト**(pitch-fix の `key` / `scale` / `a4`)。曲のキー設定は
+- **ユーザーの音楽的コンテキスト**(tn-vocal-tuner の `key` / `scale` / `a4`)。曲のキー設定は
   プリセットの持ち物ではない。
 - **ユーザーのロード状態に依存する機能 param**(モデル/IR のスロット等)。プリセットは
   ユーザーが組んだ構成を戻さない。
@@ -141,7 +141,7 @@ static std::vector<std::string> excludeIds()
 ## 4. `tests/preset_test.cpp`(headless wiring テスト, D5)
 
 現行形は **JUCE を link しない** console app(`factory_params` + `factory_presets`
-のみ)。見本は `plugins/pitch-fix/tests/preset_test.cpp`。
+のみ)。見本は `plugins/tn-vocal-tuner/tests/preset_test.cpp`。
 **アサーション/tolerance/oracle の緩和は Ask a human #2。**
 
 ゲートする項目:
@@ -154,13 +154,13 @@ static std::vector<std::string> excludeIds()
 6. `PresetSession` の振る舞い: `numPrograms() == 1 + N`、各プログラム適用直後は
    `isDirty()` が false、除外 param が**適用前の値のまま**、代表プリセットの狙った
    値が入る、Init で管理 param が default に戻る。
-7. その機種固有の構造契約があるならそれも(例 pitch-fix の「performance 系は buffer
+7. その機種固有の構造契約があるならそれも(例 tn-vocal-tuner の「performance 系は buffer
    だけを書く / sound 系は buffer を Normal に固定」)。
 
 CMake は `add_executable` + `add_test` で登録(既存ブロックを踏襲)。
 **既存 DSP テストには触らない。**
 
-> **RS / dynamic-eq は加えて JUCE リンク版 `preset_test` を持つ**
+> **RS / tn-equalizer は加えて JUCE リンク版 `preset_test` を持つ**
 > (`FACTORY_JUCE_ORACLES` の裏、`juce_add_console_app`)。これはオラクル側 —
 > APVTS レイアウトとの **paramdesc parity** をビット単位で見る。プリセットを足すとき
 > `Source/FactoryPresets.h` を変えたなら、そのテストの期待プログラム数も更新する。
@@ -173,7 +173,7 @@ CMake は `add_executable` + `add_test` で登録(既存ブロックを踏襲)�
 3. ビルド + 対象プラグインの ctest 全レート緑(既存 DSP + preset_test)。CTest は
    `FACTORY_JUCE_ORACLES` を **ON のまま**回す。
 4. **出荷済み機種なら `docs/manual/<name>.md` のプリセット節も更新**(現在 RS と
-   dynamic-eq の 2 本)。
+   tn-equalizer の 2 本)。
 5. プログラム数が変わると**ホスト側のプログラム index がずれる**(既存セッションが
    別のプリセットを指す)。末尾に足すのが原則で、順序を変える場合は PR 本文に明記。
 6. コミット: `feat(<slug>): ファクトリープリセットN種を追加` の形式。

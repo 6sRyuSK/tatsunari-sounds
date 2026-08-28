@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://6sryusk.com/tatsunarisounds/schemas/updates/v1/latest.schema.json",
+  "title": "tatsunarisounds/updates/v1 latest.json",
+  "type": "object",
+  "required": ["schema", "generated", "plugins"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": 1 },
+    "generated": { "type": "string", "format": "date-time" },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slug", "latest"],
+        "additionalProperties": true,
+        "properties": {
+          "slug": { "type": "string", "minLength": 1 },
+          "latest": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+          "highlights": { "type": "array", "items": { "type": "string" } },
+          "changelogUrl": { "type": "string", "format": "uri" }
+        }
+      }
+    }
+  }
+}
