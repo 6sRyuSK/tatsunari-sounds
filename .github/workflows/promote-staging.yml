@@ -1,15 +1,33 @@
-# Staging promote skeleton (plan §5 / Phase B).
-# Default is --dry-run: no R2 credentials required. Real upload stays behind
-# Ask-a-human (secrets + Environment approvers + minisign production keys).
+# Staging promote drill (plan §5 "promote", §8 Phase B).
+#
+# Always runs `publish --store memory`: the same eight steps, the same refusals,
+# the same read-back verification — only the bytes land in a dict instead of R2.
+# No credentials, no secrets, nothing published. A REAL promote (`--store s3`,
+# `--sign`) stays behind Ask-a-human: R2 secrets, GitHub Environment approvers
+# and the production minisign keys are all human-held.
+#
+# Inputs: give it a GitHub Actions artifact holding real release zips + built
+# installer binaries when you have one. With no artifact it drills the code path
+# against a generated placeholder set (tools/promote/rehearsal.py) — enough to
+# catch a broken promote, NOT enough to be a release rehearsal, and the runbook
+# says so.
 name: promote-staging
 
 on:
   workflow_dispatch:
     inputs:
       artifacts_artifact_name:
-        description: "GitHub Actions artifact name to download (optional; empty = empty dry-run)"
+        description: "Actions artifact with release zips (optional; empty = placeholder drill)"
         required: false
         default: ""
+      installer_artifact_name:
+        description: "Actions artifact with installer binaries (optional)"
+        required: false
+        default: ""
+      installer_version:
+        description: "Version for the installer binaries (their immutable path)"
+        required: false
+        default: "0.0.0-rehearsal"
       channel:
         description: "Release channel"
         required: false
@@ -17,29 +35,58 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  dry-run:
+  drill:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare artifacts dir
-        run: |
-          mkdir -p /tmp/promote-artifacts /tmp/promote-out
-          if [ -n "${{ inputs.artifacts_artifact_name }}" ]; then
-            echo "Artifact download reserved for when release.yml publishes named artifacts."
-          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Dry-run promote plan
+      - name: Prepare directories
+        run: mkdir -p /tmp/promote-artifacts /tmp/promote-installer /tmp/promote-out
+
+      - name: Download release artifacts
+        if: inputs.artifacts_artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifacts_artifact_name }}
+          path: /tmp/promote-artifacts
+
+      - name: Download installer binaries
+        if: inputs.installer_artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.installer_artifact_name }}
+          path: /tmp/promote-installer
+
+      # promote refuses an empty or unrecognised input set on purpose, so a
+      # drill with nothing to promote needs a generated set rather than an empty
+      # directory. These files say "NOT A RELEASE" in their own bytes.
+      - name: Generate placeholder set (only when nothing was supplied)
+        if: inputs.artifacts_artifact_name == ''
         run: |
-          python3 tools/promote/promote.py --dry-run \
+          python3 tools/promote/rehearsal.py \
             --artifacts-dir /tmp/promote-artifacts \
+            --installer-dir /tmp/promote-installer \
+            --installer-version "${{ inputs.installer_version }}"
+
+      - name: Promote drill (--store memory)
+        run: |
+          python3 tools/promote/promote.py publish \
+            --store memory \
+            --artifacts-dir /tmp/promote-artifacts \
+            --installer-dir /tmp/promote-installer \
+            --installer-version "${{ inputs.installer_version }}" \
             --out-dir /tmp/promote-out \
             --channel "${{ inputs.channel }}"
 
-      - name: Upload plan
+      - name: Upload generated manifests
         uses: actions/upload-artifact@v4
         with:
-          name: promote-staging-plan
+          name: promote-staging-manifests
           path: /tmp/promote-out

@@ -35,35 +35,68 @@ smoke も**同じコードパス**を通り、バイト列の置き場所だけ�
 ## 1. 演習 A: promote
 
 ```bash
-python tools/promote/promote.py publish \
-    --artifacts-dir <release zips> --out-dir out/ --store memory
+# 実 zip がある場合
+python tools/promote/promote.py publish --store memory \
+    --artifacts-dir <release zips> \
+    --installer-dir <installer binaries> --installer-version <ver> \
+    --out-dir out/
+
+# 実 zip がまだ無い場合（コードパスだけの演習。生成物は「NOT A RELEASE」）
+python tools/promote/rehearsal.py \
+    --artifacts-dir /tmp/art --installer-dir /tmp/inst --installer-version 0.0.0-rehearsal
+python tools/promote/promote.py publish --store memory \
+    --artifacts-dir /tmp/art --installer-dir /tmp/inst \
+    --installer-version 0.0.0-rehearsal --out-dir out/
 ```
+
+`.github/workflows/promote-staging.yml`（`workflow_dispatch`）が上をそのまま回す。
 
 本番（Phase F 以降）は GitHub Environment の人間承認付き workflow から:
 
 ```bash
 python tools/promote/promote.py publish \
-    --artifacts-dir dist/ --out-dir out/ \
+    --artifacts-dir dist/ --installer-dir dist-installer/ --installer-version <ver> \
+    --out-dir out/ \
     --store s3 --bucket tatsunari-sounds --endpoint-url "$R2_ENDPOINT" \
     --sign --public-key "$MINISIGN_PUBLIC_KEY"
 ```
+
+**`--installer-dir` を省いてよいのは、公開済み catalog に `client` セクションが
+既にあるときだけ**。`catalog.json` の `client.assets[]` は bootstrap ワンライナーが
+インストーラ本体を解決する先で、これを欠いた catalog を公開すると全 OS で
+`curl | sh` / `irm | iex` が止まる。省略時は前回 catalog から引き継ぎ、どちらも
+無ければ promote は**拒否する**。
 
 8 ステップと、各ステップの**中断条件**:
 
 | # | ステップ | 中断する条件 | 中断時の状態 |
 |---|---|---|---|
-| 1 | validate | zip 名が規約外 / 未知 slug / 1 plugin に複数バージョン | 何も起きていない |
+| 1 | validate | zip / installer 名が規約外 / 未知 slug / 1 plugin に複数バージョン | 何も起きていない |
 | 2 | upload immutable | 既存 key に**別の digest** | 既存オブジェクトは無傷 |
 | 3 | read-back verify | 再取得の digest 不一致 / 取得不能 | manifest 未生成 |
-| 4 | generate manifest | plugin.toml と ID 表の不一致 | ローカル出力のみ |
-| 5 | sign | `--sign` なのに鍵が空 / 公開鍵未指定 / `minisign` 不在 | 何も公開していない |
-| 6 | upload manifest | `catalog.json` の PUT 失敗 | **pointer は旧のまま** |
-| 7 | smoke | latest と catalog の不一致 / 参照先オブジェクト欠落 / 自己署名が検証できない | **pointer は旧のまま** |
+| 4 | generate manifest | plugin.toml と ID 表の不一致 / `client` を引き継げない | ローカル出力のみ |
+| 5 | sign | `--sign` なのに鍵が空 / 公開鍵未指定 / `minisign` 不在 / **自己署名が検証できない** | 何も公開していない |
+| 6 | smoke（公開前） | latest と catalog の不一致 / 参照先オブジェクト欠落 / client asset 欠落 / 署名欠落 | **何も公開していない** |
+| 7 | upload manifest | `catalog.json` の PUT 失敗 | **pointer は旧のまま** |
 | 8 | pointer switch | 旧 pointer の history 退避に失敗 | pointer 未切替 |
 
-**設計上の要点**: 7 まで落ちても本番は動き続ける。ユーザに見える変化は 8 だけで、
-その 8 は「旧 pointer を history に退避してから切り替える」。だから rollback は
-「再ビルド」ではなく「署名済みの既知良好ドキュメントの再公開」になる。
+**設計上の要点**:
+
+- **7 まで落ちても本番は動き続ける。** ユーザに見える変化は 8 だけで、その 8 は
+  「旧 pointer を history に退避してから切り替える」。だから rollback は
+  「再ビルド」ではなく「署名済みの既知良好ドキュメントの再公開」になる。
+- **smoke は公開の前。** 計画 §5 は `upload manifest → smoke` と書いているが、
+  それだけでは足りなかった: `latest.json` を最後に切り替えても、**TUI インストーラは
+  `catalog.json` を直接読む**ので、smoke で落ちる catalog は既に配信されている。
+  現在は候補バイト列に対して公開前に smoke を通し、catalog 公開後にもう一度回す。
+- **署名は最初のバイトを公開する前に作って検証する。** 文書を先に置くと、
+  (a) 新文書 + 旧署名が配信される窓ができ、(b) その後 `minisign` や署名 PUT が
+  失敗すると、その不整合が「窓」ではなく**公開状態そのもの**として残る。署名は
+  何も触っていない段階で作るので、ここでの失敗はコストゼロ。
+- **署名は文書より先にアップロードする。** 2 オブジェクトを原子的に入れ替えられない
+  以上どちらかの順序を選ぶしかなく、この順なら「署名の無い文書」は決して公開されない。
+  残るのは逆の組（旧文書 + 新署名）で、クライアントには検証失敗として見え、再取得で
+  解消する。pointer が短 TTL なのはこの再取得を安くするためでもある。
 
 **確認すること**:
 
@@ -71,6 +104,9 @@ python tools/promote/promote.py publish \
 - [ ] `signed: true`（本番）/ `false` と理由（演習）が明示されている
 - [ ] 同じコマンドを**もう一度**流して、すべて `skip (identical)` になる（再実行安全）
 - [ ] artifact の key を 1 つ選び、中身を 1 バイト変えて再実行 → **step 2 で停止**する
+- [ ] 生成された `catalog.json` に `client.assets[]` が 3 件あり、それぞれが store に
+      存在する（無いと `curl | sh` が全 OS で止まる）
+- [ ] `--installer-dir` を省いた 2 回目の promote で `client` が引き継がれている
 
 最後の項目は演習の本体。ここが素通りするなら immutable の保証は無い。
 

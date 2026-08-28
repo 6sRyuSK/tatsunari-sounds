@@ -289,8 +289,11 @@ func TestDowngradeAndStateCompat(t *testing.T) {
 //
 // Regenerate after changing tools/promote/manifest.py:
 //
-//	python3 tools/promote/promote.py publish \
-//	    --artifacts-dir <dir of release zips> --out-dir /tmp/promote --store memory
+//	python3 tools/promote/rehearsal.py \
+//	    --artifacts-dir /tmp/art --installer-dir /tmp/inst --installer-version 1.0.0
+//	python3 tools/promote/promote.py publish --store memory \
+//	    --artifacts-dir /tmp/art --installer-dir /tmp/inst --installer-version 1.0.0 \
+//	    --out-dir /tmp/promote
 //	cp /tmp/promote/latest.json  tools/installer/testdata/updates/v1/latest_promote_generated.json
 //	cp /tmp/promote/catalog.json tools/installer/testdata/updates/v1/catalog_promote_generated.json
 func TestPromoteGeneratedDocumentsParseCleanly(t *testing.T) {
@@ -332,5 +335,18 @@ func TestPromoteGeneratedDocumentsParseCleanly(t *testing.T) {
 	}
 	if assets == 0 {
 		t.Error("promote's catalog.json yielded no installable assets")
+	}
+
+	// The client section is what tools/installer/bootstrap/install.{sh,ps1}
+	// resolve the executable from. A catalog that parses but has no client
+	// assets is a `curl | sh` that cannot find an installer to download.
+	if rc.Doc.Client == nil || len(rc.Doc.Client.Assets) == 0 {
+		t.Fatal("promote's catalog.json carried no client assets: the published " +
+			"one-liners would have nothing to download")
+	}
+	for _, a := range rc.Doc.Client.Assets {
+		if a.URL == "" || a.SHA256 == "" {
+			t.Errorf("client asset missing url/sha256: %+v", a)
+		}
 	}
 }

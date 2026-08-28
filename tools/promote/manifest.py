@@ -60,6 +60,19 @@ TARGETS = {
     "Windows":    ("vst3", "windows", "x86_64",    "VST3/tatsunari-sounds"),
 }
 
+# The TUI installer's own binaries, from installer.yml's build matrix
+# (plan §11.5). These are the `client.assets[]` of catalog.json and are what the
+# bootstrap one-liners resolve the executable from — publish a catalog without
+# them and `curl | sh` stops working on every platform.
+#
+# NOTE the arch vocabulary: a CLIENT asset uses amd64/arm64, while a PLUGIN
+# asset uses universal/x86_64/arm64. parse.go validates the two sets
+# separately; they are not interchangeable.
+INSTALLER_RE = re.compile(
+    r"^tatsunari-sounds-installer-(?P<os>darwin|windows)-(?P<arch>amd64|arm64)(?P<ext>\.exe)?$"
+)
+INSTALLER_OS = {"darwin": "macos", "windows": "windows"}
+
 # Bundle extension per format, used to name the bundle inside the zip.
 BUNDLE_EXT = {"vst3": ".vst3", "au": ".component", "clap": ".clap"}
 
@@ -89,6 +102,26 @@ class Artifact:
     @property
     def url(self) -> str:
         return f"{ARTIFACT_BASE}/{self.slug}/{self.version}/{self.path.name}"
+
+
+@dataclass
+class ClientAsset:
+    """One installer binary that will appear in catalog.json's `client.assets`."""
+
+    path: Path
+    version: str
+    os_id: str
+    arch: str
+    sha256: str
+    size: int
+
+    @property
+    def object_key(self) -> str:
+        return f"artifacts/installer/{self.version}/{self.path.name}"
+
+    @property
+    def url(self) -> str:
+        return f"{ARTIFACT_BASE}/installer/{self.version}/{self.path.name}"
 
 
 @dataclass
@@ -206,6 +239,59 @@ def collect_artifacts(artifacts_dir: Path, sha256_file) -> list[Artifact]:
     return artifacts
 
 
+def collect_installer_assets(installer_dir: Path, version: str,
+                             sha256_file) -> list[ClientAsset]:
+    """Every installer binary under installer_dir, in a stable order.
+
+    Same refusal as collect_artifacts: an unrecognised file is an error, not a
+    skip. A silently-dropped installer binary is a platform whose one-liner
+    install stops working, and nothing downstream would notice.
+    """
+    if not installer_dir.is_dir():
+        raise ManifestError(f"installer dir not found: {installer_dir}")
+
+    assets: list[ClientAsset] = []
+    unknown: list[str] = []
+    for path in sorted(installer_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        m = INSTALLER_RE.match(path.name)
+        if not m:
+            unknown.append(path.name)
+            continue
+        assets.append(ClientAsset(
+            path=path, version=version, os_id=INSTALLER_OS[m.group("os")],
+            arch=m.group("arch"), sha256=sha256_file(path), size=path.stat().st_size,
+        ))
+    if unknown:
+        raise ManifestError(
+            "installer dir holds files that are not installer binaries: "
+            + ", ".join(sorted(unknown))
+            + f". Expected {INSTALLER_RE.pattern}."
+        )
+    if not assets:
+        raise ManifestError(f"no installer binaries found under {installer_dir}")
+    return assets
+
+
+def build_client(assets: list[ClientAsset], *, version: str) -> dict:
+    """The catalog's `client` section (schemas/updates/v1/catalog.schema.json)."""
+    return {
+        "latest": version,
+        "changelogUrl": f"{NOTES_BASE}/installer/{version}.md",
+        "assets": [
+            {
+                "os": a.os_id,
+                "arch": a.arch,
+                "url": a.url,
+                "size": a.size,
+                "sha256": a.sha256,
+            }
+            for a in sorted(assets, key=lambda x: (x.os_id, x.arch))
+        ],
+    }
+
+
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z")
@@ -236,12 +322,21 @@ def build_latest(artifacts: list[Artifact], meta: dict[str, PluginMeta],
 
 def build_catalog(artifacts: list[Artifact], meta: dict[str, PluginMeta],
                   *, channel: str = "stable", generated: str | None = None,
-                  previous: dict | None = None) -> dict:
+                  previous: dict | None = None, client: dict | None = None) -> dict:
     """The richer document the TUI installer reads.
 
-    `previous` is the currently-published catalog. Versions already in it are
-    CARRIED OVER: a promote publishes one version, it does not retract the ones
-    already installed on people's machines (plan §8 "compatibility と rollback").
+    `previous` is the currently-published catalog. Two things are CARRIED OVER
+    from it, for the same reason: a promote publishes what it was given, it does
+    not retract what it was not given.
+
+      * plugin VERSIONS already published — they are installed on people's
+        machines (plan §8 "compatibility と rollback");
+      * the `client` section — the installer binaries. This one is load-bearing
+        in a way that is easy to miss: `tools/installer/bootstrap/install.sh`
+        and `install.ps1` resolve the executable to download from
+        `catalog.json`'s `client.assets[]`. Publishing a catalog without it
+        breaks `curl | sh` and `irm | iex` on every platform at once, and
+        nothing else in the pipeline would notice.
     """
     by_slug: dict[str, list[Artifact]] = {}
     for a in artifacts:
@@ -291,12 +386,24 @@ def build_catalog(artifacts: list[Artifact], meta: dict[str, PluginMeta],
             "versions": versions,
         })
 
-    return {
+    doc = {
         "schema": SCHEMA_VERSION,
         "generated": generated or _now_iso(),
         "channels": [{"id": channel, "name": {"en": channel.capitalize()}}],
         "plugins": plugins,
     }
+
+    resolved_client = client if client is not None else (previous or {}).get("client")
+    if not resolved_client:
+        raise ManifestError(
+            "the catalog would have no `client` section, so the published "
+            "one-liners could not resolve an installer to download and "
+            "`curl | sh` / `irm | iex` would stop working. Pass "
+            "--installer-dir with the built installer binaries, or promote "
+            "against a catalog that already carries a client section."
+        )
+    doc["client"] = resolved_client
+    return doc
 
 
 def _require_meta(meta: dict[str, PluginMeta], slug: str) -> PluginMeta:

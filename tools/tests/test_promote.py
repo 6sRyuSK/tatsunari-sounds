@@ -36,10 +36,29 @@ CLIENT_PLUGIN_ARCH = {"universal", "x86_64", "arm64"}
 CLIENT_FORMATS = {"vst3", "au", "clap"}
 
 
+# The CLIENT-asset enums, which are a DIFFERENT set from the plugin-asset ones
+# above. parse.go validates them separately; conflating the two is how an asset
+# gets silently dropped.
+CLIENT_BINARY_ARCH = {"amd64", "arm64"}
+
+INSTALLER_NAMES = [
+    "tatsunari-sounds-installer-darwin-arm64",
+    "tatsunari-sounds-installer-darwin-amd64",
+    "tatsunari-sounds-installer-windows-amd64.exe",
+]
+INSTALLER_VERSION = "1.0.0"
+
+
 def write_zips(root: Path, names) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for n in names:
         (root / n).write_bytes(f"payload-{n}".encode())
+
+
+def write_installers(root: Path, names=None) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for n in (names if names is not None else INSTALLER_NAMES):
+        (root / n).write_bytes(f"binary-{n}".encode())
 
 
 class _Args:
@@ -54,15 +73,27 @@ class _Args:
         self.public_key = None
         self.quiet = True
         self.channel = "stable"
+        self.installer_dir = None
+        self.installer_version = None
         self.__dict__.update(kw)
 
 
-def run_publish(tmp: Path, names, store=None):
-    """Publish `names` into a store, returning (store, out_dir)."""
+def run_publish(tmp: Path, names, store=None, *, installers=True, **kw):
+    """Publish `names` into a store, returning (store, out_dir).
+
+    Installer binaries are included by default because a catalog without a
+    `client` section is refused — the bootstrap one-liners resolve the
+    executable from it.
+    """
     art, out = tmp / "art", tmp / "out"
     write_zips(art, names)
     out.mkdir(parents=True, exist_ok=True)
-    args = _Args(artifacts_dir=str(art), out_dir=str(out))
+    extra = {}
+    if installers:
+        inst = tmp / "inst"
+        write_installers(inst)
+        extra = {"installer_dir": str(inst), "installer_version": INSTALLER_VERSION}
+    args = _Args(artifacts_dir=str(art), out_dir=str(out), **extra, **kw)
     store = store or MemoryStore()
     promote.make_store = lambda _a, _s=store: _s  # inject
     rc = promote.cmd_publish(args)
@@ -382,6 +413,184 @@ class SigningWiringTest(unittest.TestCase):
         self.assertIn("rehearsal", s.describe())
         self.assertIsNone(s.sign(b"x"))
         self.assertFalse(s.verify(b"x", b"y"))
+
+
+# ── Codex review round 3: four ways a promote could publish something broken ──
+
+
+class _FakeSigner:
+    """A Signer without minisign. Only the four members promote touches."""
+
+    def __init__(self, *, works=True, verifies=True):
+        self.enabled = True
+        self.reason = ""
+        self._works = works
+        self._verifies = verifies
+
+    def sign(self, data: bytes):
+        return b"sig:" + data[:8] if self._works else None
+
+    def verify(self, data: bytes, sig: bytes) -> bool:
+        return self._verifies
+
+    def describe(self) -> str:
+        return "fake signer"
+
+
+class _RecordingStore(MemoryStore):
+    """MemoryStore that remembers the ORDER of writes."""
+
+    def __init__(self):
+        super().__init__()
+        self.put_order: list[str] = []
+
+    def put(self, key, data, *, content_type, cache_control):
+        self.put_order.append(key)
+        super().put(key, data, content_type=content_type, cache_control=cache_control)
+
+
+class SignatureOrderingTest(unittest.TestCase):
+    """A document must never be live without a signature that matches it."""
+
+    def test_the_signature_is_written_before_its_document(self):
+        # Document-first leaves a window where the new JSON is served with the
+        # OLD signature, and — if the signature write then fails — leaves that
+        # mismatch permanently published.
+        store = _RecordingStore()
+        promote.publish_document(store, "updates/v1/latest.json", b"{}", b"sig",
+                                 lambda _m: None)
+        self.assertEqual(store.put_order,
+                         ["updates/v1/latest.json.minisig", "updates/v1/latest.json"])
+
+    def test_a_signature_that_does_not_verify_stops_before_anything_is_published(self):
+        signer = _FakeSigner(verifies=False)
+        with self.assertRaises(promote.PromoteError) as ctx:
+            promote.sign_document(signer, "updates/v1/latest.json", b"{}", lambda _m: None)
+        self.assertIn("nothing has been published", str(ctx.exception).lower())
+
+    def test_a_signer_that_produces_nothing_is_a_hard_stop(self):
+        signer = _FakeSigner(works=False)
+        with self.assertRaises(promote.PromoteError):
+            promote.sign_document(signer, "updates/v1/latest.json", b"{}", lambda _m: None)
+
+    def test_an_unsigned_promote_writes_no_signature_object(self):
+        store = _RecordingStore()
+        promote.publish_document(store, "updates/v1/latest.json", b"{}", None,
+                                 lambda _m: None)
+        self.assertEqual(store.put_order, ["updates/v1/latest.json"])
+
+
+class SmokeBeforePublishTest(unittest.TestCase):
+    """The TUI installer reads catalog.json directly, so it must never be
+    published before smoke has passed."""
+
+    def test_smoke_runs_before_the_catalog_is_uploaded(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            store = _RecordingStore()
+            run_publish(tmp, ["tn-equalizer-v0_1_0-macOS-VST3.zip"], store=store)
+            order = store.put_order
+            self.assertIn("updates/v1/catalog.json", order)
+            self.assertIn("updates/v1/latest.json", order)
+            self.assertLess(order.index("updates/v1/catalog.json"),
+                            order.index("updates/v1/latest.json"),
+                            "the pointer is still switched last")
+
+    def test_a_broken_candidate_never_reaches_the_store(self):
+        # Delete an artifact out from under the catalog: smoke must catch it
+        # while the catalog is still only bytes in memory.
+        store = _RecordingStore()
+        latest = {"plugins": [{"slug": "tn-equalizer", "latest": "0.1.0"}]}
+        catalog = {
+            "plugins": [{"slug": "tn-equalizer", "latest": "0.1.0", "versions": [
+                {"version": "0.1.0", "assets": [{
+                    "url": f"{mf.BASE_URL}/artifacts/tn-equalizer/0.1.0/gone.zip",
+                    "sha256": "a" * 64}]}]}],
+            "client": {"latest": "1.0.0", "assets": [{
+                "url": f"{mf.BASE_URL}/artifacts/installer/1.0.0/x", "sha256": "b" * 64}]},
+        }
+        with self.assertRaises(promote.PromoteError) as ctx:
+            promote.smoke(store, latest, catalog, [], {}, _FakeSigner(), lambda _m: None)
+        self.assertIn("not in the store", str(ctx.exception))
+        self.assertEqual(store.put_order, [], "nothing may be written by smoke")
+
+
+class ClientAssetTest(unittest.TestCase):
+    """catalog.json's client.assets is what `curl | sh` resolves the installer
+    from. A catalog without it is a broken one-liner on every platform."""
+
+    def test_a_catalog_without_client_assets_is_refused(self):
+        art = mf.Artifact(
+            path=Path("/x.zip"), slug="tn-equalizer", version="0.1.0", fmt="vst3",
+            os_id="macos", arch="universal", subpath="VST3/tatsunari-sounds",
+            sha256="c" * 64, size=1)
+        meta = mf.load_plugin_meta()
+        with self.assertRaises(mf.ManifestError) as ctx:
+            mf.build_catalog([art], meta)
+        self.assertIn("client", str(ctx.exception))
+
+    def test_the_client_section_is_carried_over_from_the_published_catalog(self):
+        # A promote that ships only plugins must not drop the installer.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            store, _ = run_publish(tmp / "a", ["tn-equalizer-v0_1_0-macOS-VST3.zip"])
+            first = json.loads(store.get("updates/v1/catalog.json"))
+            run_publish(tmp / "b", ["tn-equalizer-v0_1_0-Windows.zip"],
+                        store=store, installers=False)
+            second = json.loads(store.get("updates/v1/catalog.json"))
+            self.assertEqual(second["client"], first["client"])
+
+    def test_published_client_assets_match_the_schema_and_the_client_enums(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store, _ = run_publish(Path(td), ["tn-equalizer-v0_1_0-macOS-VST3.zip"])
+            catalog = json.loads(store.get("updates/v1/catalog.json"))
+            client = catalog["client"]
+            self.assertEqual(client["latest"], INSTALLER_VERSION)
+            self.assertEqual(len(client["assets"]), len(INSTALLER_NAMES))
+            for a in client["assets"]:
+                self.assertIn(a["os"], CLIENT_OS)
+                # NOT the plugin arch set: a client asset uses amd64/arm64.
+                self.assertIn(a["arch"], CLIENT_BINARY_ARCH)
+                self.assertTrue(a["url"].startswith(f"{mf.BASE_URL}/artifacts/installer/"))
+                self.assertRegex(a["sha256"], r"^[a-f0-9]{64}$")
+                # And the object it names must really be in the store.
+                self.assertIsNotNone(store.head(a["url"].split(mf.BASE_URL + "/")[1]))
+
+    def test_an_unrecognised_file_in_the_installer_dir_is_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            write_installers(d, ["tatsunari-sounds-installer-darwin-arm64", "notes.txt"])
+            with self.assertRaises(mf.ManifestError):
+                mf.collect_installer_assets(d, "1.0.0", sha256_file)
+
+
+class StoreErrorTest(unittest.TestCase):
+    """An unreadable object is not an absent one."""
+
+    def test_only_a_real_404_reads_as_missing(self):
+        from store import _is_not_found
+        self.assertTrue(_is_not_found("An error occurred (404) ... : Not Found"))
+        self.assertTrue(_is_not_found("An error occurred (NoSuchKey) ..."))
+        for real_fault in ("Could not connect to the endpoint URL",
+                           "An error occurred (AccessDenied) when calling GetObject",
+                           "An error occurred (InternalError) ... 500",
+                           "Read timeout on endpoint URL"):
+            self.assertFalse(_is_not_found(real_fault), real_fault)
+
+    def test_a_read_fault_must_not_look_like_a_first_publish(self):
+        # archive_current_pointer() reads KeyError as "nothing to archive". If a
+        # transient read fault produced one, the promote would overwrite the
+        # live pointer without saving it, and rollback would have no target.
+        class Faulty(MemoryStore):
+            def get(self, key):
+                raise RuntimeError("AccessDenied")
+
+        with self.assertRaises(RuntimeError):
+            promote.archive_current_pointer(Faulty(), "20260101T000000Z", lambda _m: None)
 
 
 if __name__ == "__main__":

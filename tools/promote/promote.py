@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Publish a release to the updates/v1 feed (plan §5 "promote", §8 Phase B/F).
 
-The eight steps, in the order §5 fixes them:
+The eight steps:
 
     validate → upload immutable assets → read-back verify → generate manifest
-    → sign → upload manifest → smoke test → pointer switch
+    → sign → smoke test → upload manifest → pointer switch
 
-Three properties are load-bearing and are the reason this is a program rather
+§5 writes the order as `… → upload manifest → smoke test → pointer switch`, and
+smoke DOES still run after the catalog upload — but it also has to run before
+it, which is why the numbering here puts it at 6. `latest.json` being switched
+last protects the plugins, not the TUI installer: the installer reads
+`catalog.json` DIRECTLY, so a catalog published before smoke is a catalog
+already being served when smoke finds it broken. Nothing is published that has
+not passed smoke first.
+
+Four properties are load-bearing and are the reason this is a program rather
 than a shell snippet:
 
   * **Immutable objects are never overwritten.** If an artifact key already
@@ -19,6 +27,10 @@ than a shell snippet:
   * **The pointer switch is last and reversible.** The previous pointer is
     archived (with its signature) before the new one goes live, so `rollback`
     is a re-publish of a known-good signed document rather than a rebuild.
+  * **Signatures are produced and verified before the first byte is
+    published.** A document is never live without a signature that matches it,
+    and a `minisign` failure costs nothing because it happens while nothing has
+    been touched.
 
 Modes:
 
@@ -66,6 +78,7 @@ HISTORY_PREFIX = "updates/v1/history/"
 JSON_CONTENT_TYPE = "application/json"
 SIG_CONTENT_TYPE = "text/plain"
 ZIP_CONTENT_TYPE = "application/zip"
+BINARY_CONTENT_TYPE = "application/octet-stream"
 
 
 class PromoteError(RuntimeError):
@@ -75,9 +88,13 @@ class PromoteError(RuntimeError):
 
 # ── step 2/3: immutable artifact upload + read-back ───────────────────────────
 
-def upload_immutable(store: ObjectStore, artifacts: list[mf.Artifact],
-                     log) -> list[str]:
-    """Upload each artifact under its content-addressed-by-convention key.
+def upload_immutable(store: ObjectStore, artifacts, log,
+                     *, content_type: str = ZIP_CONTENT_TYPE) -> list[str]:
+    """Upload each item under its content-addressed-by-convention key.
+
+    Takes anything with `.object_key`, `.path` and `.sha256` — release zips and
+    installer binaries go through the identical path, including the refusal to
+    overwrite.
 
     Returns the keys that were newly written (an already-identical key is a
     no-op, which makes a re-run after a partial failure safe).
@@ -96,13 +113,13 @@ def upload_immutable(store: ObjectStore, artifacts: list[mf.Artifact],
             log(f"  skip (identical)   {a.object_key}")
             continue
         store.put(a.object_key, a.path.read_bytes(),
-                  content_type=ZIP_CONTENT_TYPE, cache_control=IMMUTABLE_CACHE_CONTROL)
+                  content_type=content_type, cache_control=IMMUTABLE_CACHE_CONTROL)
         written.append(a.object_key)
         log(f"  uploaded           {a.object_key}  sha256={a.sha256[:12]}…")
     return written
 
 
-def read_back_verify(store: ObjectStore, artifacts: list[mf.Artifact], log) -> None:
+def read_back_verify(store: ObjectStore, artifacts, log) -> None:
     """Re-download every artifact and re-digest it.
 
     This is deliberately a full read, not a HEAD: the point is to prove the
@@ -155,32 +172,74 @@ def archive_current_pointer(store: ObjectStore, stamp: str, log) -> str | None:
     return history_key
 
 
+def sign_document(signer: signing.Signer, key: str, data: bytes, log) -> bytes | None:
+    """Produce AND verify a document's signature before anything is published.
+
+    Signing has to happen before the first byte of the new document is live.
+    Doing it the other way round has two failure modes, and the second one is
+    permanent:
+
+      * between the document PUT and the signature PUT, clients fetch the NEW
+        document with the OLD signature and reject the release;
+      * if `minisign` or the signature PUT then fails, that mismatch is not a
+        window, it is the published state — a broken release with no operator
+        action left to undo it except a rollback.
+
+    So the signature is made and checked here, while nothing has been touched,
+    and a failure at this point costs nothing.
+    """
+    if not signer.enabled:
+        log(f"  signature          SKIPPED for {key} ({signer.reason})")
+        return None
+    sig = signer.sign(data)
+    if sig is None or not signer.verify(data, sig):
+        raise PromoteError(
+            f"the signature for {key} does not verify against the public key. "
+            "Publishing it would ship a release every client rejects. Nothing "
+            "has been published."
+        )
+    log(f"  signed + verified  {key}.minisig")
+    return sig
+
+
 def publish_document(store: ObjectStore, key: str, data: bytes,
-                     signer: signing.Signer, log) -> None:
-    """Upload a pointer document with the short-TTL policy, plus its signature."""
+                     sig: bytes | None, log) -> None:
+    """Upload a pointer document with the short-TTL policy.
+
+    The SIGNATURE GOES FIRST. Two objects cannot be swapped atomically, so one
+    ordering has to be chosen and defended: with the signature first, the
+    document is never live without a signature that matches it, and the only
+    remaining window is the reverse pair (old document + new signature), which a
+    client sees as a failed verification and retries — the pointer is
+    short-TTL precisely so that retry is cheap.
+    """
+    if sig is not None:
+        store.put(key + ".minisig", sig, content_type=SIG_CONTENT_TYPE,
+                  cache_control=POINTER_CACHE_CONTROL)
+        log(f"  published          {key}.minisig")
     store.put(key, data, content_type=JSON_CONTENT_TYPE,
               cache_control=POINTER_CACHE_CONTROL)
     log(f"  published          {key}")
-    sig = signer.sign(data)
-    if sig is None:
-        log(f"  signature          SKIPPED for {key} ({signer.reason})")
-        return
-    store.put(key + ".minisig", sig, content_type=SIG_CONTENT_TYPE,
-              cache_control=POINTER_CACHE_CONTROL)
-    log(f"  signed             {key}.minisig")
 
 
-# ── step 7: smoke ─────────────────────────────────────────────────────────────
+# ── smoke ─────────────────────────────────────────────────────────────────────
 
 def smoke(store: ObjectStore, latest: dict, catalog: dict,
-          artifacts: list[mf.Artifact], signer: signing.Signer, log) -> None:
-    """Prove the published set is internally consistent before it goes live.
+          artifacts, signatures: dict[str, bytes | None],
+          signer: signing.Signer, log) -> None:
+    """Prove the set is internally consistent.
 
-    Checks the things a broken promote actually breaks: the pointer parses, the
-    version it advertises exists in the catalog, every asset the catalog names
-    is present in the store with the digest it claims, and the signature (when
-    signing is on) verifies against the PUBLIC key — signing with a key nobody
-    can verify against is the same as not signing.
+    Run on the CANDIDATE bytes before either document is published, and again
+    against the store afterwards. Running it only after the upload was the
+    original mistake: `latest.json` would still point at the old version, but
+    the TUI installer reads `catalog.json` DIRECTLY, so a catalog that failed
+    smoke would already be the one being served. Nothing may be published that
+    has not passed this first.
+
+    Checks what a broken promote actually breaks: the two documents agree, every
+    asset either names is present in the store with the digest it claims, the
+    installer binaries the one-liners resolve are present, and a signature
+    exists for every document when signing is on.
     """
     latest_versions = {p["slug"]: p["latest"] for p in latest["plugins"]}
     catalog_versions = {p["slug"]: p["latest"] for p in catalog["plugins"]}
@@ -207,17 +266,34 @@ def smoke(store: ObjectStore, latest: dict, catalog: dict,
                     raise PromoteError(
                         f"catalog sha256 for {key} does not match the stored object."
                     )
-    log(f"  smoke              {len(catalog['plugins'])} plugin(s), pointer consistent")
+    # The installer binaries the bootstrap one-liners resolve. A catalog whose
+    # client assets are missing from the store is a `curl | sh` that 404s.
+    client_assets = (catalog.get("client") or {}).get("assets") or []
+    if not client_assets:
+        raise PromoteError(
+            "catalog has no client.assets — the published one-liners would have "
+            "no installer to download."
+        )
+    for asset in client_assets:
+        key = _key_from_url(asset["url"])
+        if store.head(key) is None:
+            raise PromoteError(
+                f"catalog references installer binary {key} but it is not in the "
+                "store. The one-liner install would 404."
+            )
+
+    log(f"  smoke              {len(catalog['plugins'])} plugin(s), "
+        f"{len(client_assets)} client asset(s), documents consistent")
 
     if signer.enabled:
-        blob = _canonical(latest)
-        sig = signer.sign(blob)
-        if sig is None or not signer.verify(blob, sig):
+        missing = [k for k, v in signatures.items() if v is None]
+        if missing:
             raise PromoteError(
-                "the signature just produced does not verify against the public key. "
-                "Publishing it would ship a pointer clients reject."
+                f"signing is on but no signature was produced for: {missing}. "
+                "Publishing an unsigned document under a signed promote ships a "
+                "release clients reject."
             )
-        log("  smoke              signature verifies against the public key")
+        log("  smoke              every document has a verified signature")
 
 
 def _key_from_url(url: str) -> str:
@@ -261,39 +337,61 @@ def cmd_publish(args) -> int:
     for a in artifacts:
         log(f"  {a.slug} {a.version} {a.fmt}/{a.os_id}/{a.arch}  {a.size} B")
 
+    client_assets: list[mf.ClientAsset] = []
+    if args.installer_dir:
+        if not args.installer_version:
+            raise PromoteError("--installer-dir requires --installer-version")
+        client_assets = mf.collect_installer_assets(
+            Path(args.installer_dir), args.installer_version, sha256_file)
+        for c in client_assets:
+            log(f"  installer {c.version} {c.os_id}/{c.arch}  {c.size} B")
+
     log("step 2/8 upload immutable assets")
     upload_immutable(store, artifacts, log)
+    if client_assets:
+        upload_immutable(store, client_assets, log,
+                         content_type=BINARY_CONTENT_TYPE)
 
     log("step 3/8 read-back verify")
     read_back_verify(store, artifacts, log)
+    read_back_verify(store, client_assets, log)
 
     log("step 4/8 generate manifest")
     previous = _load_json(store, CATALOG_KEY)
     latest = mf.build_latest(artifacts, meta)
-    catalog = mf.build_catalog(artifacts, meta, channel=args.channel, previous=previous)
+    client = (mf.build_client(client_assets, version=args.installer_version)
+              if client_assets else None)
+    catalog = mf.build_catalog(artifacts, meta, channel=args.channel,
+                               previous=previous, client=client)
     latest_bytes, catalog_bytes = _canonical(latest), _canonical(catalog)
     (out_dir / "latest.json").write_bytes(latest_bytes)
     (out_dir / "catalog.json").write_bytes(catalog_bytes)
     log(f"  wrote {out_dir / 'latest.json'} and {out_dir / 'catalog.json'}")
 
-    log("step 5/8 sign")
+    log("step 5/8 sign (before anything is published)")
     log(f"  {signer.describe()}")
+    signatures = {
+        CATALOG_KEY: sign_document(signer, CATALOG_KEY, catalog_bytes, log),
+        LATEST_KEY: sign_document(signer, LATEST_KEY, latest_bytes, log),
+    }
 
-    log("step 6/8 upload manifest (catalog first — the pointer is switched last)")
-    publish_document(store, CATALOG_KEY, catalog_bytes, signer, log)
+    log("step 6/8 smoke (on the candidate bytes — nothing is live yet)")
+    smoke(store, latest, catalog, artifacts, signatures, signer, log)
 
-    log("step 7/8 smoke")
-    smoke(store, latest, catalog, artifacts, signer, log)
+    log("step 7/8 upload manifest (catalog first — the pointer is switched last)")
+    publish_document(store, CATALOG_KEY, catalog_bytes, signatures[CATALOG_KEY], log)
+    smoke(store, latest, catalog, artifacts, signatures, signer, log)
 
     log("step 8/8 pointer switch")
     history_key = archive_current_pointer(store, stamp, log)
-    publish_document(store, LATEST_KEY, latest_bytes, signer, log)
+    publish_document(store, LATEST_KEY, latest_bytes, signatures[LATEST_KEY], log)
 
     summary = {
         "channel": args.channel,
         "store": args.store,
         "stamp": stamp,
         "artifacts": [a.object_key for a in artifacts],
+        "clientAssets": [c.object_key for c in client_assets],
         "previousPointer": history_key,
         "signed": signer.enabled,
     }
@@ -343,8 +441,9 @@ def cmd_rollback(args) -> int:
             "Rollback is a production-visible action; run it deliberately."
         )
 
+    sig = sign_document(signer, LATEST_KEY, data, log)
     archive_current_pointer(store, _stamp(), log)
-    publish_document(store, LATEST_KEY, data, signer, log)
+    publish_document(store, LATEST_KEY, data, sig, log)
     log("rollback complete")
     return 0
 
@@ -393,6 +492,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--artifacts-dir", required=True)
     p_pub.add_argument("--out-dir", required=True)
     p_pub.add_argument("--channel", default="stable")
+    p_pub.add_argument("--installer-dir",
+                       help="directory of built installer binaries "
+                            "(tatsunari-sounds-installer-<os>-<arch>[.exe]); they become "
+                            "catalog.json's client.assets, which is what the bootstrap "
+                            "one-liners resolve the executable from. Omit only when the "
+                            "published catalog already carries a client section to carry over")
+    p_pub.add_argument("--installer-version",
+                       help="version for --installer-dir (its immutable path)")
     p_pub.set_defaults(func=cmd_publish)
 
     p_rb = sub.add_parser("rollback", help="restore a previously archived pointer")

@@ -52,6 +52,20 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _is_not_found(stderr: str) -> bool:
+    """True only for an unambiguous "this key does not exist" from the CLI.
+
+    Deliberately narrow. Everything this does NOT match — credentials, network,
+    throttling, 5xx — is a fault the promote must stop on, because the callers
+    treat "absent" as permission to proceed.
+    """
+    text = stderr or ""
+    return ("Not Found" in text
+            or "NoSuchKey" in text
+            or "404" in text
+            or "does not exist" in text)
+
+
 class ObjectStore(Protocol):
     """The surface promote needs. Deliberately smaller than any S3 API."""
 
@@ -129,7 +143,7 @@ class S3Store:
         if res.returncode != 0:
             # 404 is the expected "not there yet"; anything else is a real fault
             # and must not be mistaken for an absent object.
-            if "Not Found" in res.stderr or "404" in res.stderr:
+            if _is_not_found(res.stderr):
                 return None
             raise RuntimeError(f"head-object {key!r} failed: {res.stderr.strip()}")
         meta = json.loads(res.stdout)
@@ -162,7 +176,19 @@ class S3Store:
             res = self._run("get-object", "--bucket", self.bucket, "--key", key, tmp_path,
                             check=False)
             if res.returncode != 0:
-                raise KeyError(key)
+                # Only a genuine 404 may become KeyError. Callers read KeyError
+                # as "this object does not exist yet" and act on it —
+                # archive_current_pointer() reads it as "first publish" and
+                # skips archiving. Turning an auth error, a timeout or a 5xx
+                # into the same signal means a transient read fault followed by
+                # a successful write silently destroys the rollback target.
+                if _is_not_found(res.stderr):
+                    raise KeyError(key)
+                raise RuntimeError(
+                    f"get-object {key!r} failed and it is NOT a 404: "
+                    f"{res.stderr.strip()}. Refusing to treat an unreadable "
+                    "object as an absent one."
+                )
             return Path(tmp_path).read_bytes()
         finally:
             os.unlink(tmp_path)
