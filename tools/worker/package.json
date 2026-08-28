@@ -1,0 +1,9 @@
+{
+  "name": "tatsunari-sounds-delivery-worker",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that serves /tatsunarisounds/* from R2 and counts downloads.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

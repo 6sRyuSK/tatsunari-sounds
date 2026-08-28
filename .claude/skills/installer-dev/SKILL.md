@@ -37,7 +37,7 @@ go run . --no-tui --dry-run        --os Windows --plugins tn-resonance-suppresso
 | `internal/i18n` | 日英文字列選択(OS ロケール) |
 | `internal/app` | TUI とヘッドレスの共通オーケストレーション |
 | `internal/tui` | 画面遷移: discover → plugins → formats → scope → confirm → progress → summary |
-| `bootstrap/` | `install.sh` / `install.ps1` ワンライナー |
+| `bootstrap/` | `shim.sh` / `shim.ps1`(公開ワンライナー)+ `install.sh` / `install.ps1`(版付き payload) |
 
 ## load-bearing な注意(壊すと学び直しになる)
 
@@ -51,6 +51,14 @@ go run . --no-tui --dry-run        --os Windows --plugins tn-resonance-suppresso
   `GOOS=windows GOARCH=amd64` のとき自動で拾う。**この .syso を消すと出荷 exe が
   起動時に UAC を出す** — `winres_test.go` が manifest と .syso の両方をゲートする。
   system scope の昇格は従来どおり `__apply` 境界だけの責務。
+- **bootstrap は 2 段**: 公開される `install.sh` / `install.ps1` は
+  `bootstrap/shim.{sh,ps1}` で、可変・短 TTL。中身は「版付きの不変 payload を
+  取得し、**SHA-256 を検証してから** exec する」だけ。payload が
+  `bootstrap/install.{sh,ps1}` で、pin は `python tools/promote/bootstrap.py --write`
+  が生成し `--check` が CI でゲートする。**shim に機能を足さない**(署名で守れない
+  唯一のオブジェクトなので、1 画面で読める大きさに保つ)。redirect は追わない
+  (`curl` は `-L` なし + `%{http_code}` を明示確認、PowerShell は
+  `-MaximumRedirection 0`)。payload を編集したら pin の再生成を忘れない。
 - **昇格モデル**: 非特権プロセスが `0700` の temp dir に全 download+extract を
   ステージし `plan.json` を書き、**一度だけ** `__apply` サブコマンドとして OS の
   昇格機構(osascript / `Start-Process -Verb RunAs`)で自分を再起動する。

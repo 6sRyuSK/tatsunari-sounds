@@ -1,0 +1,35 @@
+# Delivery Worker for https://6sryusk.com/tatsunarisounds/* (plan §5.1, §5.2).
+#
+# Deployed by a human with `wrangler deploy` from this directory. It is NOT in
+# CI: a deploy needs a Cloudflare API token, and the plan puts production
+# changes behind human approval. CI only runs `npm test` here.
+#
+# There are no secrets in this file and there must never be any: the R2 bucket
+# and the Analytics dataset are bindings, resolved by name at deploy time.
+
+name = "tatsunari-sounds-delivery"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# The fixed public path every shipped binary validates (invariant 7). Changing
+# this hostname orphans every installed client, so it is frozen with the same
+# force as a plugin's CLAP id.
+routes = [
+  { pattern = "6sryusk.com/tatsunarisounds/*", zone_name = "6sryusk.com" }
+]
+
+# The bucket stays PRIVATE. Its *.r2.dev development URL must remain disabled —
+# a public bucket URL is a second addressable form of every artifact, and the
+# day hosting moves, anything pinned to it is orphaned.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tatsunari-sounds"
+
+# Download counting (§5.2). Workers Analytics Engine: designed for counting,
+# one binding, and writes are fire-and-forget so they never delay a download.
+[[analytics_engine_datasets]]
+binding = "DOWNLOADS"
+dataset = "tatsunari_sounds_downloads"
+
+[observability]
+enabled = true
