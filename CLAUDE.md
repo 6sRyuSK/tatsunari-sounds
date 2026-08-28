@@ -104,9 +104,18 @@ skill builds on.
   installer; `tools/ui-dev/` — local WASM Visage UI dev harness (own README,
   not in CI); `tools/vst3-probe/` — dev-only Windows VST3 host probe;
   `tools/build-clap.ps1` / `tools/install.ps1` — Windows local build/install helpers.
+- `tools/promote/` — the Cloudflare `updates/v1` publish pipeline (NOT live yet;
+  plan §8 Phase F): `promote.py` (8-step publish + pointer rollback),
+  `manifest.py`, `store.py`, `signing.py` (minisign WIRING only — keys are a
+  human's), `bootstrap.py` (shim→payload SHA-256 pin), `cdn_check.py` (asserts
+  what the edge actually returns). `tools/worker/` — the delivery Worker that
+  serves those objects from a private R2 bucket and counts downloads; gated by
+  `npm test` (node --test, no deps). Both are covered by `tools/tests/`.
 - `docs/regression-policy.md` — catalogued bug classes and their gate invariants;
   `docs/migration/` — the S1 (WASM UI loop) / S2 (clap-first) spike reports,
-  preserved for their dependency pins + gotchas; `docs/plans/` — design plans.
+  preserved for their dependency pins + gotchas; `docs/plans/` — design plans;
+  `docs/runbooks/production-rollout.md` — the promote / rollback / key-rotation /
+  CDN-header drills and the release-decision checklist.
 - `roadmap.toml` — planned plugins (remove an entry once it gets a `plugin.toml`).
 - Root `CMakeLists.txt` auto-includes `plugins/*/CMakeLists.txt` and takes
   `-DFACTORY_PLUGINS=<slugs>` (comma/semicolon-separated) to configure a subset;
@@ -259,8 +268,10 @@ installer support). `installer.yml` attaches the TUI installer + `catalog.json` 
 - **Factory tools** (`factory-tools-ci.yml`): `gen_catalog.py --check` (README
   catalog freshness) + `check_skill_refs.py` (skill-reference freshness) +
   `check_plugin_ids.py --check` (identifier uniqueness) +
-  `check_legacy_identity.py` (retired product identity) + the `tools/tests`
-  unittest suite. `pull_request` is deliberately UNSCOPED (no `paths`): the
+  `check_legacy_identity.py` (retired product identity) +
+  `promote/bootstrap.py --check` (the shims' SHA-256 pins still match the
+  committed payloads) + the `tools/tests` unittest suite + `tools/worker`'s
+  `npm test`. `pull_request` is deliberately UNSCOPED (no `paths`): the
   retired-identity gate reads every tracked file, so narrowing it would let an
   old identifier reappear unchecked. The `push` trigger keeps its path list.
 - **Installer** (`installer-ci.yml`, `tools/installer/**` only): `go test` / `go vet`.

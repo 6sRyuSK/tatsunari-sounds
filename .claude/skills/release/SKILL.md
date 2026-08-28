@@ -76,7 +76,9 @@ module(`go test ./...` / `go vet ./...`、ゲートは installer-ci.yml)。
      (wrapper VST3 / AU)。**CTest を回す唯一のワークフロー**
    - `clap.yml` — active 3 機種それぞれの Linux レグで clap-first ビルド +
      **native `.clap` の clap-validator**(ci.yml が出さない唯一のシグナル)
-   - `factory-tools-ci.yml` — `gen_catalog.py --check` + `tools/tests`
+   - `factory-tools-ci.yml` — `gen_catalog.py --check` + skill/ID/旧 identity gate
+     + `tools/promote/bootstrap.py --check` + `tools/tests` + `tools/worker` の
+     `npm test`(node --test)
    - `installer-ci.yml` — `go test` / `go vet`(`tools/installer/**` 変更時のみ)
 4. 出荷対象に **`docs/manual/<name>.md`** があり、今回のパラメータ/プリセット変更に
    追従しているか(`docs/manual/README.md` の宣言どおり出荷バイナリに追従させる)。
@@ -87,3 +89,40 @@ module(`go test ./...` / `go vet ./...`、ゲートは installer-ci.yml)。
 7. 実行後: release.yml → installer.yml の 2 段が両方成功し、アセット一式
    (per-OS バンドル、per-plugin zip、manifest.json、SHA256SUMS.txt、
    installer バイナリ、catalog.json)が揃ったことを確認して報告。
+
+## Cloudflare 配信パイプライン(updates/v1) — Phase F
+
+GitHub Releases を廃し、`https://6sryusk.com/tatsunarisounds/` から配信する経路。
+**まだ本番稼働していない**(計画 §8 Phase F)。上の release.yml/installer.yml が
+現行の出荷経路で、こちらは移行先。手を入れるときの地図:
+
+| 物 | 役割 |
+|---|---|
+| `tools/promote/promote.py` | 8 ステップの publish と pointer rollback |
+| `tools/promote/manifest.py` | `latest.json` / `catalog.json` の生成(`ZIP_RE` / `TARGETS`) |
+| `tools/promote/store.py` | オブジェクトストア抽象 + キャッシュポリシー定数 |
+| `tools/promote/signing.py` | minisign の署名/検証の**配線のみ**(鍵は人間) |
+| `tools/promote/cdn_check.py` | エッジが返すヘッダの検査 |
+| `tools/promote/bootstrap.py` | shim → payload の SHA-256 pin 生成/検査 |
+| `tools/promote/rehearsal.py` | 実 zip が無いときの placeholder 生成（演習専用） |
+| `tools/worker/` | 配信 Worker(R2 中継 + DL 集計)。`npm test` で gate |
+| `docs/runbooks/production-rollout.md` | 演習 4 種と**リリース判定チェックリスト** |
+
+守るべき性質(緩めるなら人間に確認):
+
+- **immutable は上書きしない**。同じ key に別 digest が来たら promote は止まる。
+- **read-back verify は省略しない**。upload 成功と取得可能は別の主張。
+- **smoke は公開の前**に通す。TUI インストーラは `catalog.json` を直接読むので、
+  「pointer を最後に切り替える」だけでは catalog を守れない。
+- **pointer 切替は最後、かつ可逆**。旧 pointer を history に退避してから切り替える。
+- **pointer は短 TTL + ETag、artifact は immutable**。逆にすると rollback が効かない。
+- **署名は公開の前に作って公開鍵で検証し、文書より先にアップロードする**。
+  文書が先だと、新文書 + 旧署名という不整合が「窓」ではなく公開状態として残りうる。
+- **catalog の `client` を落とさない**。bootstrap ワンライナーはここから
+  インストーラ本体を解決する。`--installer-dir` を渡すか前回 catalog から引き継ぐ。
+- **`get()` の失敗を「存在しない」と混同しない**。auth/timeout/5xx を 404 と同じ
+  シグナルにすると、読み取り障害の直後に旧 pointer を退避せず上書きしてしまう。
+- **秘密鍵に触れない**。生成・表示・保存はすべて人間の手順(runbook §3)。
+
+`--store memory` は本番と同一コードパスの完全なリハーサル。演習で落ちるものは
+本番でも落ちる。

@@ -61,7 +61,24 @@ jobs:
       - name: Retired product identity
         run: python tools/check_legacy_identity.py
 
-      # Stdlib-only unit tests for gen_catalog.py, release_plan.py and
-      # check_skill_refs.py.
+      # Gate the bootstrap pin: the shims must hash-pin the payloads that are
+      # actually committed. A drifted pin is a one-liner that either stops
+      # working or, worse, stops checking.
+      - name: Bootstrap pin freshness
+        run: python tools/promote/bootstrap.py --check
+
+      # Stdlib-only unit tests for gen_catalog.py, release_plan.py,
+      # check_skill_refs.py and the promote/cdn_check pipeline.
       - name: Unit tests
         run: python -m unittest discover -s tools/tests
+
+      # The delivery Worker (tools/worker) is the only code between a user and
+      # every binary we ship: its allowlist, Range handling and download-count
+      # rules are gated here. node --test, no dependencies, no wrangler.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Delivery Worker tests
+        working-directory: tools/worker
+        run: npm test

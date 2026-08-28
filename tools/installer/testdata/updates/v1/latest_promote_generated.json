@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "generated": "2026-08-28T07:02:30Z",
+  "plugins": [
+    {
+      "slug": "tn-equalizer",
+      "latest": "0.1.0",
+      "changelogUrl": "https://6sryusk.com/tatsunarisounds/notes/tn-equalizer/0.1.0.md"
+    },
+    {
+      "slug": "tn-resonance-suppressor",
+      "latest": "0.1.0",
+      "changelogUrl": "https://6sryusk.com/tatsunarisounds/notes/tn-resonance-suppressor/0.1.0.md"
+    },
+    {
+      "slug": "tn-vocal-tuner",
+      "latest": "0.1.0",
+      "changelogUrl": "https://6sryusk.com/tatsunarisounds/notes/tn-vocal-tuner/0.1.0.md"
+    }
+  ]
+}

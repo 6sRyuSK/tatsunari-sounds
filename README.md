@@ -64,11 +64,15 @@ _Not built or released (excluded from CI); sources kept under `archive/plugins/`
 
 **macOS**（ターミナル）:
 
-    curl -fsSL https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.sh | bash
+    curl -fsS --proto '=https' --tlsv1.2 https://6sryusk.com/tatsunarisounds/install.sh | sh
 
 **Windows**（PowerShell）:
 
-    irm https://raw.githubusercontent.com/6sRyuSK/tatsunari-sounds/main/tools/installer/bootstrap/install.ps1 | iex
+    irm https://6sryusk.com/tatsunarisounds/install.ps1 | iex
+
+このワンライナーが取ってくるのは短い shim だけで、shim は**版付きの不変スクリプト**を
+取得し SHA-256 を照合してからでないと実行しません。redirect・TLS エラー・hash 不一致の
+いずれでも実行を中止します。
 
 UI は日本語 / 英語のバイリンガルで、OS のロケールに従います。ソースとビルド手順は
 [`tools/installer/`](tools/installer/README.md) にあります。
