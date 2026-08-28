@@ -1,7 +1,16 @@
 #!/bin/sh
-# tatsunari-sounds installer bootstrap (macOS).
+# tatsunari-sounds installer bootstrap PAYLOAD (macOS).
 #
-#   curl -fsSL https://6sryusk.com/tatsunarisounds/install.sh | bash
+# This file is published IMMUTABLY at
+#   https://6sryusk.com/tatsunarisounds/bootstrap/<version>/install.sh
+# and is only ever reached through shim.sh, which pins its SHA-256. Users run
+# the short one-liner, which fetches the shim:
+#
+#   curl -fsS --proto '=https' --tlsv1.2 https://6sryusk.com/tatsunarisounds/install.sh | sh
+#
+# Editing this file changes its digest, so tools/promote/bootstrap.py must be
+# re-run to refresh the pin; tools/tests/test_bootstrap_pin.py fails the build
+# otherwise.
 #
 # Detects OS/arch, downloads the matching installer binary from the signed
 # catalog at /tatsunarisounds/updates/v1/catalog.json, verifies SHA-256, and
@@ -72,7 +81,15 @@ trap 'rm -rf "$tmp"' EXIT
 bin="${tmp}/tatsunari-sounds-installer"
 
 echo "Downloading installer…" >&2
-curl -fsSL "$url" -o "$bin"
+# No -L, and HTTPS only: the catalog gave us an exact URL on our own host. A
+# redirect at this point is an origin change nobody authorised, and -f alone
+# lets 3xx through, so the status is checked explicitly.
+dl_status="$(curl -fsS --proto '=https' --tlsv1.2 \
+                  -o "$bin" -w '%{http_code}' "$url" || true)"
+if [ "$dl_status" != "200" ]; then
+  echo "Refusing to continue: $url returned HTTP ${dl_status:-<none>}." >&2
+  exit 1
+fi
 chmod +x "$bin"
 
 got_sha="$(python3 - "$bin" <<'PY'
