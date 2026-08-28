@@ -275,3 +275,62 @@ func TestDowngradeAndStateCompat(t *testing.T) {
 		t.Fatalf("stateCompat: %v %v", dec, err)
 	}
 }
+
+// TestPromoteGeneratedDocumentsParseCleanly is the cross-language gate between
+// the publisher (tools/promote, Python) and this client: the fixtures are REAL
+// promote output, not hand-written examples.
+//
+// A manifest the publisher happily produces and this parser silently drops
+// assets from is the failure mode that ships a release nobody can install. That
+// is not hypothetical: promote first wrote arch "amd64" on plugin assets, which
+// this parser rejects (plugin assets take universal/x86_64/arm64; only the
+// installer's own client assets use amd64). Nothing but feeding promote's own
+// output through the real parser would have caught it.
+//
+// Regenerate after changing tools/promote/manifest.py:
+//
+//	python3 tools/promote/promote.py publish \
+//	    --artifacts-dir <dir of release zips> --out-dir /tmp/promote --store memory
+//	cp /tmp/promote/latest.json  tools/installer/testdata/updates/v1/latest_promote_generated.json
+//	cp /tmp/promote/catalog.json tools/installer/testdata/updates/v1/catalog_promote_generated.json
+func TestPromoteGeneratedDocumentsParseCleanly(t *testing.T) {
+	dir := fixtureDir(t)
+
+	latest, err := os.ReadFile(filepath.Join(dir, "latest_promote_generated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl, err := updates.ParseLatest(latest)
+	if err != nil {
+		t.Fatalf("ParseLatest on promote output: %v", err)
+	}
+	if len(rl.Issues) != 0 {
+		t.Errorf("promote's latest.json produced issues: %+v", rl.Issues)
+	}
+	if len(rl.Doc.Plugins) == 0 {
+		t.Error("promote's latest.json advertised no plugins")
+	}
+
+	catalog, err := os.ReadFile(filepath.Join(dir, "catalog_promote_generated.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := updates.ParseCatalog(catalog)
+	if err != nil {
+		t.Fatalf("ParseCatalog on promote output: %v", err)
+	}
+	if len(rc.Issues) != 0 {
+		// Issues are per-asset drops: the document parses, but the client would
+		// not see part of what was published.
+		t.Errorf("promote's catalog.json produced issues: %+v", rc.Issues)
+	}
+	assets := 0
+	for _, p := range rc.Doc.Plugins {
+		for _, v := range p.Versions {
+			assets += len(v.Assets)
+		}
+	}
+	if assets == 0 {
+		t.Error("promote's catalog.json yielded no installable assets")
+	}
+}

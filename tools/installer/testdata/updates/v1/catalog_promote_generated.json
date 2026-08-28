@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "generated": "2026-08-28T05:40:10Z",
+  "channels": [
+    {
+      "id": "stable",
+      "name": {
+        "en": "Stable"
+      }
+    }
+  ],
+  "plugins": [
+    {
+      "slug": "tn-equalizer",
+      "variant": "stable",
+      "name": {
+        "en": "TN Equalizer"
+      },
+      "category": "EQ",
+      "vendor": "Tatsunari Sounds",
+      "pluginIds": {
+        "clapId": "jp.tatsunari-sounds.tn-equalizer",
+        "auSubtype": "Tneq",
+        "auManufacturer": "Ttsn"
+      },
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "channel": "stable",
+          "releasedAt": "2026-08-28T05:40:10Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "au",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-equalizer/0.1.0/tn-equalizer-v0_1_0-macOS-AU.zip",
+              "size": 41,
+              "sha256": "f96e288bcfbd9c1227f6369752bb6cc2f1d214a29f2f1c35b68dd4e8d116d673",
+              "subpath": "Components",
+              "bundleName": "tn-equalizer.component"
+            },
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-equalizer/0.1.0/tn-equalizer-v0_1_0-macOS-VST3.zip",
+              "size": 43,
+              "sha256": "1fd3178331f5c52e89849bf4959ec8280c4b66d0a911f34488c1e40901073187",
+              "subpath": "VST3/tatsunari-sounds",
+              "bundleName": "tn-equalizer.vst3"
+            },
+            {
+              "format": "vst3",
+              "os": "windows",
+              "arch": "x86_64",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-equalizer/0.1.0/tn-equalizer-v0_1_0-Windows.zip",
+              "size": 40,
+              "sha256": "6df82c97026a4c6b1f84374d26204a93b1b03194d54e11ae8ff97a79a2b05a9d",
+              "subpath": "VST3/tatsunari-sounds",
+              "bundleName": "tn-equalizer.vst3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "tn-resonance-suppressor",
+      "variant": "stable",
+      "name": {
+        "en": "TN Resonance Suppressor"
+      },
+      "category": "EQ",
+      "vendor": "Tatsunari Sounds",
+      "pluginIds": {
+        "clapId": "jp.tatsunari-sounds.tn-resonance-suppressor",
+        "auSubtype": "Tnrs",
+        "auManufacturer": "Ttsn"
+      },
+      "latest": "0.1.0",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "channel": "stable",
+          "releasedAt": "2026-08-28T05:40:10Z",
+          "stateCompatVersion": "1.0.0",
+          "assets": [
+            {
+              "format": "vst3",
+              "os": "macos",
+              "arch": "universal",
+              "url": "https://6sryusk.com/tatsunarisounds/artifacts/tn-resonance-suppressor/0.1.0/tn-resonance-suppressor-v0_1_0-macOS-VST3.zip",
+              "size": 54,
+              "sha256": "0774f7d7092b2910114d9fcd3ddf2a1315be0f9490ea4aaeea398984e50d8f48",
+              "subpath": "VST3/tatsunari-sounds",
+              "bundleName": "tn-resonance-suppressor.vst3"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
