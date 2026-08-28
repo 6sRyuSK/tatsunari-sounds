@@ -150,9 +150,9 @@ class UrlSetTests(unittest.TestCase):
 
     def test_installer_client_assets_are_checked_too(self):
         catalog = {"plugins": [], "client": {"assets": [
-            {"url": f"{BASE}/artifacts/installer/1.0.0/tatsunari-darwin-arm64"}]}}
+            {"url": f"{BASE}/artifacts/installer/1.0.0/tatsunari-sounds-installer-darwin-arm64"}]}}
         urls = cc.urls_from_documents({}, catalog)
-        self.assertIn(f"{BASE}/artifacts/installer/1.0.0/tatsunari-darwin-arm64", urls)
+        self.assertIn(f"{BASE}/artifacts/installer/1.0.0/tatsunari-sounds-installer-darwin-arm64", urls)
 
     def test_bootstrap_urls_track_the_committed_shim_pin(self):
         # The point of reading the shim is that the check fetches the payload a
@@ -228,7 +228,7 @@ class WorkerPolicyDriftTests(unittest.TestCase):
         self.assertTrue(served, "could not read the Worker's route table")
         classified = {
             "plugin": ARTIFACT,
-            "installer": f"{BASE}/artifacts/installer/1.2.0/tatsunari-darwin-arm64",
+            "installer": f"{BASE}/artifacts/installer/1.2.0/tatsunari-sounds-installer-darwin-arm64",
             "pointer": POINTER,
             "history": f"{BASE}/updates/v1/history/latest-20260101T000000Z.json",
             "bootstrap-payload": PAYLOAD,

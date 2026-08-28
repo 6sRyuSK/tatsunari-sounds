@@ -113,9 +113,12 @@ export function contentTypeFor(key) {
 export function dimensionsFor(key, kind) {
   const parts = key.split('/');
   if (kind === 'installer') {
-    // artifacts/installer/<version>/tatsunari-<os>-<arch>[.exe]
+    // artifacts/installer/<version>/tatsunari-sounds-installer-<os>-<arch>[.exe],
+    // which is what installer.yml actually builds (plan §11.5). Matching a
+    // shorter prefix here would parse to an empty os/arch and quietly record
+    // every installer download as unattributed.
     const [, , version, file] = parts;
-    const m = /^tatsunari-([a-z0-9]+)-([a-z0-9_]+)(\.exe)?$/.exec(file ?? '');
+    const m = /^tatsunari-sounds-installer-([a-z0-9]+)-([a-z0-9_]+)(\.exe)?$/.exec(file ?? '');
     return {
       product: 'installer', slug: 'installer', version: version ?? '',
       format: 'binary', os: m ? m[1] : '', arch: m ? m[2] : '',

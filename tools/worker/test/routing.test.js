@@ -25,7 +25,7 @@ const ZIP = `${P}artifacts/tn-equalizer/0.1.0/tn-equalizer-v0_1_0-Windows.zip`;
 test('published paths route to their key with the right cache policy', () => {
   const cases = [
     [ZIP, 'plugin', IMMUTABLE_CACHE_CONTROL, true],
-    [`${P}artifacts/installer/1.2.0/tatsunari-darwin-arm64`, 'installer', IMMUTABLE_CACHE_CONTROL, true],
+    [`${P}artifacts/installer/1.2.0/tatsunari-sounds-installer-darwin-arm64`, 'installer', IMMUTABLE_CACHE_CONTROL, true],
     [`${P}updates/v1/latest.json`, 'pointer', POINTER_CACHE_CONTROL, false],
     [`${P}updates/v1/catalog.json.minisig`, 'pointer', POINTER_CACHE_CONTROL, false],
     [`${P}updates/v1/history/latest-20260101T000000Z.json`, 'history', IMMUTABLE_CACHE_CONTROL, false],
@@ -100,7 +100,7 @@ test('content types are declared, never sniffed', () => {
   assert.equal(contentTypeFor('updates/v1/latest.json'), 'application/json');
   assert.equal(contentTypeFor('artifacts/x/1.0.0/a.zip'), 'application/zip');
   assert.equal(contentTypeFor('install.sh'), 'text/x-shellscript; charset=utf-8');
-  assert.equal(contentTypeFor('artifacts/installer/1.0.0/tatsunari-darwin-arm64'),
+  assert.equal(contentTypeFor('artifacts/installer/1.0.0/tatsunari-sounds-installer-darwin-arm64'),
     'application/octet-stream');
 });
 
@@ -114,7 +114,7 @@ test('dimensions come from the key and match the catalog vocabulary', () => {
     dimensionsFor('artifacts/tn-vocal-tuner/0.1.0/tn-vocal-tuner-v0_1_0-macOS-AU.zip', 'plugin'),
     { product: 'plugin', slug: 'tn-vocal-tuner', version: '0.1.0', format: 'au', os: 'macos', arch: 'universal' });
   assert.deepEqual(
-    dimensionsFor('artifacts/installer/1.2.0/tatsunari-windows-amd64.exe', 'installer'),
+    dimensionsFor('artifacts/installer/1.2.0/tatsunari-sounds-installer-windows-amd64.exe', 'installer'),
     { product: 'installer', slug: 'installer', version: '1.2.0', format: 'binary', os: 'windows', arch: 'amd64' });
 });
 
@@ -122,7 +122,7 @@ test('installer downloads are kept separate from plugin downloads', () => {
   // Plan §5.2: "do not mix them". They differ by `product`, so an aggregate can
   // never accidentally sum both.
   const plugin = dimensionsFor('artifacts/tn-equalizer/0.1.0/tn-equalizer-v0_1_0-Windows.zip', 'plugin');
-  const installer = dimensionsFor('artifacts/installer/1.2.0/tatsunari-darwin-arm64', 'installer');
+  const installer = dimensionsFor('artifacts/installer/1.2.0/tatsunari-sounds-installer-darwin-arm64', 'installer');
   assert.notEqual(plugin.product, installer.product);
 });
 
